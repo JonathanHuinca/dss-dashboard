@@ -1,0 +1,172 @@
+# ============================================================
+# DATOS SENSIBLES Y CREDENCIALES — NUNCA subir a GitHub
+# ============================================================
+
+# Variables de entorno con secretos (JWT, Fernet, HMAC_PEPPER, API Keys)
+.env
+backend/.env
+.env.local
+.env.production
+.env.staging
+
+# ============================================================
+# DATOS OPERACIONALES UCT — Privacidad Ley 21.719
+# ============================================================
+
+# Carpeta con datos crudos de HikCentral (torniquetes y ANPR)
+Documentos_soloVista/
+
+# Archivos de datos con registros de personas y vehiculos
+*.csv
+*.xlsx
+*.xls
+*.parquet
+data/raw/
+data/processed/
+scripts/data/
+
+# ============================================================
+# PYTHON — Backend FastAPI
+# ============================================================
+
+# Bytecode y caché
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+.Python
+
+# Build y distribución
+*.egg-info/
+dist/
+build/
+*.egg
+MANIFEST
+
+# Pytest y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ============================================================
+# MODELOS DE MACHINE LEARNING — Archivos binarios pesados
+# ============================================================
+
+# Modelos entrenados Prophet e Isolation Forest (se regeneran)
+*.joblib
+*.pkl
+*.pickle
+*.h5
+*.pt
+*.pth
+backend/models/*.joblib
+backend/models/*.pkl
+
+# ============================================================
+# NODE.JS — Frontend React/Vite
+# ============================================================
+
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/.nyc_output/
+
+# TypeScript build info
+*.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+
+# ============================================================
+# DOCKER
+# ============================================================
+
+# Ignorar overrides locales de docker-compose (credenciales locales)
+docker-compose.override.yml
+
+# ============================================================
+# LOGS Y ARCHIVOS TEMPORALES
+# ============================================================
+
+*.log
+logs/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# ============================================================
+# SISTEMA OPERATIVO
+# ============================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================================
+# IDEs Y EDITORES
+# ============================================================
+
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ============================================================
+# ARCHIVOS DE TESIS — Solo vista, no son código del proyecto
+# ============================================================
+
+# PDFs y documentos de evaluación (pesados, no son código)
+Tesis_E1.pdf
+UCT_logo.pdf
+Pauta_y_Rubrica_Trabajo_de_Titulo-1.pdf
+*.tex
+
+# Informes intermedios en texto plano
+EVIDENCIA_COMPLETA_ETAPA_2.txt
+INFORME_TECNICO_TESIS.txt
+informe_criterio_3_diseno.txt
+prompts_implementacion.txt
+reporte_panel_administracion_y_login.txt
+
+# Documentación y especificaciones de tesis (solo para el autor)
+especificaciones/
+especificaciones_actualizadas/
+entrega_etapa2_backlog/
+
+# Archivos de planificación y documentos de trabajo intermedios
+PLAN_TRABAJO_ETAPAS_3_Y_4.md
+informe_criterio_3.html
+
+# Bases de datos SQLite generadas por Pytest durante pruebas
+*.db
+*.sqlite
+*.sqlite3
