@@ -1,0 +1,33 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-uct-bg-main text-uct-text-primary font-sans;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-uct-card-bg rounded-2xl shadow-sm border border-slate-100 p-5;
+  }
+  .kpi-card {
+    @apply card flex flex-col gap-1 hover:shadow-md transition-shadow duration-200;
+  }
+  .tab-btn {
+    @apply px-5 py-2.5 text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer;
+  }
+  .tab-btn-active {
+    @apply bg-uct-gold text-uct-blue-primary shadow-md;
+  }
+  .tab-btn-inactive {
+    @apply text-slate-400 hover:text-white hover:bg-white/10;
+  }
+}
+
+/* Scrollbar fino */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { @apply bg-slate-300 rounded-full; }
