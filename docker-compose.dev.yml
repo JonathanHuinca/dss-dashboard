@@ -1,0 +1,46 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: uct_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      - timescaledb
+      - redis
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: uct_timescaledb_dev
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: uct_dashboard
+      POSTGRES_USER: uct_admin
+      POSTGRES_PASSWORD: uct_secret
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uct_admin -d uct_dashboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: uct_redis_dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  timescaledb_data:
+    driver: local
