@@ -33,7 +33,7 @@ from app.adapters.base import (
     IngestionAdapter,
     VehicleEventDTO,
 )
-from app.core.security import pseudonymize_person, pseudonymize_vehicle
+from app.core.security import pseudonymize_person, encrypt_vehicle_patente
 
 TZ_SANTIAGO = zoneinfo.ZoneInfo("America/Santiago")
 
@@ -86,23 +86,48 @@ class FileIngestionAdapter(IngestionAdapter):
     async def fetch_attendance_events(self, espacio_id: int) -> list[AttendanceEventDTO]:
         path = self.data_root / "datos_bases" / "asistencia_base.csv"
         df = await asyncio.to_thread(self._load_attendance, path)
-        return [self._map_attendance_row(row, espacio_id) for _, row in df.iterrows()]
+        records = df.to_dict("records")
+        return [self._map_attendance_row(row, espacio_id) for row in records]
 
     async def fetch_vehicle_events(self, espacio_id: int) -> list[VehicleEventDTO]:
         path = self.data_root / "datos_bases" / "RegistroVehicular_base.xlsx"
         df = await asyncio.to_thread(self._load_vehicles, path)
-        return [self._map_vehicle_row(row, espacio_id) for _, row in df.iterrows()]
+        records = df.to_dict("records")
+        return [self._map_vehicle_row(row, espacio_id) for row in records]
 
     async def fetch_calendar_events(self) -> list[CalendarEventDTO]:
         path = (
             self.data_root
             / "datos_calendario_academico"
-            / "scraping_calendario_academico"
             / "calendario_academico_ml - copia.xlsx"
         )
+        if not path.exists():
+            path = (
+                self.data_root
+                / "datos_calendario_academico"
+                / "scraping_calendario_academico"
+                / "calendario_academico_ml - copia.xlsx"
+            )
         df = await asyncio.to_thread(self._load_calendar, path)
-        events = [self._map_calendar_row(row) for _, row in df.iterrows()]
-        return [e for e in events if e is not None and e.fecha is not None]
+        records = df.to_dict("records")
+        events = [self._map_calendar_row(row) for row in records]
+        
+        # Agrupar por fecha unica para respetar PK en SQL Server
+        grouped: dict[str, CalendarEventDTO] = {}
+        for e in events:
+            if e is not None and e.fecha is not None:
+                if e.fecha not in grouped:
+                    grouped[e.fecha] = e
+                else:
+                    curr = grouped[e.fecha]
+                    curr.is_holiday = curr.is_holiday or e.is_holiday
+                    curr.is_break = curr.is_break or e.is_break
+                    curr.is_exam_period = curr.is_exam_period or e.is_exam_period
+                    curr.is_class_milestone = curr.is_class_milestone or e.is_class_milestone
+                    curr.suspension_actividades = curr.suspension_actividades or e.suspension_actividades
+                    if e.descripcion and e.descripcion not in curr.descripcion:
+                        curr.descripcion = f"{curr.descripcion} / {e.descripcion}"
+        return list(grouped.values())
 
     # ------------------------------------------------------------------
     # Loaders (ejecutados en hilo para no bloquear el event loop)
@@ -114,9 +139,46 @@ class FileIngestionAdapter(IngestionAdapter):
             encoding="utf-8-sig",
             dtype={"personId": str},
         )
-        df.columns = [c.strip() for c in df.columns]
-        # Supresión inmediata en memoria de datos personales directos (Ley 21.719)
-        df.drop(columns=["Persona"], errors="ignore", inplace=True)
+        # Normalizar nombres de columnas (resuelve codificacion en 'Última salida')
+        col_map = {}
+        for c in df.columns:
+            c_low = c.strip().lower()
+            if "fecha" in c_low:
+                col_map[c] = "fecha"
+            elif "personid" in c_low:
+                col_map[c] = "person_id"
+            elif "marcajes" in c_low:
+                col_map[c] = "marcajes"
+            elif "primera" in c_low and "entrada" in c_low:
+                col_map[c] = "primera_entrada"
+            elif "door" in c_low and "entrada" in c_low:
+                col_map[c] = "door_entrada"
+            elif "dif" in c_low and "entrada" in c_low:
+                col_map[c] = "dif_entrada"
+            elif "salida" in c_low and "door" not in c_low and "dif" not in c_low:
+                col_map[c] = "ultima_salida"
+            elif "door" in c_low and "salida" in c_low:
+                col_map[c] = "door_salida"
+            elif "dif" in c_low and "salida" in c_low:
+                col_map[c] = "dif_salida"
+        df.rename(columns=col_map, inplace=True)
+        
+        # PRIVACIDAD ESTRICTA: Supresión inmediata
+        df.drop(columns=["Persona", "persona", "nombre", "correo", "email", "telefono"], errors="ignore", inplace=True)
+        
+        # Vectorizar parseo de fechas para alto rendimiento
+        df["pe_dt"] = pd.to_datetime(df["primera_entrada"], errors="coerce")
+        df["us_dt"] = pd.to_datetime(df["ultima_salida"], errors="coerce")
+        df["f_dt"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df["time_dt"] = df["pe_dt"].fillna(df["us_dt"]).fillna(df["f_dt"])
+
+        # Enriquecimiento de Datos: CSV Complementario
+        comp_path = path.parent / "institucional.csv"
+        if comp_path.exists():
+            df_comp = pd.read_csv(comp_path, encoding="utf-8-sig", dtype={"personId": str})
+            df_comp.drop(columns=["nombre", "correo", "email", "telefono"], errors="ignore", inplace=True)
+            df = pd.merge(df, df_comp, left_on="person_id", right_on="personId", how="left")
+            
         return df
 
     def _load_vehicles(self, path: Path) -> pd.DataFrame:
@@ -126,8 +188,8 @@ class FileIngestionAdapter(IngestionAdapter):
             dtype={"Número de matrícula": str},
         )
         df.columns = [c.strip() for c in df.columns]
-        # Supresión inmediata de teléfonos (Ley 21.719)
-        df.drop(columns=["Teléfono", "Lista de vehículos"], errors="ignore", inplace=True)
+        # PRIVACIDAD ESTRICTA: Supresión inmediata de PII
+        df.drop(columns=["Teléfono", "Lista de vehículos", "nombre", "correo", "email", "telefono"], errors="ignore", inplace=True)
         return df
 
     def _load_calendar(self, path: Path) -> pd.DataFrame:
@@ -139,17 +201,27 @@ class FileIngestionAdapter(IngestionAdapter):
     # Mappers por fila
     # ------------------------------------------------------------------
 
-    def _map_attendance_row(self, row: pd.Series, espacio_id: int) -> AttendanceEventDTO:
-        person_id_raw = str(row.get("personId", "")).strip()
+    def _map_attendance_row(self, row: dict, espacio_id: int) -> AttendanceEventDTO:
+        person_id_raw = str(row.get("person_id") or row.get("personId") or "").strip()
         person_id_hash = pseudonymize_person(person_id_raw) if person_id_raw else "unknown"
 
-        primera_entrada = _parse_ts(row.get("Primera entrada"))
-        ultima_salida   = _parse_ts(row.get("Última salida"))
-        time            = primera_entrada or _parse_ts(row.get("Fecha"))
-        if primera_entrada is None and time is not None:
-            primera_entrada = time
+        pe_val = row.get("pe_dt")
+        primera_entrada = _to_tz(pe_val.to_pydatetime()) if pd.notna(pe_val) else None
 
-        marcajes = int(row.get("Marcajes", 1) or 1)
+        us_val = row.get("us_dt")
+        ultima_salida = _to_tz(us_val.to_pydatetime()) if pd.notna(us_val) else None
+
+        time_val = row.get("time_dt")
+        time = _to_tz(time_val.to_pydatetime()) if pd.notna(time_val) else None
+
+        entrada_imputada = bool(primera_entrada is None and ultima_salida is not None)
+        salida_imputada = bool(ultima_salida is None and primera_entrada is not None)
+
+        marcajes_raw = row.get("marcajes")
+        try:
+            marcajes = int(marcajes_raw) if pd.notna(marcajes_raw) else 1
+        except Exception:
+            marcajes = 1
 
         permanencia_min: Optional[float] = None
         if primera_entrada and ultima_salida and ultima_salida > primera_entrada:
@@ -162,25 +234,47 @@ class FileIngestionAdapter(IngestionAdapter):
         )
         alerta_marcajes = marcajes > MARCAJES_MAX_UMBRAL
 
+        # Puertas limpias sin nan ni .0
+        door_in = row.get("door_entrada")
+        door_entrada = None
+        if pd.notna(door_in) and str(door_in).strip() not in ("", "nan", "None"):
+            door_entrada = str(int(door_in)) if isinstance(door_in, (int, float)) else str(door_in).strip().replace(".0", "")
+
+        door_out = row.get("door_salida")
+        door_salida = None
+        if pd.notna(door_out) and str(door_out).strip() not in ("", "nan", "None"):
+            door_salida = str(int(door_out)) if isinstance(door_out, (int, float)) else str(door_out).strip().replace(".0", "")
+
         return AttendanceEventDTO(
             time=time,
             espacio_id=espacio_id,
             person_id_hash=person_id_hash,
-            door_entrada=str(row.get("Door entrada", "")).strip() or None,
-            door_salida=str(row.get("Door salida", "")).strip() or None,
+            door_entrada=door_entrada,
+            door_salida=door_salida,
             primera_entrada=primera_entrada,
             ultima_salida=ultima_salida,
-            salida_imputada=ultima_salida is None,
+            salida_imputada=salida_imputada,
+            entrada_imputada=entrada_imputada,
             permanencia_min=permanencia_min,
             marcajes_totales=marcajes,
             alerta_coherencia_fechas=alerta_coherencia,
             alerta_marcajes=alerta_marcajes,
+            carrera=str(row.get("carrera", "")) or None if pd.notna(row.get("carrera")) else None,
+            facultad=str(row.get("facultad", "")) or None if pd.notna(row.get("facultad")) else None,
+            modalidad=str(row.get("modalidad", "")) or None if pd.notna(row.get("modalidad")) else None,
+            edad=int(row["edad"]) if pd.notna(row.get("edad")) else None,
+            sexo=str(row.get("sexo", "")) or None if pd.notna(row.get("sexo")) else None,
         )
 
     def _map_vehicle_row(self, row: pd.Series, espacio_id: int) -> VehicleEventDTO:
         patente_raw = str(row.get("Número de matrícula", "")).strip()
         es_unknown = not patente_raw or patente_raw.lower() == "unknown"
-        patente_hash = pseudonymize_vehicle(patente_raw) if not es_unknown else "unknown"
+        
+        if not es_unknown:
+            patente_hash, patente_cifrada = encrypt_vehicle_patente(patente_raw)
+        else:
+            patente_hash, patente_cifrada = "unknown", "unknown"
+            
         calidad = CALIDAD_UNKNOWN if es_unknown else "ok"
 
         time = _parse_ts(row.get("Hora"))
@@ -192,6 +286,7 @@ class FileIngestionAdapter(IngestionAdapter):
             time=time,
             espacio_id=espacio_id,
             patente_hash=patente_hash,
+            patente_cifrada=patente_cifrada,
             camara=str(row.get("Cámara", "")).strip(),
             direccion=direccion,
             tipo_vehiculo=str(row.get("Tipo de vehículo", "")).strip() or None,
