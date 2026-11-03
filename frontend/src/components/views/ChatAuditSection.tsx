@@ -1,14 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-} from 'recharts'
+import { InteractiveChart } from '../ui/InteractiveChart'
 import {
   Activity,
   CheckCircle2,
@@ -164,28 +156,35 @@ export const ChatAuditSection: React.FC = () => {
         </div>
 
         <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={stats?.consultas_por_hora_hoy || []}
-              margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-              <XAxis dataKey="hora" tick={{ fontSize: 11, fill: '#64748b' }} />
-              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
-              <RechartsTooltip
-                contentStyle={{
-                  backgroundColor: '#ffffff',
-                  borderRadius: '10px',
-                  border: '1px solid #e2e8f0',
-                  boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
-                  fontSize: '11px',
-                }}
-                formatter={(val: any) => [`${val} consultas`, 'Volumen']}
-              />
-              <Bar dataKey="cantidad" fill="#002B49" radius={[4, 4, 0, 0]} maxBarSize={32} />
-            </BarChart>
-          </ResponsiveContainer>
+          <InteractiveChart
+            data={[
+              {
+                x: (stats?.consultas_por_hora_hoy || []).map(d => d.hora),
+                y: (stats?.consultas_por_hora_hoy || []).map(d => d.cantidad),
+                type: 'bar',
+                marker: { color: '#002B49' },
+                hovertemplate: '<b>%{x}</b><br>Consultas: %{y}<extra></extra>',
+              },
+            ]}
+            layout={{
+              height: 250,
+              margin: { t: 15, r: 15, b: 35, l: 35 },
+              xaxis: {
+                tickfont: { size: 11, color: '#64748b' },
+                showgrid: false,
+              },
+              yaxis: {
+                tickfont: { size: 11, color: '#64748b' },
+                showgrid: true,
+                gridcolor: '#f1f5f9',
+                dtick: 1,
+              },
+            }}
+            filename="consultas_ia_hoy"
+            height={250}
+          />
         </div>
+
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">

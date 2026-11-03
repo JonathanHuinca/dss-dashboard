@@ -1,273 +1,113 @@
-import React, { useState, useEffect } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import React, { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   ShieldCheck,
-  Bot,
   Users,
   Power,
-  RefreshCw,
+  Clock,
+  Download,
+  Building,
+  UploadCloud,
+  Database,
+  Trash2,
+  Activity,
+  Calendar,
+  CalendarCheck,
   Lock,
   Mail,
-  Clock,
-  Sparkles,
-  AlertTriangle,
-  UserPlus,
-  X,
-  BookOpen,
-  Car,
-  Activity,
-  Eye,
-  EyeOff,
-  Cpu,
-  Save,
-  CheckCircle2,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
-import { api } from '../../api/client'
 import { ChatAuditSection } from './ChatAuditSection'
-
-interface RoleItem {
-  id: number
-  nombre: string
-  descripcion?: string
-}
-
-interface UserItem {
-  id: number
-  email: string
-  nombre_completo: string
-  is_active: boolean
-  created_at: string
-  roles: RoleItem[]
-  allowed_datasets: string[]
-}
-
-interface GlobalConfig {
-  id: number
-  ia_asistente_activo: boolean
-  active_provider?: string
-  default_model?: string
-  has_api_key?: boolean
-  masked_api_key?: string
-  updated_at?: string
-}
-
+import { DownloadAuditSection } from './DownloadAuditSection'
+import { HorariosSection } from './HorariosSection'
+import { AforoSection } from './AforoSection'
+import { IngestionAuditSection } from './IngestionAuditSection'
+import { IngestionWizardModal } from '../ingestion/IngestionWizardModal'
+import { PurgaDatosSection } from './PurgaDatosSection'
+import { UsuariosSection } from './admin/UsuariosSection'
+import { TareasProgramadasSection } from './admin/TareasProgramadasSection'
+import { CalendarioSection } from './admin/CalendarioSection'
 
 export const AdminDashboard: React.FC = () => {
-  const { isAuthenticated, isSuperAdmin, userRole, loginWithCredentials, logout } = useAuth()
+  const {
+    isAuthenticated,
+    isSuperAdmin,
+    isDirectivo,
+    canAccessAdmin,
+    loginWithCredentials,
+    logout,
+  } = useAuth()
+  const isSuperAdminOrDirectivo = isSuperAdmin || isDirectivo
   const queryClient = useQueryClient()
 
-  const [adminTab, setAdminTab] = useState<'usuarios' | 'auditoria'>('usuarios')
-  const [emailInput, setEmailInput] = useState('admin@uct.cl')
-  const [passwordInput, setPasswordInput] = useState('PasswordSuperSegura123!')
+  const [adminTab, setAdminTab] = useState<
+    'usuarios' | 'tareas' | 'calendario' | 'aforo' | 'horarios' | 'descargas' | 'auditoria' | 'ingesta' | 'purga'
+  >(isSuperAdminOrDirectivo ? 'usuarios' : 'aforo')
+
+  const [emailInput, setEmailInput] = useState('')
+  const [passwordInput, setPasswordInput] = useState('')
   const [loginError, setLoginError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-
-
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newEmail, setNewEmail] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [newRole, setNewRole] = useState('Guardia_Seguridad')
-  const [newDatasets, setNewDatasets] = useState<string[]>(['biblioteca', 'estacionamiento'])
-  const [modalError, setModalError] = useState<string | null>(null)
-
-
-  const [providerInput, setProviderInput] = useState('gemini')
-  const [modelInput, setModelInput] = useState('gemini-2.5-flash')
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  const [showApiKey, setShowApiKey] = useState(false)
-  const [llmSuccessMsg, setLlmSuccessMsg] = useState<string | null>(null)
-  const [llmErrorMsg, setLlmErrorMsg] = useState<string | null>(null)
-
-
-  const {
-    data: configData,
-    isLoading: isConfigLoading,
-    isFetching: isConfigFetching,
-    refetch: refetchConfig,
-  } = useQuery<GlobalConfig>({
-    queryKey: ['admin-global-config'],
-    queryFn: async () => {
-      const res = await api.get('/config')
-      return res.data
-    },
-    enabled: isSuperAdmin,
-  })
-
-  const {
-    data: usersList = [],
-    isLoading: isUsersLoading,
-    isFetching: isUsersFetching,
-    refetch: refetchUsers,
-  } = useQuery<UserItem[]>({
-    queryKey: ['admin-users-list'],
-    queryFn: async () => {
-      const res = await api.get('/auth/users')
-      return res.data
-    },
-    enabled: isSuperAdmin,
-  })
-
-  const toggleMutation = useMutation({
-    mutationFn: async () => {
-      const res = await api.put('/config/toggle-ia')
-      return res.data
-    },
-    onSuccess: (updated) => {
-      queryClient.setQueryData(['admin-global-config'], updated)
-      queryClient.invalidateQueries({ queryKey: ['admin-global-config'] })
-    },
-  })
-
-  useEffect(() => {
-    if (configData) {
-      if (configData.active_provider) setProviderInput(configData.active_provider)
-      if (configData.default_model) setModelInput(configData.default_model)
-    }
-  }, [configData])
-
-  const updateLlmMutation = useMutation({
-    mutationFn: async (payload: { provider: string; default_model: string; api_key: string }) => {
-      const res = await api.put('/config/llm-provider', payload)
-      return res.data
-    },
-    onSuccess: (updated) => {
-      queryClient.setQueryData(['admin-global-config'], updated)
-      queryClient.invalidateQueries({ queryKey: ['admin-global-config'] })
-      setApiKeyInput('')
-      setLlmErrorMsg(null)
-      setLlmSuccessMsg('Configuración de motor LLM y API Key cifrada actualizada correctamente.')
-      setTimeout(() => setLlmSuccessMsg(null), 4000)
-    },
-    onError: (err: any) => {
-      setLlmSuccessMsg(null)
-      setLlmErrorMsg(err.response?.data?.detail || 'Error al actualizar el proveedor de LLM')
-    },
-  })
-
-
-  const createUserMutation = useMutation({
-    mutationFn: async (payload: {
-      nombre_completo: string
-      email: string
-      password: string
-      roles: string[]
-      allowed_datasets: string[]
-    }) => {
-      const res = await api.post('/auth/register', payload)
-      return res.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-users-list'] })
-      setIsModalOpen(false)
-      setNewName('')
-      setNewEmail('')
-      setNewPassword('')
-      setNewRole('Guardia_Seguridad')
-      setNewDatasets(['biblioteca', 'estacionamiento'])
-      setModalError(null)
-    },
-    onError: (err: any) => {
-      setModalError(err.response?.data?.detail || 'Error al registrar el usuario')
-    },
-  })
-
-  const toggleUserStatusMutation = useMutation({
-    mutationFn: async ({ userId, isActive }: { userId: number; isActive: boolean }) => {
-      const res = await api.patch(`/users/${userId}/status`, { is_active: isActive })
-      return res.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-users-list'] })
-    },
-  })
-
-  const handleDatasetCheckbox = (datasetKey: string) => {
-    setNewDatasets((prev) =>
-      prev.includes(datasetKey)
-        ? prev.filter((d) => d !== datasetKey)
-        : [...prev, datasetKey]
-    )
-  }
+  const [isIngestionModalOpen, setIsIngestionModalOpen] = useState(false)
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setLoginError(null)
     setIsSubmitting(true)
-    const ok = await loginWithCredentials(emailInput, passwordInput)
-    setIsSubmitting(false)
-    if (!ok) {
-      setLoginError('Credenciales incorrectas o permisos denegados.')
+    setLoginError(null)
+    try {
+      await loginWithCredentials(emailInput, passwordInput)
+    } catch (err: any) {
+      setLoginError(err?.response?.data?.detail || 'Credenciales administrativas inválidas.')
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
-  if (!isAuthenticated || !isSuperAdmin) {
+  // Vista de Login Administrativo si no cuenta con sesión o privilegios
+  if (!isAuthenticated || !canAccessAdmin) {
     return (
-      <div className="max-w-md mx-auto my-16 px-4">
-        <div className="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-          <div className="bg-gradient-to-r from-uct-blue-primary to-uct-blue-secondary p-6 text-white text-center">
-            <div className="w-14 h-14 bg-white/10 rounded-2xl mx-auto flex items-center justify-center mb-3 border border-white/20">
-              <Lock size={28} className="text-uct-gold" />
+      <div className="min-h-[75vh] flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-xl p-8 space-y-6">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-uct-blue-primary/10 flex items-center justify-center text-uct-blue-primary mx-auto shadow-2xs">
+              <ShieldCheck size={28} />
             </div>
-            <h2 className="text-lg font-bold">Acceso a Panel de Administración</h2>
-            <p className="text-xs text-white/70 mt-1">
-              Restringido exclusivamente para el rol <span className="text-uct-gold font-semibold">SuperAdmin</span>
+            <h1 className="text-xl font-bold text-slate-900">Panel de Administración DSS UCT</h1>
+            <p className="text-xs text-slate-500">
+              Acceso restringido para Administradores de Sistema y Directores de Recinto.
             </p>
           </div>
 
-          <form onSubmit={handleLoginSubmit} className="p-6 space-y-4">
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
             {loginError && (
-              <div className="flex items-center gap-2 p-3 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg">
-                <AlertTriangle size={16} className="shrink-0" />
-                <span>{loginError}</span>
+              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold rounded-xl">
+                {loginError}
               </div>
             )}
-
-            {isAuthenticated && !isSuperAdmin && (
-              <div className="flex items-center justify-between p-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg">
-                <span>Sesión activa como: <strong>{userRole}</strong></span>
-                <button
-                  type="button"
-                  onClick={logout}
-                  className="text-xs font-semibold text-uct-blue-primary underline hover:text-uct-blue-secondary"
-                >
-                  Cerrar Sesión
-                </button>
-              </div>
-            )}
-
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Correo Electrónico
-              </label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Correo Institucional</label>
               <div className="relative">
-                <Mail size={16} className="absolute left-3 top-2.5 text-slate-400" />
+                <Mail size={16} className="absolute left-3.5 top-3 text-slate-400" />
                 <input
                   type="email"
                   required
                   value={emailInput}
                   onChange={(e) => setEmailInput(e.target.value)}
-                  placeholder="admin@uct.cl"
-                  className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary"
+                  className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:outline-none"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Contraseña
-              </label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Contraseña</label>
               <div className="relative">
-                <Lock size={16} className="absolute left-3 top-2.5 text-slate-400" />
+                <Lock size={16} className="absolute left-3.5 top-3 text-slate-400" />
                 <input
                   type="password"
                   required
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary"
+                  className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:outline-none"
                 />
               </div>
             </div>
@@ -275,9 +115,9 @@ export const AdminDashboard: React.FC = () => {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full py-2.5 bg-uct-blue-primary hover:bg-uct-blue-secondary text-white font-semibold text-sm rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
+              className="w-full py-2.5 bg-uct-blue-primary hover:bg-uct-blue-hover text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer disabled:opacity-50"
             >
-              {isSubmitting ? 'Verificando...' : 'Iniciar Sesión como SuperAdmin'}
+              {isSubmitting ? 'Autenticando...' : 'Iniciar Sesión'}
             </button>
           </form>
         </div>
@@ -285,629 +125,243 @@ export const AdminDashboard: React.FC = () => {
     )
   }
 
-  const isAiActive = configData?.ia_asistente_activo ?? true
-  const filteredUsers = usersList.filter(
-    (u) =>
-      u.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.nombre_completo.toLowerCase().includes(searchQuery.toLowerCase())
-  )
-
-  const getRoleBadge = (roleName: string) => {
-    switch (roleName) {
-      case 'SuperAdmin':
-        return (
-          <span
-            key={roleName}
-            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-200"
-          >
-            <ShieldCheck size={12} />
-            SuperAdmin
-          </span>
-        )
-      case 'Directivo':
-        return (
-          <span
-            key={roleName}
-            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-200"
-          >
-            Directivo
-          </span>
-        )
-      case 'Guardia_Seguridad':
-        return (
-          <span
-            key={roleName}
-            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200"
-          >
-            Guardia
-          </span>
-        )
-      default:
-        return (
-          <span
-            key={roleName}
-            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800 border border-slate-200"
-          >
-            {roleName}
-          </span>
-        )
-    }
-  }
-
   return (
-    <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+    <div className="max-w-7xl mx-auto px-6 py-8 space-y-6">
+      {/* Barra Superior de Control Administrativo */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold text-uct-gold uppercase tracking-wider">
             <ShieldCheck size={15} />
-            <span>Panel de Control Administrativo</span>
+            <span>Panel de Administración</span>
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mt-1">
-            Gestión Global del Sistema & RBAC
-          </h1>
+          <h1 className="text-2xl font-bold text-slate-900 mt-1">Gestión Global del Sistema & RBAC</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Universidad Católica de Temuco — Administración de accesos, roles y servicios analíticos
+            Universidad Católica de Temuco — Administración de aforos, tareas automáticas y credenciales.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsIngestionModalOpen(true)}
+            className="flex items-center gap-2 bg-gradient-to-r from-uct-blue-primary to-blue-700 hover:from-blue-700 hover:to-uct-blue-primary text-white font-bold text-xs px-3.5 py-2 rounded-xl hover:shadow-md transition cursor-pointer shadow-xs"
+            title="Carga manual de archivos como canal secundario de contingencia"
+          >
+            <UploadCloud size={15} />
+            <span>Carga Manual de Respaldo</span>
+          </button>
+
           <div className="flex items-center gap-2 bg-white px-3.5 py-1.5 rounded-xl border border-slate-200 shadow-xs">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
             <span className="text-xs font-medium text-slate-700">Rol:</span>
-            <span className="text-xs font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-md border border-purple-200">
-              SuperAdmin
+            <span
+              className={`text-xs font-bold px-2 py-0.5 rounded-md border ${
+                isSuperAdmin
+                  ? 'text-purple-700 bg-purple-50 border-purple-200'
+                  : 'text-blue-700 bg-blue-50 border-blue-200'
+              }`}
+            >
+              {isSuperAdmin ? 'SuperAdmin' : 'Director de Recinto'}
             </span>
           </div>
+
           <button
+            type="button"
             onClick={logout}
-            className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-rose-600 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-200 rounded-xl transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-xl transition cursor-pointer"
           >
-            Cerrar Sesión
+            <Power size={14} />
+            <span>Cerrar Sesión</span>
           </button>
         </div>
       </div>
 
-      <div className="flex items-center gap-4 border-b border-slate-200">
-
-        <button
-          onClick={() => setAdminTab('usuarios')}
-          className={`flex items-center gap-2 pb-3 px-1 text-sm font-bold border-b-2 transition-colors cursor-pointer ${
-            adminTab === 'usuarios'
-              ? 'border-uct-blue-primary text-uct-blue-primary'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Users size={16} />
-          <span>Gestión de Usuarios & Control IA</span>
-        </button>
-        <button
-          onClick={() => setAdminTab('auditoria')}
-          className={`flex items-center gap-2 pb-3 px-1 text-sm font-bold border-b-2 transition-colors cursor-pointer ${
-            adminTab === 'auditoria'
-              ? 'border-uct-blue-primary text-uct-blue-primary'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Activity size={16} />
-          <span>Auditoría IA</span>
-        </button>
-      </div>
-
-      {adminTab === 'auditoria' ? (
-        <ChatAuditSection />
-      ) : (
-        <>
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6">
-
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start gap-4">
-            <div
-              className={`w-12 h-12 rounded-xl flex items-center justify-center border transition-colors ${
-                isAiActive
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                  : 'bg-rose-50 border-rose-200 text-rose-600'
-              }`}
-            >
-              <Bot size={26} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2.5">
-                <h2 className="text-base font-bold text-slate-900">Control de IA</h2>
-                <span
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                    isAiActive
-                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                      : 'bg-rose-100 text-rose-800 border border-rose-200'
-                  }`}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      isAiActive ? 'bg-emerald-600 animate-pulse' : 'bg-rose-600'
-                    }`}
-                  />
-                  {isAiActive ? 'Servicio Activo' : 'Servicio Desactivado'}
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-1 max-w-xl">
-                Interruptor maestro para habilitar o suspender temporalmente el Asistente Analítico Gemini en toda la plataforma. Cuando se desactiva, cualquier consulta al endpoint devolverá un código de estado 403 Forbidden.
-              </p>
-              {configData?.updated_at && (
-                <div className="flex items-center gap-1 text-[11px] text-slate-400 mt-2">
-                  <Clock size={12} />
-                  <span>Última modificación: {new Date(configData.updated_at).toLocaleString()}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4 self-end sm:self-center">
-            <button
-              onClick={() => toggleMutation.mutate()}
-              disabled={isConfigLoading || toggleMutation.isPending}
-              aria-label="Alternar estado de IA"
-              className={`relative inline-flex h-8 w-16 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/40 focus:ring-offset-2 disabled:opacity-50 ${
-                isAiActive ? 'bg-emerald-500' : 'bg-slate-300'
-              }`}
-            >
-              <span
-                className={`pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out flex items-center justify-center ${
-                  isAiActive ? 'translate-x-8 text-emerald-600' : 'translate-x-0 text-slate-400'
-                }`}
-              >
-                <Power size={14} />
-              </span>
-            </button>
-            <button
-              onClick={() => refetchConfig()}
-              disabled={isConfigFetching}
-              title="Actualizar estado"
-              className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
-            >
-              <RefreshCw size={16} className={isConfigFetching ? 'animate-spin' : ''} />
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-6 pt-6 border-t border-slate-200">
-          <div className="flex items-center gap-2 mb-2">
-            <Cpu size={18} className="text-uct-blue-primary" />
-            <h3 className="text-sm font-bold text-slate-900">Motor de Inteligencia Artificial (Patrón Adapter)</h3>
-          </div>
-          <p className="text-xs text-slate-500 mb-4">
-            Desacoplamiento del proveedor de IA y gestión de API Key en caliente con cifrado simétrico Fernet.
-          </p>
-
-          {llmSuccessMsg && (
-            <div className="mb-4 flex items-center gap-2 p-3 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg">
-              <CheckCircle2 size={16} className="shrink-0" />
-              <span>{llmSuccessMsg}</span>
-            </div>
-          )}
-
-          {llmErrorMsg && (
-            <div className="mb-4 flex items-center gap-2 p-3 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-lg">
-              <AlertTriangle size={16} className="shrink-0" />
-              <span>{llmErrorMsg}</span>
-            </div>
-          )}
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (!apiKeyInput.trim()) {
-                setLlmErrorMsg('Ingrese una API Key válida')
-                return
-              }
-              updateLlmMutation.mutate({
-                provider: providerInput,
-                default_model: modelInput,
-                api_key: apiKeyInput,
-              })
-            }}
-            className="grid grid-cols-1 md:grid-cols-3 gap-4"
+      {/* Navegación por Pestañas del Panel */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200">
+        {isSuperAdminOrDirectivo && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('usuarios')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'usuarios'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
           >
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Proveedor de IA
-              </label>
-              <select
-                value={providerInput}
-                onChange={(e) => {
-                  setProviderInput(e.target.value)
-                  if (e.target.value === 'gemini') {
-                    setModelInput('gemini-2.5-flash')
-                  } else if (e.target.value === 'openai') {
-                    setModelInput('gpt-4o-mini')
-                  }
-                }}
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary text-slate-800"
-              >
-                <option value="gemini">Google Gemini (Oficial)</option>
-                <option value="openai">OpenAI (Adapter)</option>
-              </select>
-            </div>
+            <Users size={16} />
+            <span>Usuarios & IA</span>
+          </button>
+        )}
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Modelo Predeterminado
-              </label>
-              <input
-                type="text"
-                required
-                value={modelInput}
-                onChange={(e) => setModelInput(e.target.value)}
-                placeholder="ej. gemini-2.5-flash"
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary font-mono text-slate-800"
-              />
-            </div>
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('tareas')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'tareas'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Clock size={16} />
+            <span>Tareas Programadas</span>
+          </button>
+        )}
 
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-semibold text-slate-700">
-                  API Key Cifrada (Fernet)
-                </label>
-                {configData?.has_api_key && (
-                  <span className="text-[10px] text-emerald-700 font-medium">
-                    Activa: {configData.masked_api_key}
-                  </span>
-                )}
-              </div>
-              <div className="relative">
-                <input
-                  type={showApiKey ? 'text' : 'password'}
-                  required={!configData?.has_api_key}
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder={configData?.has_api_key ? '•••• Ingrese nueva clave para rotar ••••' : 'AIzaSy...'}
-                  className="w-full pl-3 pr-10 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowApiKey(!showApiKey)}
-                  className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                >
-                  {showApiKey ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-              </div>
-            </div>
+        <button
+          type="button"
+          onClick={() => setAdminTab('calendario')}
+          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+            adminTab === 'calendario'
+              ? 'border-uct-blue-primary text-uct-blue-primary'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <CalendarCheck size={16} />
+          <span>Calendario Académico</span>
+        </button>
 
-            <div className="md:col-span-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-              <p className="text-[11px] text-slate-400 flex items-center gap-1">
-                <Lock size={12} className="text-uct-gold shrink-0" />
-                <span>Almacenada con cifrado simétrico AES-128/Fernet en PostgreSQL. Inyección dinámica en caliente.</span>
-              </p>
-              <button
-                type="submit"
-                disabled={updateLlmMutation.isPending || !apiKeyInput.trim()}
-                className="flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-uct-blue-primary hover:bg-uct-blue-secondary rounded-lg transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
-              >
-                <Save size={13} />
-                <span>{updateLlmMutation.isPending ? 'Guardando en caliente...' : 'Actualizar Proveedor & Key'}</span>
-              </button>
-            </div>
-          </form>
-        </div>
+        <button
+          type="button"
+          onClick={() => setAdminTab('aforo')}
+          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+            adminTab === 'aforo'
+              ? 'border-uct-blue-primary text-uct-blue-primary'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Building size={16} />
+          <span>Capacidad y Aforo</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setAdminTab('horarios')}
+          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+            adminTab === 'horarios'
+              ? 'border-uct-blue-primary text-uct-blue-primary'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Calendar size={16} />
+          <span>Horarios de Atención</span>
+        </button>
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('descargas')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'descargas'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Download size={16} />
+            <span>Auditoría de Descargas</span>
+          </button>
+        )}
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('auditoria')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'auditoria'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Activity size={16} />
+            <span>Auditoría IA</span>
+          </button>
+        )}
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('ingesta')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'ingesta'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Database size={16} />
+            <span>Historial de Ingesta</span>
+          </button>
+        )}
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('purga')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'purga'
+                ? 'border-rose-600 text-rose-600'
+                : 'border-transparent text-slate-500 hover:text-rose-600'
+            }`}
+          >
+            <Trash2 size={16} />
+            <span>Purga y Reseteo</span>
+          </button>
+        )}
       </div>
 
-
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-uct-blue-primary/10 border border-uct-blue-primary/20 flex items-center justify-center text-uct-blue-primary">
-              <Users size={20} />
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-slate-900">Usuarios y Roles Registrados</h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Listado institucional con control de acceso por datasets (Least Privilege)
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <input
-              type="text"
-              placeholder="Buscar por nombre o correo..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="px-3.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/20 focus:border-uct-blue-primary w-56"
-            />
-            <button
-              onClick={() => {
-                setModalError(null)
-                setIsModalOpen(true)
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-uct-blue-primary hover:bg-uct-blue-secondary rounded-lg transition-colors shadow-xs cursor-pointer"
-            >
-              <UserPlus size={14} />
-              <span>Nuevo Usuario</span>
-            </button>
-            <button
-              onClick={() => refetchUsers()}
-              disabled={isUsersFetching}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-            >
-              <RefreshCw size={13} className={isUsersFetching ? 'animate-spin' : ''} />
-              <span>Actualizar</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
-                <th className="py-3 px-6">ID</th>
-                <th className="py-3 px-6">Usuario</th>
-                <th className="py-3 px-6">Correo Institucional</th>
-                <th className="py-3 px-6">Roles Asignados</th>
-                <th className="py-3 px-6">Datasets Permitidos</th>
-                <th className="py-3 px-6">Estado / Acceso</th>
-                <th className="py-3 px-6">Fecha Registro</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 text-xs">
-              {isUsersLoading ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-400">
-                    Cargando usuarios del sistema...
-                  </td>
-                </tr>
-              ) : filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-400">
-                    No se encontraron usuarios registrados.
-                  </td>
-                </tr>
-              ) : (
-                filteredUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-slate-50/70 transition-colors">
-                    <td className="py-3.5 px-6 font-mono font-medium text-slate-500">
-                      #{user.id}
-                    </td>
-                    <td className="py-3.5 px-6 font-semibold text-slate-900">
-                      {user.nombre_completo}
-                    </td>
-                    <td className="py-3.5 px-6 text-slate-600 font-mono text-[11px]">
-                      {user.email}
-                    </td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex flex-wrap gap-1.5">
-                        {user.roles && user.roles.length > 0
-                          ? user.roles.map((r) => getRoleBadge(r.nombre))
-                          : <span className="text-slate-400 italic">Sin roles</span>}
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex flex-wrap gap-1.5">
-                        {user.allowed_datasets?.includes('biblioteca') && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-                            <BookOpen size={10} />
-                            Biblioteca
-                          </span>
-                        )}
-                        {user.allowed_datasets?.includes('estacionamiento') && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <Car size={10} />
-                            Estacionamiento
-                          </span>
-                        )}
-                        {(!user.allowed_datasets || user.allowed_datasets.length === 0) && (
-                          <span className="text-slate-400 italic text-[11px]">Ninguno</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={user.is_active}
-                          disabled={toggleUserStatusMutation.isPending || user.email === 'admin@uct.cl'}
-                          onClick={() =>
-                            toggleUserStatusMutation.mutate({
-                              userId: user.id,
-                              isActive: !user.is_active,
-                            })
-                          }
-                          title={
-                            user.email === 'admin@uct.cl'
-                              ? 'No se puede desactivar al SuperAdmin principal'
-                              : user.is_active
-                              ? 'Desactivar usuario'
-                              : 'Activar usuario'
-                          }
-                          className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/40 disabled:opacity-40 disabled:cursor-not-allowed ${
-                            user.is_active ? 'bg-emerald-500' : 'bg-slate-300'
-                          }`}
-                        >
-                          <span
-                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                              user.is_active ? 'translate-x-5' : 'translate-x-0'
-                            }`}
-                          />
-                        </button>
-                        <span
-                          className={`text-[11px] font-semibold ${
-                            user.is_active ? 'text-emerald-700' : 'text-slate-400'
-                          }`}
-                        >
-                          {user.is_active ? 'Activo' : 'Inactivo'}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-6 text-slate-500 text-[11px]">
-                      {new Date(user.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-        </>
-      )}
-
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="bg-gradient-to-r from-uct-blue-primary to-uct-blue-secondary p-5 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center border border-white/20">
-                  <UserPlus size={18} className="text-uct-gold" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold">Registrar Nuevo Usuario</h3>
-                  <p className="text-[11px] text-white/70">Gestión de accesos y datasets (Least Privilege)</p>
-                </div>
+      {/* Contenido de la Pestaña Activa */}
+      {adminTab === 'usuarios' && isSuperAdminOrDirectivo ? (
+        <UsuariosSection />
+      ) : adminTab === 'tareas' && isSuperAdmin ? (
+        <TareasProgramadasSection />
+      ) : adminTab === 'calendario' ? (
+        <CalendarioSection />
+      ) : adminTab === 'aforo' ? (
+        <AforoSection />
+      ) : adminTab === 'horarios' ? (
+        <HorariosSection />
+      ) : adminTab === 'descargas' && isSuperAdmin ? (
+        <DownloadAuditSection />
+      ) : adminTab === 'auditoria' && isSuperAdmin ? (
+        <ChatAuditSection />
+      ) : adminTab === 'ingesta' && isSuperAdmin ? (
+        <div className="space-y-4">
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-700">
+                <Database size={18} />
               </div>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="text-white/70 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                setModalError(null)
-                if (newDatasets.length === 0) {
-                  setModalError('Debe seleccionar al menos un módulo de dataset permitido.')
-                  return
-                }
-                createUserMutation.mutate({
-                  nombre_completo: newName,
-                  email: newEmail,
-                  password: newPassword,
-                  roles: [newRole],
-                  allowed_datasets: newDatasets,
-                })
-              }}
-              className="p-5 space-y-4"
-            >
-              {modalError && (
-                <div className="flex items-center gap-2 p-2.5 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg">
-                  <AlertTriangle size={15} className="shrink-0" />
-                  <span>{modalError}</span>
-                </div>
-              )}
-
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Nombre Completo
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="Ej. Juan Pérez"
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Correo Institucional
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  placeholder="usuario@uct.cl"
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Contraseña
-                </label>
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Mínimo 6 caracteres"
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Rol de Acceso (RBAC)
-                </label>
-                <select
-                  value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/30 focus:border-uct-blue-primary"
-                >
-                  <option value="Guardia_Seguridad">Guardia de Seguridad</option>
-                  <option value="Directivo">Directivo</option>
-                  <option value="SuperAdmin">SuperAdmin</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Módulos / Datasets Permitidos
-                </label>
-                <div className="space-y-2 border border-slate-200 rounded-lg p-3 bg-slate-50/50">
-                  <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newDatasets.includes('biblioteca')}
-                      onChange={() => handleDatasetCheckbox('biblioteca')}
-                      className="rounded border-slate-300 text-uct-blue-primary focus:ring-uct-blue-primary/40 h-4 w-4"
-                    />
-                    <span className="flex items-center gap-1.5 font-medium">
-                      <BookOpen size={14} className="text-blue-600" />
-                      Biblioteca CSF
-                    </span>
-                  </label>
-                  <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newDatasets.includes('estacionamiento')}
-                      onChange={() => handleDatasetCheckbox('estacionamiento')}
-                      className="rounded border-slate-300 text-uct-blue-primary focus:ring-uct-blue-primary/40 h-4 w-4"
-                    />
-                    <span className="flex items-center gap-1.5 font-medium">
-                      <Car size={14} className="text-emerald-600" />
-                      Estacionamiento CSF
-                    </span>
-                  </label>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Principio de menor privilegio: el usuario solo visualizará las pestañas y consultará datos autorizados.
+                <h4 className="text-xs font-bold uppercase tracking-wider text-amber-900">
+                  Fuente Activa de Producción: API Smart Campus UCT
+                </h4>
+                <p className="text-xs text-amber-800">
+                  La ingesta institucional de torniquetes y estacionamientos se sincroniza automáticamente cada 1 hora. La carga manual por archivo CSV/Excel está clasificada como canal secundario de contingencia y carga histórica.
                 </p>
               </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={createUserMutation.isPending}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-uct-blue-primary hover:bg-uct-blue-secondary rounded-lg transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  {createUserMutation.isPending ? 'Guardando...' : 'Crear Usuario'}
-                </button>
-              </div>
-            </form>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsIngestionModalOpen(true)}
+              className="flex items-center gap-2 bg-gradient-to-r from-uct-blue-primary to-blue-700 hover:from-blue-700 hover:to-uct-blue-primary text-white font-bold text-xs px-3.5 py-2 rounded-xl hover:shadow-md transition cursor-pointer shadow-xs"
+            >
+              <UploadCloud size={15} />
+              <span>Carga Manual de Respaldo (.csv/.xlsx)</span>
+            </button>
           </div>
+          <IngestionAuditSection />
         </div>
-      )}
+      ) : adminTab === 'purga' && isSuperAdmin ? (
+        <PurgaDatosSection />
+      ) : null}
+
+      {/* Modal Wizard de Ingesta Asistida (Canal Secundario de Respaldo) */}
+      <IngestionWizardModal
+        isOpen={isIngestionModalOpen}
+        onClose={() => setIsIngestionModalOpen(false)}
+        onIngestionCompleted={() => {
+          queryClient.invalidateQueries()
+        }}
+      />
     </div>
   )
 }
