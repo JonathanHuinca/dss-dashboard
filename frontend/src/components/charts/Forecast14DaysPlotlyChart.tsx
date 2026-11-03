@@ -1,6 +1,7 @@
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { Forecast14DayItem } from '../../api/client'
 import { Data } from 'plotly.js-dist-min'
+import { formatDayMonthSpanish } from '../../types/dateRange'
 
 interface Props {
   data: Forecast14DayItem[]
@@ -10,12 +11,15 @@ interface Props {
 export function Forecast14DaysPlotlyChart({ data, title = 'Proyección Cuantitativa de Demanda (Próximos 14 Días)' }: Props) {
   const chartData: Data[] = [
     {
-      x: data.map(d => `${d.fecha.substring(5)} (${d.dia_nombre.substring(0, 3)})`),
+      x: data.map(d => `${formatDayMonthSpanish(d.fecha)} (${d.dia_nombre.substring(0, 3)})`),
       y: data.map(d => d.demanda_estimada),
       type: 'bar',
       marker: {
         color: data.map(d => d.color),
       },
+      text: data.map(d => d.demanda_estimada > 0 ? d.demanda_estimada.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 10, color: '#ffffff' },
       customdata: data.map(d => d.hito),
       hovertemplate: '<b>%{x}</b><br>Estimación: %{y:,} personas<br>Hito: %{customdata}<extra></extra>',
     },
@@ -23,8 +27,17 @@ export function Forecast14DaysPlotlyChart({ data, title = 'Proyección Cuantitat
 
   const layout = {
     title: { text: title },
-    xaxis: { title: { text: 'Fecha y Día de la Semana' }, tickangle: -45 },
-    yaxis: { title: { text: 'Demanda Proyectada (HistGradientBoosting)' } },
+    margin: { t: 40, r: 25, b: 85, l: 55 },
+    xaxis: {
+      title: { text: 'Fecha y Día de la Semana' },
+      automargin: true,
+      tickangle: -45,
+      tickfont: { size: 10, color: '#475569' },
+    },
+    yaxis: {
+      title: { text: 'Demanda Proyectada (HistGradientBoosting)' },
+      automargin: true,
+    },
   }
 
   return (

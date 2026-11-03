@@ -1,6 +1,7 @@
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { MonthlyVolumePoint } from '../../api/client'
 import { Data } from 'plotly.js-dist-min'
+import { formatMonthYearSpanish } from '../../types/dateRange'
 
 interface Props {
   data: MonthlyVolumePoint[]
@@ -9,16 +10,19 @@ interface Props {
 export function MonthlyVolumePlotlyChart({ data }: Props) {
   const chartData: Data[] = [
     {
-      x: data.map(d => d.mes),
+      x: data.map(d => formatMonthYearSpanish(d.mes)),
       y: data.map(d => d.total_asistencias),
       name: 'Volumen Total',
       type: 'bar',
       marker: { color: '#002B49' },
+      text: data.map(d => d.total_asistencias > 0 ? d.total_asistencias.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 10, color: '#ffffff' },
       yaxis: 'y',
       hovertemplate: '<b>%{x}</b><br>Total Mes: %{y:,} personas<extra></extra>',
     },
     {
-      x: data.map(d => d.mes),
+      x: data.map(d => formatMonthYearSpanish(d.mes)),
       y: data.map(d => d.promedio_diario),
       name: 'Promedio Diario',
       type: 'scatter',
@@ -32,15 +36,23 @@ export function MonthlyVolumePlotlyChart({ data }: Props) {
 
   const layout = {
     title: { text: 'Afluencia Mensual y Promedio por Jornada' },
-    xaxis: { title: { text: 'Mes' } },
+    xaxis: {
+      title: { text: 'Mes' },
+      automargin: true,
+      tickangle: -25,
+      tickfont: { size: 11, color: '#475569' },
+    },
     yaxis: {
       title: { text: 'Marcajes Totales del Mes' },
+      automargin: true,
     },
     yaxis2: {
       title: { text: 'Promedio Diario (Personas/Día)' },
       overlaying: 'y' as const,
       side: 'right' as const,
+      automargin: true,
     },
+    margin: { t: 40, r: 50, b: 65, l: 60 },
   }
 
   return (

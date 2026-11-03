@@ -1,6 +1,7 @@
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { VehicleDailyPoint } from '../../api/client'
 import { Data } from 'plotly.js-dist-min'
+import { formatDayMonthSpanish } from '../../types/dateRange'
 
 interface Props {
   data: VehicleDailyPoint[]
@@ -9,7 +10,7 @@ interface Props {
 export function VehicleDailyPlotlyChart({ data }: Props) {
   const chartData: Data[] = [
     {
-      x: data.map(d => d.fecha),
+      x: data.map(d => formatDayMonthSpanish(d.fecha)),
       y: data.map(d => d.entradas),
       name: 'Entradas Vehiculares',
       type: 'scatter',
@@ -18,7 +19,7 @@ export function VehicleDailyPlotlyChart({ data }: Props) {
       hovertemplate: '<b>%{x}</b><br>Entradas: %{y:,}<extra></extra>',
     },
     {
-      x: data.map(d => d.fecha),
+      x: data.map(d => formatDayMonthSpanish(d.fecha)),
       y: data.map(d => d.salidas),
       name: 'Salidas Vehiculares',
       type: 'scatter',
@@ -27,7 +28,7 @@ export function VehicleDailyPlotlyChart({ data }: Props) {
       hovertemplate: '<b>%{x}</b><br>Salidas: %{y:,}<extra></extra>',
     },
     {
-      x: data.map(d => d.fecha),
+      x: data.map(d => formatDayMonthSpanish(d.fecha)),
       y: data.map(d => d.vehiculos_unicos),
       name: 'Vehículos Únicos',
       type: 'scatter',
@@ -39,8 +40,17 @@ export function VehicleDailyPlotlyChart({ data }: Props) {
 
   const layout = {
     title: { text: 'Evolución Diaria de Accesos Vehiculares (Serie Temporal)' },
-    xaxis: { title: { text: 'Fecha' } },
-    yaxis: { title: { text: 'Cantidad de Vehículos' } },
+    margin: { t: 35, r: 25, b: 65, l: 55 },
+    xaxis: {
+      title: { text: 'Fecha' },
+      automargin: true,
+      tickangle: -45,
+      tickfont: { size: 10, color: '#475569' },
+    },
+    yaxis: {
+      title: { text: 'Cantidad de Vehículos' },
+      automargin: true,
+    },
   }
 
   return (

@@ -15,6 +15,9 @@ export function CameraStatsPlotlyChart({ data }: Props) {
       type: 'bar',
       orientation: 'h',
       marker: { color: '#003865' },
+      text: data.map(d => d.entradas > 0 ? d.entradas.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 9, color: '#ffffff' },
       hovertemplate: '<b>%{y}</b><br>Entradas: %{x:,}<extra></extra>',
     },
     {
@@ -24,6 +27,9 @@ export function CameraStatsPlotlyChart({ data }: Props) {
       type: 'bar',
       orientation: 'h',
       marker: { color: '#C59B27' },
+      text: data.map(d => d.salidas > 0 ? d.salidas.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 9, color: '#ffffff' },
       hovertemplate: '<b>%{y}</b><br>Salidas: %{x:,}<extra></extra>',
     },
     {
@@ -33,14 +39,18 @@ export function CameraStatsPlotlyChart({ data }: Props) {
       type: 'bar',
       orientation: 'h',
       marker: { color: '#DC2626' },
+      text: data.map(d => d.lecturas_fallidas > 0 ? d.lecturas_fallidas.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 9, color: '#ffffff' },
       hovertemplate: '<b>%{y}</b><br>Fallidas: %{x:,}<extra></extra>',
     },
   ]
 
   const layout = {
     title: { text: 'Distribución de Capturas por Cámara ANPR' },
-    xaxis: { title: { text: 'Lecturas Registradas' } },
-    yaxis: { autorange: 'reversed' as const },
+    margin: { t: 35, r: 25, b: 50, l: 120 },
+    xaxis: { title: { text: 'Lecturas Registradas' }, automargin: true },
+    yaxis: { autorange: 'reversed' as const, automargin: true },
     barmode: 'stack' as const,
   }
 

@@ -7,22 +7,27 @@ interface Props {
 }
 
 export function PeakValleyPlotlyChart({ data }: Props) {
+  const sortedData = [...data].sort((a, b) => a.hora.localeCompare(b.hora))
+
   const chartData: Data[] = [
     {
-      x: data.map(d => d.hora),
-      y: data.map(d => d.promedio_ingresos),
+      x: sortedData.map(d => d.hora),
+      y: sortedData.map(d => d.promedio_ingresos),
       type: 'bar',
       marker: {
-        color: data.map(d => d.color),
+        color: sortedData.map(d => d.color),
       },
-      customdata: data.map(d => d.nivel),
+      customdata: sortedData.map(d => d.nivel),
       hovertemplate: '<b>Hora: %{x}</b><br>Promedio: %{y} personas<br>Nivel: %{customdata}<extra></extra>',
     },
   ]
 
   const layout = {
     title: { text: 'Demanda Horaria: Pico y Valle Operativo' },
-    xaxis: { title: { text: 'Franja Horaria' } },
+    xaxis: {
+      title: { text: 'Franja Horaria' },
+      categoryorder: 'category ascending' as const,
+    },
     yaxis: { title: { text: 'Ingresos Promedio / Hora' } },
   }
 

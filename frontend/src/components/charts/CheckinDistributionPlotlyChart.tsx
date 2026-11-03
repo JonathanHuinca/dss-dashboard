@@ -15,6 +15,9 @@ export function CheckinDistributionPlotlyChart({ data }: Props) {
       marker: {
         color: ['#003865', '#004B87', '#0284C7', '#38BDF8', '#C59B27', '#D97706', '#DC2626'],
       },
+      text: data.map(d => d.total_registros > 0 ? d.total_registros.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 10, color: '#ffffff' },
       customdata: data.map(d => d.porcentaje),
       hovertemplate: '<b>%{x}</b><br>Usuarios: %{y:,}<br>Proporción: %{customdata}%<extra></extra>',
     },
@@ -22,8 +25,16 @@ export function CheckinDistributionPlotlyChart({ data }: Props) {
 
   const layout = {
     title: { text: 'Frecuencia de Marcajes Diarios por Registro' },
-    xaxis: { title: { text: 'Número de Marcajes en el Día' } },
-    yaxis: { title: { text: 'Cantidad de Registros' } },
+    margin: { t: 35, r: 25, b: 60, l: 55 },
+    xaxis: {
+      title: { text: 'Número de Marcajes en el Día' },
+      automargin: true,
+      tickfont: { size: 10, color: '#475569' },
+    },
+    yaxis: {
+      title: { text: 'Cantidad de Registros' },
+      automargin: true,
+    },
   }
 
   return (
@@ -31,7 +42,7 @@ export function CheckinDistributionPlotlyChart({ data }: Props) {
       data={chartData}
       layout={layout}
       filename="distribucion_marcajes_biblioteca"
-      height={300}
+      height={320}
     />
   )
 }

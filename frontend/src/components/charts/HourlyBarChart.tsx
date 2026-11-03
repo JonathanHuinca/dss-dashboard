@@ -1,31 +1,89 @@
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend,
-} from 'recharts'
+import { InteractiveChart } from '../ui/InteractiveChart'
 import { format } from 'date-fns'
+import { Data, Layout } from 'plotly.js-dist-min'
 
 interface Props {
   data: { bucket: string; ingresos?: number; entradas?: number; salidas: number }[]
 }
 
 export function HourlyBarChart({ data }: Props) {
-  const chartData = data.map(d => ({
-    hora: d.bucket ? format(new Date(d.bucket), 'HH:mm') : '',
-    Ingresos: d.ingresos ?? d.entradas ?? 0,
-    Salidas: d.salidas,
-  }))
+  // Consolidar flujo de ingresos y salidas por franja horaria (00:00 - 23:00)
+  const aggMap = new Map<string, { ingresos: number; salidas: number }>()
+
+  data.forEach(d => {
+    if (!d.bucket) return
+    const hora = format(new Date(d.bucket), 'HH:00')
+    const prev = aggMap.get(hora) ?? { ingresos: 0, salidas: 0 }
+    prev.ingresos += (d.ingresos ?? d.entradas ?? 0)
+    prev.salidas += (d.salidas ?? 0)
+    aggMap.set(hora, prev)
+  })
+
+  // Ordenar cronológicamente ascendente por hora (00:00 -> 23:00)
+  const sortedHoras = Array.from(aggMap.keys()).sort((a, b) => a.localeCompare(b))
+  const ingresos = sortedHoras.map(h => aggMap.get(h)!.ingresos)
+  const salidas = sortedHoras.map(h => aggMap.get(h)!.salidas)
+
+  const chartData: Data[] = [
+    {
+      x: sortedHoras,
+      y: ingresos,
+      type: 'bar',
+      name: 'Ingresos',
+      marker: { color: '#002B49' },
+      text: ingresos.map(v => v > 0 ? v.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 9, color: '#ffffff' },
+      hovertemplate: '<b>%{x} hrs</b><br>Ingresos: %{y:,}<extra></extra>',
+    },
+    {
+      x: sortedHoras,
+      y: salidas,
+      type: 'bar',
+      name: 'Salidas',
+      marker: { color: '#C59B27' },
+      text: salidas.map(v => v > 0 ? v.toLocaleString('es-CL') : ''),
+      textposition: 'auto',
+      textfont: { size: 9, color: '#ffffff' },
+      hovertemplate: '<b>%{x} hrs</b><br>Salidas: %{y:,}<extra></extra>',
+    },
+  ]
+
+  const layout: Partial<Layout> = {
+    barmode: 'group',
+    bargap: 0.25,
+    bargroupgap: 0.1,
+    height: 240,
+    margin: { t: 25, r: 20, b: 45, l: 45 },
+    xaxis: {
+      showgrid: false,
+      automargin: true,
+      tickfont: { size: 10, color: '#64748B' },
+      categoryorder: 'category ascending',
+    },
+    yaxis: {
+      showgrid: true,
+      automargin: true,
+      gridcolor: '#e2e8f0',
+      tickfont: { size: 10, color: '#64748B' },
+    },
+    legend: {
+      orientation: 'h',
+      y: 1.15,
+      x: 1,
+      xanchor: 'right',
+      font: { size: 10 },
+    },
+  }
 
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <BarChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 0 }} barGap={2}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-        <XAxis dataKey="hora" tick={{ fontSize: 10, fill: '#64748B' }} interval="preserveStartEnd" />
-        <YAxis tick={{ fontSize: 10, fill: '#64748B' }} />
-        <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-        <Legend />
-        <Bar dataKey="Ingresos" fill="#002B49" radius={[3, 3, 0, 0]} maxBarSize={14} />
-        <Bar dataKey="Salidas"  fill="#C59B27" radius={[3, 3, 0, 0]} maxBarSize={14} />
-      </BarChart>
-    </ResponsiveContainer>
+    <InteractiveChart
+      data={chartData}
+      layout={layout}
+      filename="flujo_horario_accesos"
+      height={320}
+    />
   )
 }
+
+export default HourlyBarChart

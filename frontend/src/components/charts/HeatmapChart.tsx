@@ -1,65 +1,156 @@
+import { useState } from 'react'
+import { InteractiveChart } from '../ui/InteractiveChart'
 import { HeatmapPoint } from '../../api/client'
+import { Data, Layout } from 'plotly.js-dist-min'
+import { Clock, Moon } from 'lucide-react'
 
-interface Props { data: HeatmapPoint[] }
-
-const DIAS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
-const HORAS = Array.from({ length: 16 }, (_, i) => i + 6) // 06-21
-
-function lerp(a: number, b: number, t: number) { return a + (b - a) * t }
-function colorForValue(v: number, max: number): string {
-  const t = max > 0 ? Math.min(v / max, 1) : 0
-  if (t < 0.5) {
-    const r = Math.round(lerp(240, 251, t * 2))
-    const g = Math.round(lerp(253, 191, t * 2))
-    const b = Math.round(lerp(244, 36,  t * 2))
-    return `rgb(${r},${g},${b})`
-  }
-  const r = Math.round(lerp(251, 127, (t - 0.5) * 2))
-  const g = Math.round(lerp(191, 29,  (t - 0.5) * 2))
-  const b = Math.round(lerp(36,  12,  (t - 0.5) * 2))
-  return `rgb(${r},${g},${b})`
+interface Props {
+  data: HeatmapPoint[]
+  modoInicial?: '24h' | 'diurno' | 'nocturno'
+  permitirModoNocturno?: boolean
 }
 
-export function HeatmapChart({ data }: Props) {
-  const lookup = new Map(data.map(d => [`${d.dia_semana}-${d.hora}`, d.ingresos_promedio]))
-  const max = Math.max(...data.map(d => d.ingresos_promedio), 1)
+const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+const HORAS_24 = Array.from({ length: 24 }, (_, i) => i) // 00-23
+const HORAS_DIURNO = Array.from({ length: 16 }, (_, i) => i + 6) // 06-21
+const HORAS_NOCTURNO = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7] // 22:00 a 07:00 (Ventana 24 Horas)
+
+export function HeatmapChart({ data, modoInicial = '24h', permitirModoNocturno = false }: Props) {
+  const [modo, setModo] = useState<'24h' | 'diurno' | 'nocturno'>(modoInicial)
+
+  const horasActivas =
+    modo === 'nocturno' ? HORAS_NOCTURNO : modo === 'diurno' ? HORAS_DIURNO : HORAS_24
+
+  const lookup = new Map(
+    data.map(d => [`${d.dia_semana}-${d.hora}`, { avg: d.ingresos_promedio, esNocturno: d.es_nocturno }])
+  )
+
+  const zMatrix: number[][] = DIAS.map((_, di) =>
+    horasActivas.map(h => {
+      const item = lookup.get(`${di}-${h}`)
+      if (!item) return 0
+      // En modo nocturno exclusivo: si se especifica es_nocturno y no lo es, mostrar 0 (fuera de régimen)
+      if (modo === 'nocturno' && item.esNocturno === false) return 0
+      return item.avg
+    })
+  )
+
+  const xLabels = horasActivas.map(h => `${String(h).padStart(2, '0')}:00`)
+
+  const colorscaleDiurno24: [number, string][] = [
+    [0.0, '#f0fdf4'],
+    [0.35, '#fef08a'],
+    [0.65, '#f59e0b'],
+    [1.0, '#991b1b'],
+  ]
+
+  const colorscaleNocturno: [number, string][] = [
+    [0.0, '#f8fafc'],
+    [0.15, '#c7d2fe'],
+    [0.35, '#818cf8'],
+    [0.65, '#f59e0b'],
+    [1.0, '#b91c1c'],
+  ]
+
+  const chartData: Data[] = [
+    {
+      z: zMatrix,
+      x: xLabels,
+      y: DIAS,
+      type: 'heatmap',
+      colorscale: modo === 'nocturno' ? colorscaleNocturno : colorscaleDiurno24,
+      hoverongaps: false,
+      hovertemplate:
+        modo === 'nocturno'
+          ? '<b>%{y}</b> a las <b>%{x}</b><br>Ingresos nocturnos 24h: <b>%{z:.1f} pers/h</b><extra></extra>'
+          : '<b>%{y}</b> a las <b>%{x}</b><br>Ingresos promedio: <b>%{z:.1f} pers/h</b><extra></extra>',
+      colorbar: {
+        title: { text: modo === 'nocturno' ? 'Noc/h' : 'Ingresos/h', side: 'right', font: { size: 10 } },
+        thickness: 12,
+        len: 0.85,
+        tickfont: { size: 9, color: '#64748B' },
+      },
+    },
+  ]
+
+  const layout: Partial<Layout> = {
+    height: 280,
+    margin: { t: 15, r: 20, b: modo === '24h' ? 42 : 35, l: 75 },
+    yaxis: {
+      autorange: 'reversed',
+      tickfont: { size: 10, color: '#64748B' },
+      showgrid: false,
+    },
+    xaxis: {
+      tickfont: { size: modo === '24h' ? 8.5 : 9, color: '#64748B' },
+      tickangle: modo === '24h' ? -45 : 0,
+      showgrid: false,
+    },
+  }
 
   return (
-    <div className="overflow-x-auto">
-      <div className="inline-grid min-w-full" style={{ gridTemplateColumns: `48px repeat(${HORAS.length}, 1fr)` }}>
-        {/* Header row */}
-        <div />
-        {HORAS.map(h => (
-          <div key={h} className="text-center text-[9px] text-uct-text-muted pb-1 font-medium">
-            {String(h).padStart(2, '0')}h
-          </div>
-        ))}
-        {/* Data rows */}
-        {DIAS.map((dia, di) => (
-          <>
-            <div key={`label-${di}`} className="text-[10px] text-uct-text-muted flex items-center pr-2 font-medium">{dia}</div>
-            {HORAS.map(h => {
-              const v = lookup.get(`${di}-${h}`) ?? 0
-              return (
-                <div
-                  key={`${di}-${h}`}
-                  title={`${dia} ${h}:00 — ${v.toFixed(1)} ingresos/h`}
-                  className="aspect-square rounded-sm m-px cursor-default transition-transform hover:scale-110"
-                  style={{ backgroundColor: colorForValue(v, max) }}
-                />
-              )
-            })}
-          </>
-        ))}
+    <div className="w-full space-y-2">
+      <div className="flex flex-wrap items-center justify-between text-xs px-1 gap-2">
+        <span className="text-slate-500 font-medium flex items-center gap-1.5 text-[11px]">
+          {modo === 'nocturno' ? (
+            <>
+              <Moon size={12} className="text-indigo-600" />
+              <span>Extensión 24h (Fuera de Horario Regular: L-J 23h-07h | Vie 22h-06h)</span>
+            </>
+          ) : (
+            <>
+              <Clock size={12} className="text-uct-blue-primary" />
+              <span>{modo === '24h' ? 'Ciclo 24 Horas Completo (00:00 - 23:00)' : 'Ventana Diurna Operativa (06:00 - 21:00)'}</span>
+            </>
+          )}
+        </span>
+        <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+          {(permitirModoNocturno || modoInicial === 'nocturno') && (
+            <button
+              type="button"
+              onClick={() => setModo('nocturno')}
+              className={`px-2 py-0.5 text-[10px] font-semibold rounded-md transition cursor-pointer ${
+                modo === 'nocturno'
+                  ? 'bg-indigo-600 text-white shadow-xs font-bold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Extensión 24h (22-07h)
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setModo('24h')}
+            className={`px-2 py-0.5 text-[10px] font-semibold rounded-md transition cursor-pointer ${
+              modo === '24h'
+                ? 'bg-white text-uct-blue-primary shadow-xs font-bold'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            24 Horas (00-23)
+          </button>
+          <button
+            type="button"
+            onClick={() => setModo('diurno')}
+            className={`px-2 py-0.5 text-[10px] font-semibold rounded-md transition cursor-pointer ${
+              modo === 'diurno'
+                ? 'bg-white text-uct-blue-primary shadow-xs font-bold'
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Diurno (06-21)
+          </button>
+        </div>
       </div>
-      {/* Legend */}
-      <div className="flex items-center gap-2 mt-3">
-        <span className="text-[10px] text-uct-text-muted">Bajo</span>
-        <div className="h-2 flex-1 rounded-full" style={{
-          background: 'linear-gradient(to right, rgb(240,253,244), rgb(251,191,36), rgb(127,29,12))'
-        }} />
-        <span className="text-[10px] text-uct-text-muted">Alto</span>
-      </div>
+
+      <InteractiveChart
+        data={chartData}
+        layout={layout}
+        filename="mapa_calor_ocupacion_dia_hora"
+        height={320}
+      />
     </div>
   )
 }
+
+export default HeatmapChart
