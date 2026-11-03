@@ -9,13 +9,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.core.config import settings
 from app.core.database import Base
-import app.domain.models  # noqa: F401 — importar todos los modelos para que Base los registre
+import app.domain.models  # noqa: F401
+import app.domain.auth_models  # noqa: F401
+import app.domain.config_models  # noqa: F401
+import app.domain.chat_audit_models  # noqa: F401
+import app.domain.chat_models  # noqa: F401
+import app.domain.ejecucion_tarea_models  # noqa: F401
+import app.domain.reportes_compartidos_models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL_SYNC)
+url_sincrona = os.environ.get("DATABASE_URL_SYNC") or settings.DATABASE_URL_SYNC
+config.set_main_option("sqlalchemy.url", url_sincrona)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
