@@ -22,6 +22,10 @@ interface DecodedToken {
   rol?: string
   roles?: string[]
   allowed_datasets?: string[]
+  can_use_ai?: boolean
+  can_export?: boolean
+  can_ingest?: boolean
+  espacio_id?: number
   exp?: number
 }
 
@@ -31,9 +35,18 @@ interface AuthContextType {
   roles: string[]
   userId: number | null
   allowedDatasets: string[]
+  currentEspacioId: number
+  setCurrentEspacioId: (id: number) => void
   hasDatasetAccess: (dataset: string) => boolean
   isAuthenticated: boolean
   isSuperAdmin: boolean
+  isDirectivo: boolean
+  isAnalista: boolean
+  isGuardia: boolean
+  canAccessAdmin: boolean
+  canUseAi: boolean
+  canExport: boolean
+  canIngest: boolean
   login: (token: string) => void
   logout: () => void
   loginWithCredentials: (email: string, password: string) => Promise<boolean>
@@ -66,24 +79,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [roles, setRoles] = useState<string[]>([])
   const [userId, setUserId] = useState<number | null>(null)
   const [allowedDatasets, setAllowedDatasets] = useState<string[]>(['biblioteca', 'estacionamiento'])
+  const [currentEspacioId, setCurrentEspacioId] = useState<number>(1)
+  const [canUseAi, setCanUseAi] = useState<boolean>(false)
+  const [canExport, setCanExport] = useState<boolean>(false)
+  const [canIngest, setCanIngest] = useState<boolean>(false)
+
+  useEffect(() => {
+    api.defaults.headers.common['X-Espacio-Id'] = currentEspacioId.toString()
+  }, [currentEspacioId])
+
+  const expireTimerRef = React.useRef<number | null>(null)
+
+  const logout = () => {
+    if (expireTimerRef.current) {
+      clearTimeout(expireTimerRef.current)
+      expireTimerRef.current = null
+    }
+    localStorage.removeItem(TOKEN_KEY)
+    setToken(null)
+    setUserRole(null)
+    setRoles([])
+    setUserId(null)
+    setAllowedDatasets(['biblioteca', 'estacionamiento'])
+    setCanUseAi(false)
+    setCanExport(false)
+    setCanIngest(false)
+  }
 
   const processToken = (jwtToken: string | null) => {
+    if (expireTimerRef.current) {
+      clearTimeout(expireTimerRef.current)
+      expireTimerRef.current = null
+    }
+
     if (!jwtToken) {
-      setUserRole(null)
-      setRoles([])
-      setUserId(null)
-      setAllowedDatasets(['biblioteca', 'estacionamiento'])
+      logout()
       return
     }
 
     const decoded = parseJwt(jwtToken)
-    if (!decoded || (decoded.exp && decoded.exp * 1000 < Date.now())) {
-      localStorage.removeItem(TOKEN_KEY)
-      setToken(null)
-      setUserRole(null)
-      setRoles([])
-      setUserId(null)
-      setAllowedDatasets(['biblioteca', 'estacionamiento'])
+    if (!decoded || (decoded.exp && decoded.exp * 1000 <= Date.now())) {
+      logout()
       return
     }
 
@@ -96,10 +132,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setRoles(allRoles)
     setUserId(uid)
     setAllowedDatasets(datasets)
+    setCanUseAi(Boolean(decoded.can_use_ai))
+    setCanExport(Boolean(decoded.can_export))
+    setCanIngest(Boolean(decoded.can_ingest))
+
+    // Configurar temporizador exacto para el instante de expiración del token
+    if (decoded.exp) {
+      const msRestantes = Math.max(0, decoded.exp * 1000 - Date.now())
+      expireTimerRef.current = window.setTimeout(() => {
+        logout()
+      }, msRestantes)
+    }
   }
 
   useEffect(() => {
     processToken(token)
+    return () => {
+      if (expireTimerRef.current) {
+        clearTimeout(expireTimerRef.current)
+      }
+    }
+  }, [token])
+
+  // Escuchar evento global de expiración 401 disparado por interceptores
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      logout()
+    }
+    window.addEventListener('uct:auth-expired', handleAuthExpired)
+    return () => window.removeEventListener('uct:auth-expired', handleAuthExpired)
+  }, [])
+
+  // Verificación periódica cada 3 segundos como red de seguridad
+  useEffect(() => {
+    if (!token) return
+    const interval = setInterval(() => {
+      const decoded = parseJwt(token)
+      if (decoded?.exp && decoded.exp * 1000 <= Date.now()) {
+        logout()
+      }
+    }, 3000)
+    return () => clearInterval(interval)
   }, [token])
 
   useEffect(() => {
@@ -121,15 +194,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     processToken(newToken)
   }
 
-  const logout = () => {
-    localStorage.removeItem(TOKEN_KEY)
-    setToken(null)
-    setUserRole(null)
-    setRoles([])
-    setUserId(null)
-    setAllowedDatasets(['biblioteca', 'estacionamiento'])
-  }
-
   const loginWithCredentials = async (email: string, password: string): Promise<boolean> => {
     try {
       const res = await api.post('/auth/login', { email, password })
@@ -144,7 +208,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const isAuthenticated = Boolean(token && userRole)
-  const isSuperAdmin = roles.includes('SuperAdmin') || userRole === 'SuperAdmin'
+  const isSuperAdmin =
+    roles.includes('SuperAdmin') ||
+    roles.includes('Admin_Sistema') ||
+    userRole === 'SuperAdmin' ||
+    userRole === 'Admin_Sistema'
+  const isDirectivo =
+    roles.includes('Directivo') ||
+    roles.includes('Director_Recinto') ||
+    userRole === 'Directivo' ||
+    userRole === 'Director_Recinto'
+  const isAnalista =
+    roles.includes('Analista_Consulta') ||
+    userRole === 'Analista_Consulta'
+  const isGuardia =
+    roles.includes('Guardia_Seguridad') ||
+    userRole === 'Guardia_Seguridad'
+  const canAccessAdmin = isSuperAdmin || isDirectivo
 
   const hasDatasetAccess = (dataset: string): boolean => {
     if (isSuperAdmin) return true
@@ -159,9 +239,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         roles,
         userId,
         allowedDatasets,
+        currentEspacioId,
+        setCurrentEspacioId,
         hasDatasetAccess,
         isAuthenticated,
         isSuperAdmin,
+        isDirectivo,
+        isAnalista,
+        isGuardia,
+        canAccessAdmin,
+        canUseAi: isSuperAdmin ? true : canUseAi,
+        canExport: isSuperAdmin ? true : canExport,
+        canIngest: isSuperAdmin ? true : canIngest,
         login,
         logout,
         loginWithCredentials,
