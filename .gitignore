@@ -177,10 +177,10 @@ local/
 # Certificados TLS montados por nginx (llave privada)
 certificados/
 
-# Datos fuente y scripts auxiliares usados localmente
+# Datos fuente y scripts auxiliares de la raíz usados localmente
 biblioteca/
 Documentos_soloVista/
-scripts/
+/scripts/
 
 # Reporte de trabajo referenciado por skills locales
 REPORTE_COMPLETO.md
