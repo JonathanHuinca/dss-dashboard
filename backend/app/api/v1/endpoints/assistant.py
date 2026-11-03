@@ -1,10 +1,12 @@
 import os
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from app.core.config import settings
+from app.core.security import require_permission
+from app.api.v1.endpoints.config import check_ia_active
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(check_ia_active)])
 
 SYSTEM_PROMPT = """Eres el Asistente Analitico Inteligente del Sistema de Soporte a Decisiones (DSS) de la Universidad Catolica de Temuco (Campus San Francisco - CSF).
 Tu funcion es responder consultas analiticas en lenguaje natural acerca de la afluencia, ocupacion, perfiles de permanencia, flujos vehiculares y correlacion con el calendario academico basandote estrictamente en los datos del sistema.
@@ -130,12 +132,12 @@ async def list_available_models():
 
 @router.post("/query", response_model=AssistantResponse)
 @router.post("/chat", response_model=AssistantResponse)
-async def query_assistant(req: AssistantRequest):
+async def query_assistant(req: AssistantRequest, current_user = Depends(require_permission("can_use_ai"))):
     user_msg = (req.message or req.question or "").strip()
     if not user_msg:
         raise HTTPException(status_code=400, detail="Debe proporcionar un mensaje o pregunta")
 
-    selected_model = req.model if req.model in SUPPORTED_MODELS else "gemini-2.5-flash-lite"
+    selected_model = req.model if req.model in SUPPORTED_MODELS else "gemini-3.5-flash-lite"
     api_key = get_gemini_api_key()
 
     if not api_key:
@@ -178,7 +180,7 @@ async def query_assistant(req: AssistantRequest):
             temperature=0.2,
         )
 
-        candidate_models = [selected_model, "gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"]
+        candidate_models = [selected_model, "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"]
         last_exception = None
         used_model = selected_model
         generated_text = ""
