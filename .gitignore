@@ -94,13 +94,6 @@ frontend/tsconfig.tsbuildinfo
 frontend/tsconfig.node.tsbuildinfo
 
 # ============================================================
-# DOCKER
-# ============================================================
-
-# Ignorar overrides locales de docker-compose (credenciales locales)
-docker-compose.override.yml
-
-# ============================================================
 # LOGS Y ARCHIVOS TEMPORALES
 # ============================================================
 
@@ -170,3 +163,37 @@ informe_criterio_3.html
 *.db
 *.sqlite
 *.sqlite3
+
+# ============================================================
+# MATERIAL LOCAL (no sube al repositorio)
+# ============================================================
+
+# Carpeta con documentos de trabajo, tesis y datos que no usa el proyecto
+local/
+
+# Skills y rules para agentes (se mantienen en disco)
+.agents/
+
+# Certificados TLS montados por nginx (llave privada)
+certificados/
+
+# Datos fuente y scripts auxiliares usados localmente
+biblioteca/
+Documentos_soloVista/
+scripts/
+
+# Reporte de trabajo referenciado por skills locales
+REPORTE_COMPLETO.md
+
+# Documentos Office, locks de LibreOffice y salidas generadas
+*.docx
+*.doc
+.~lock.*#
+esquemas_extraidos.json
+backend/models/*.json
+backend/backend/
+
+# Compilados y temporales de Vite/TypeScript
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/vite.config.js.timestamp-*.mjs
