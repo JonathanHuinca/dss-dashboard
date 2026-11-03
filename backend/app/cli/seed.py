@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 BASE_DIR = Path(__file__).resolve().parents[3]
-DATA_DIR = BASE_DIR / "Documentos_soloVista"
+DATA_DIR = Path("/Documentos_soloVista") if Path("/Documentos_soloVista").exists() else BASE_DIR / "Documentos_soloVista"
 MODELS_DIR = BASE_DIR / "backend" / "models"
 
 sys.path.insert(0, str(BASE_DIR / "backend"))
@@ -54,23 +54,24 @@ async def _insert_attendance(session: AsyncSession, adapter: FileIngestionAdapte
                 "primera_entrada": e.primera_entrada,
                 "ultima_salida": e.ultima_salida,
                 "salida_imputada": e.salida_imputada,
+                "entrada_imputada": e.entrada_imputada,
                 "permanencia_min": e.permanencia_min,
                 "marcajes_totales": e.marcajes_totales,
                 "alerta_coherencia_fechas": e.alerta_coherencia_fechas,
                 "alerta_marcajes": e.alerta_marcajes,
             }
             for e in batch
-            if e.time is not None and e.primera_entrada is not None
+            if e.time is not None
         ]
         if rows:
             stmt = sa.text("""
                 INSERT INTO eventos_asistencia (
                     time, espacio_id, person_id_hash, door_entrada, door_salida,
-                    primera_entrada, ultima_salida, salida_imputada, permanencia_min,
+                    primera_entrada, ultima_salida, salida_imputada, entrada_imputada, permanencia_min,
                     marcajes_totales, alerta_coherencia_fechas, alerta_marcajes
                 ) VALUES (
                     :time, :espacio_id, :person_id_hash, :door_entrada, :door_salida,
-                    :primera_entrada, :ultima_salida, :salida_imputada, :permanencia_min,
+                    :primera_entrada, :ultima_salida, :salida_imputada, :entrada_imputada, :permanencia_min,
                     :marcajes_totales, :alerta_coherencia_fechas, :alerta_marcajes
                 )
             """)
@@ -88,7 +89,16 @@ async def _insert_vehicles(session: AsyncSession, adapter: FileIngestionAdapter)
         sa.text("DELETE FROM eventos_vehiculares WHERE espacio_id = :espacio_id"),
         {"espacio_id": ESPACIO_ESTACIONAMIENTO_ID}
     )
-    events = await adapter.fetch_vehicle_events(espacio_id=ESPACIO_ESTACIONAMIENTO_ID)
+    raw_events = await adapter.fetch_vehicle_events(espacio_id=ESPACIO_ESTACIONAMIENTO_ID)
+    seen_keys = set()
+    events = []
+    for e in raw_events:
+        if e.time is not None:
+            k = (e.time, e.espacio_id, e.patente_hash, e.camara)
+            if k not in seen_keys:
+                seen_keys.add(k)
+                events.append(e)
+
     total = 0
     for i in range(0, len(events), BATCH_SIZE):
         batch = events[i : i + BATCH_SIZE]
@@ -97,6 +107,7 @@ async def _insert_vehicles(session: AsyncSession, adapter: FileIngestionAdapter)
                 "time": e.time,
                 "espacio_id": e.espacio_id,
                 "patente_hash": e.patente_hash,
+                "patente_cifrada": e.patente_cifrada,
                 "camara": e.camara,
                 "direccion": e.direccion,
                 "tipo_vehiculo": e.tipo_vehiculo,
@@ -105,15 +116,14 @@ async def _insert_vehicles(session: AsyncSession, adapter: FileIngestionAdapter)
                 "calidad_lectura": e.calidad_lectura,
             }
             for e in batch
-            if e.time is not None
         ]
         if rows:
             stmt = sa.text("""
                 INSERT INTO eventos_vehiculares (
-                    time, espacio_id, patente_hash, camara, direccion,
+                    time, espacio_id, patente_hash, patente_cifrada, camara, direccion,
                     tipo_vehiculo, marca, color, calidad_lectura
                 ) VALUES (
-                    :time, :espacio_id, :patente_hash, :camara, :direccion,
+                    :time, :espacio_id, :patente_hash, :patente_cifrada, :camara, :direccion,
                     :tipo_vehiculo, :marca, :color, :calidad_lectura
                 )
             """)
@@ -146,21 +156,22 @@ async def _insert_calendar(session: AsyncSession, adapter: FileIngestionAdapter)
             for e in batch
         ]
         stmt = sa.text("""
-            INSERT INTO calendario_academico (
-                fecha, is_holiday, is_break, is_exam_period,
-                is_class_milestone, suspension_actividades, descripcion, fuente
-            ) VALUES (
-                :fecha, :is_holiday, :is_break, :is_exam_period,
-                :is_class_milestone, :suspension_actividades, :descripcion, :fuente
-            )
-            ON CONFLICT (fecha) DO UPDATE SET
-                is_holiday             = EXCLUDED.is_holiday,
-                is_break               = EXCLUDED.is_break,
-                is_exam_period         = EXCLUDED.is_exam_period,
-                is_class_milestone     = EXCLUDED.is_class_milestone,
-                suspension_actividades = EXCLUDED.suspension_actividades,
-                descripcion            = EXCLUDED.descripcion,
-                fuente                 = EXCLUDED.fuente
+            MERGE INTO calendario_academico AS target
+            USING (VALUES (:fecha, :is_holiday, :is_break, :is_exam_period, :is_class_milestone, :suspension_actividades, :descripcion, :fuente))
+            AS source (fecha, is_holiday, is_break, is_exam_period, is_class_milestone, suspension_actividades, descripcion, fuente)
+            ON target.fecha = source.fecha
+            WHEN MATCHED THEN
+                UPDATE SET
+                    is_holiday = source.is_holiday,
+                    is_break = source.is_break,
+                    is_exam_period = source.is_exam_period,
+                    is_class_milestone = source.is_class_milestone,
+                    suspension_actividades = source.suspension_actividades,
+                    descripcion = source.descripcion,
+                    fuente = source.fuente
+            WHEN NOT MATCHED THEN
+                INSERT (fecha, is_holiday, is_break, is_exam_period, is_class_milestone, suspension_actividades, descripcion, fuente)
+                VALUES (source.fecha, source.is_holiday, source.is_break, source.is_exam_period, source.is_class_milestone, source.suspension_actividades, source.descripcion, source.fuente);
         """)
         await session.execute(stmt, rows)
         total += len(rows)
@@ -181,16 +192,28 @@ async def seed() -> None:
     t0 = time.perf_counter()
 
     async with AsyncSessionLocal() as session:
-        async with session.begin():
-            await session.execute(sa.text("""
-                INSERT INTO espacios (id, campus, tipo, nombre, capacidad_max) VALUES
-                (1, 'CSF', 'biblioteca', 'Biblioteca Campus San Francisco', 350),
-                (2, 'CSF', 'estacionamiento', 'Estacionamiento Campus San Francisco', 180)
-                ON CONFLICT (id) DO NOTHING
-            """))
-            n_attendance = await _insert_attendance(session, adapter)
-            n_vehicles   = await _insert_vehicles(session, adapter)
-            n_calendar   = await _insert_calendar(session, adapter)
+        # 1. Espacios
+        await session.execute(sa.text("""
+            IF NOT EXISTS (SELECT 1 FROM espacios WHERE id = 1)
+                INSERT INTO espacios (id, campus, tipo, nombre, capacidad_max, activo) 
+                VALUES (1, 'CSF', 'biblioteca', 'Biblioteca Campus San Francisco', 350, 1);
+            IF NOT EXISTS (SELECT 1 FROM espacios WHERE id = 2)
+                INSERT INTO espacios (id, campus, tipo, nombre, capacidad_max, activo) 
+                VALUES (2, 'CSF', 'estacionamiento', 'Estacionamiento Campus San Francisco', 180, 1);
+        """))
+        await session.commit()
+
+        # 2. Eventos Asistencia (Biblioteca)
+        n_attendance = await _insert_attendance(session, adapter)
+        await session.commit()
+
+        # 3. Eventos Vehiculares (Estacionamiento)
+        n_vehicles = await _insert_vehicles(session, adapter)
+        await session.commit()
+
+        # 4. Calendario Academico
+        n_calendar = await _insert_calendar(session, adapter)
+        await session.commit()
 
     elapsed = time.perf_counter() - t0
 

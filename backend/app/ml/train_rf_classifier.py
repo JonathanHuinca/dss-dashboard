@@ -23,9 +23,9 @@ async def train_rf_model(session: AsyncSession, espacio_id: int = 1) -> dict:
         SELECT
             permanencia_min,
             marcajes_totales,
-            EXTRACT(HOUR FROM primera_entrada)::int AS hora_entrada,
-            EXTRACT(DOW FROM primera_entrada)::int  AS dia_semana,
-            EXTRACT(MONTH FROM primera_entrada)::int AS mes
+            DATEPART(hour, primera_entrada) AS hora_entrada,
+            (DATEPART(weekday, primera_entrada) + 5) % 7 AS dia_semana,
+            DATEPART(month, primera_entrada) AS mes
         FROM eventos_asistencia
         WHERE espacio_id = :espacio_id
           AND permanencia_min IS NOT NULL
@@ -52,7 +52,7 @@ async def train_rf_model(session: AsyncSession, espacio_id: int = 1) -> dict:
     X = df[feature_cols]
     y = df["perfil"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
+    x_train, x_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
@@ -62,9 +62,9 @@ async def train_rf_model(session: AsyncSession, espacio_id: int = 1) -> dict:
         random_state=42,
         n_jobs=-1
     )
-    clf.fit(X_train, y_train)
+    clf.fit(x_train, y_train)
 
-    y_pred = clf.predict(X_test)
+    y_pred = clf.predict(x_test)
     acc = round(float(accuracy_score(y_test, y_pred)), 4)
     report = classification_report(y_test, y_pred, output_dict=True)
 
@@ -95,19 +95,25 @@ async def train_rf_model(session: AsyncSession, espacio_id: int = 1) -> dict:
 
 async def get_visit_profiles_report(session: AsyncSession, espacio_id: int = 1) -> dict:
     sql = text("""
+        WITH perfiles_raw AS (
+            SELECT
+                CASE
+                    WHEN permanencia_min < 60  THEN 'Corta (< 1h)'
+                    WHEN permanencia_min <= 180 THEN 'Media (1 a 3h)'
+                    ELSE 'Larga (> 3h)'
+                END AS perfil,
+                permanencia_min
+            FROM eventos_asistencia
+            WHERE espacio_id = :espacio_id
+              AND permanencia_min IS NOT NULL
+              AND permanencia_min > 0
+        )
         SELECT
-            CASE
-                WHEN permanencia_min < 60  THEN 'Corta (< 1h)'
-                WHEN permanencia_min <= 180 THEN 'Media (1 a 3h)'
-                ELSE 'Larga (> 3h)'
-            END AS perfil,
+            perfil,
             COUNT(*) AS total,
             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS porcentaje,
-            ROUND(AVG(permanencia_min)::numeric, 1) AS permanencia_promedio_min
-        FROM eventos_asistencia
-        WHERE espacio_id = :espacio_id
-          AND permanencia_min IS NOT NULL
-          AND permanencia_min > 0
+            ROUND(AVG(CAST(permanencia_min AS FLOAT)), 1) AS permanencia_promedio_min
+        FROM perfiles_raw
         GROUP BY perfil
         ORDER BY total DESC
     """)

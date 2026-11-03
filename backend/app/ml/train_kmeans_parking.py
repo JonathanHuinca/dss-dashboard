@@ -14,20 +14,23 @@ async def extract_vehicle_features(session: AsyncSession) -> pd.DataFrame:
         WITH estadia_base AS (
             SELECT 
                 patente_hash,
-                DATE(time) as fecha,
-                MIN(EXTRACT(HOUR FROM time) + EXTRACT(MINUTE FROM time)/60.0) as hora_entrada,
-                MAX(EXTRACT(HOUR FROM time) + EXTRACT(MINUTE FROM time)/60.0) as hora_salida,
-                GREATEST(15.0, (EXTRACT(EPOCH FROM (MAX(time) - MIN(time))) / 60.0)) as duracion_min
+                CAST(time AS DATE) as fecha,
+                MIN(DATEPART(hour, time) + DATEPART(minute, time)/60.0) as hora_entrada,
+                MAX(DATEPART(hour, time) + DATEPART(minute, time)/60.0) as hora_salida,
+                CASE 
+                    WHEN DATEDIFF(minute, MIN(time), MAX(time)) < 15.0 THEN 15.0 
+                    ELSE DATEDIFF(minute, MIN(time), MAX(time)) * 1.0 
+                END as duracion_min
             FROM eventos_vehiculares
             WHERE patente_hash != 'unknown'
-            GROUP BY patente_hash, DATE(time)
+            GROUP BY patente_hash, CAST(time AS DATE)
         )
         SELECT 
             patente_hash,
             COUNT(fecha) as dias_totales,
-            ROUND(AVG(hora_entrada)::numeric, 2) as hora_llegada_avg,
-            ROUND(AVG(duracion_min)::numeric, 1) as permanencia_avg_min,
-            ROUND((100.0 * COUNT(*) FILTER (WHERE hora_entrada <= 8.5 AND duracion_min >= 480) / COUNT(*))::numeric, 1) as tasa_jornada_extrema
+            ROUND(AVG(hora_entrada * 1.0), 2) as hora_llegada_avg,
+            ROUND(AVG(duracion_min * 1.0), 1) as permanencia_avg_min,
+            ROUND(100.0 * SUM(CASE WHEN hora_entrada <= 8.5 AND duracion_min >= 480 THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as tasa_jornada_extrema
         FROM estadia_base
         GROUP BY patente_hash
         HAVING COUNT(fecha) >= 2
@@ -52,10 +55,10 @@ async def compute_behavioral_clusters(session: AsyncSession) -> Dict[str, Any]:
     feats = ['hora_llegada_avg', 'permanencia_avg_min', 'dias_totales', 'tasa_jornada_extrema']
     X = df[feats].astype(float)
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    x_scaled = scaler.fit_transform(X)
 
     km = KMeans(n_clusters=3, random_state=42, n_init=10)
-    df['cluster_raw'] = km.fit_predict(X_scaled)
+    df['cluster_raw'] = km.fit_predict(x_scaled)
 
     cluster_profiles = []
     for c in range(3):

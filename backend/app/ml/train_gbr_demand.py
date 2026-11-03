@@ -7,10 +7,12 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
+from app.ml.gestor_modelos import cargar_modelo_en_memoria, ejecutar_inferencia_en_hilo
 
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models"
 MODEL_FILE_BIB = MODEL_DIR / "gbr_demand_biblioteca.joblib"
 MODEL_FILE_VEH = MODEL_DIR / "gbr_demand_vehicular.joblib"
+
 
 FEATURE_COLS = ["dia_semana", "mes", "dia_ano", "is_exam_period", "is_break", "is_holiday"]
 
@@ -20,30 +22,30 @@ async def train_gbr_model(session: AsyncSession, espacio_id: int = 1) -> dict:
     if espacio_id == 1:
         sql = text("""
             SELECT
-                DATE(ea.time) AS fecha,
+                CAST(ea.time AS DATE) AS fecha,
                 COUNT(*) AS total_demanda,
-                COALESCE(BOOL_OR(ca.is_exam_period), FALSE) AS is_exam_period,
-                COALESCE(BOOL_OR(ca.is_break), FALSE)       AS is_break,
-                COALESCE(BOOL_OR(ca.is_holiday), FALSE)     AS is_holiday
+                COALESCE(MAX(CASE WHEN ca.is_exam_period = 1 THEN 1 ELSE 0 END), 0) AS is_exam_period,
+                COALESCE(MAX(CASE WHEN ca.is_break = 1 THEN 1 ELSE 0 END), 0)       AS is_break,
+                COALESCE(MAX(CASE WHEN ca.is_holiday = 1 THEN 1 ELSE 0 END), 0)     AS is_holiday
             FROM eventos_asistencia ea
-            LEFT JOIN calendario_academico ca ON DATE(ea.time) = ca.fecha
+            LEFT JOIN calendario_academico ca ON CAST(ea.time AS DATE) = ca.fecha
             WHERE ea.espacio_id = :espacio_id
-            GROUP BY DATE(ea.time)
+            GROUP BY CAST(ea.time AS DATE)
             ORDER BY fecha ASC
         """)
         model_path = MODEL_FILE_BIB
     else:
         sql = text("""
             SELECT
-                DATE(ev.time) AS fecha,
-                COUNT(*) FILTER (WHERE ev.direccion = 'entrada') AS total_demanda,
-                COALESCE(BOOL_OR(ca.is_exam_period), FALSE) AS is_exam_period,
-                COALESCE(BOOL_OR(ca.is_break), FALSE)       AS is_break,
-                COALESCE(BOOL_OR(ca.is_holiday), FALSE)     AS is_holiday
+                CAST(ev.time AS DATE) AS fecha,
+                SUM(CASE WHEN ev.direccion = 'entrada' THEN 1 ELSE 0 END) AS total_demanda,
+                COALESCE(MAX(CASE WHEN ca.is_exam_period = 1 THEN 1 ELSE 0 END), 0) AS is_exam_period,
+                COALESCE(MAX(CASE WHEN ca.is_break = 1 THEN 1 ELSE 0 END), 0)       AS is_break,
+                COALESCE(MAX(CASE WHEN ca.is_holiday = 1 THEN 1 ELSE 0 END), 0)     AS is_holiday
             FROM eventos_vehiculares ev
-            LEFT JOIN calendario_academico ca ON DATE(ev.time) = ca.fecha
+            LEFT JOIN calendario_academico ca ON CAST(ev.time AS DATE) = ca.fecha
             WHERE ev.espacio_id = :espacio_id
-            GROUP BY DATE(ev.time)
+            GROUP BY CAST(ev.time AS DATE)
             ORDER BY fecha ASC
         """)
         model_path = MODEL_FILE_VEH
@@ -102,13 +104,15 @@ async def predict_next_14_days(session: AsyncSession, espacio_id: int = 1) -> di
     if not model_path.exists():
         await train_gbr_model(session, espacio_id)
 
-    meta = joblib.load(model_path)
+    meta = cargar_modelo_en_memoria(model_path)
+    if not meta:
+        meta = joblib.load(model_path)
     reg = meta["model"]
 
     if espacio_id == 1:
-        sql_max = text("SELECT COALESCE(MAX(DATE(time)), CURRENT_DATE) FROM eventos_asistencia WHERE espacio_id = :espacio_id")
+        sql_max = text("SELECT COALESCE(MAX(CAST(time AS DATE)), CAST(GETDATE() AS DATE)) FROM eventos_asistencia WHERE espacio_id = :espacio_id")
     else:
-        sql_max = text("SELECT COALESCE(MAX(DATE(time)), CURRENT_DATE) FROM eventos_vehiculares WHERE espacio_id = :espacio_id")
+        sql_max = text("SELECT COALESCE(MAX(CAST(time AS DATE)), CAST(GETDATE() AS DATE)) FROM eventos_vehiculares WHERE espacio_id = :espacio_id")
 
     latest_date = (await session.execute(sql_max, {"espacio_id": espacio_id})).scalar() or date.today()
 
@@ -156,8 +160,9 @@ async def predict_next_14_days(session: AsyncSession, espacio_id: int = 1) -> di
             "is_holiday": bool(is_holiday),
         })
 
-    X_pred = pd.DataFrame(features_list, columns=FEATURE_COLS)
-    preds = reg.predict(X_pred)
+    x_pred = pd.DataFrame(features_list, columns=FEATURE_COLS)
+    preds = await ejecutar_inferencia_en_hilo(reg.predict, x_pred)
+
 
     for i, p in enumerate(preds):
         if pred_rows[i]["is_holiday"] and pred_rows[i]["dia_nombre"] in ("Sábado", "Domingo"):

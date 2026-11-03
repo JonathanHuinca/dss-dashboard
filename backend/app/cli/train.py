@@ -1,52 +1,59 @@
 """
-train.py — Comando CLI para entrenamiento inicial de modelos Prophet.
+train.py — Comando CLI para entrenamiento de modelos con orquestador Campeón vs. Retador.
 
 Uso:
-    cd backend/
-    python -m app.cli train-models
-
-Extrae los datos de los Continuous Aggregates de TimescaleDB,
-entrena Prophet para biblioteca y vehicular, evalúa métricas
-y serializa los modelos en backend/models/.
+    python -m app.cli entrenar-modelos
 """
 import asyncio
+import json
 import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(BASE_DIR / "backend"))
+BASE_DIR = Path(__file__).resolve().parents[2]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
 from app.core.database import AsyncSessionLocal
-from app.ml.prophet_service import train_all
+from app.ml.orquestador_entrenamiento import entrenar_todos_los_modelos
 
 
 async def train() -> None:
+    solo_operativos_hoy = "--solo-operativos-hoy" in sys.argv
     print("\n========================================================")
-    print("       UCT Dashboard -- Entrenamiento Prophet")
+    print("       UCT DSS — Orquestador de Modelos ML             ")
+    print("       Evaluación y Promoción: Campeón vs. Retador     ")
     print("========================================================\n")
 
     async with AsyncSessionLocal() as session:
-        results = await train_all(session)
+        results = await entrenar_todos_los_modelos(
+            session,
+            solo_modulos_operativos_hoy=solo_operativos_hoy,
+        )
 
-    print("\n+------------------------------------------------------+")
-    print("|              RESULTADO DE ENTRENAMIENTO              |")
-    print("+------------------------------------------------------+")
+    print("\n+--------------------------------------------------------------------------------+")
+    print("|                  REPORTE DE ENTRENAMIENTO CAMPEÓN vs. RETADOR                   |")
+    print("+--------------------------------------------------------------------------------+")
     for r in results:
-        if "error" in r:
-            print(f"|  [X] {r['recinto']:<12} ERROR: {r['error'][:38]}")
+        modelo = r.get("modelo", "")
+        estado = r.get("estado", "").upper()
+        if estado == "PROMOVIDO":
+            w = r.get("wape", 0)
+            m = r.get("mae", 0)
+            prev = r.get("campeon_anterior_wape", "N/A")
+            print(f"| [PROMOVIDO] {modelo:<28} WAPE={w}% (ant: {prev}%) | MAE={m}")
+        elif estado == "RECHAZADO":
+            motivo = r.get("motivo", "")[:45]
+            print(f"| [RECHAZADO] {modelo:<28} {motivo}")
+        elif estado == "OMITIDO_DIA_NO_LABORAL":
+            motivo = r.get("motivo", "")[:45]
+            print(f"| [OMITIDO]   {modelo:<28} {motivo}")
         else:
-            wape_str = f"{r['wape']}%" if r["wape"] is not None else "N/A (denominador=0)"
-            base_str = f"{r['wape_baseline']}%" if r["wape_baseline"] is not None else "N/A"
-            print(f"|  [OK] {r['recinto']:<11} WAPE={wape_str:<10}  MAE={r['mae']:.2f}")
-            print(f"|  {'':14} WAPE Baseline={base_str:<10}  Rows={r['train_rows']}+{r['test_rows']}")
-    print("+------------------------------------------------------+\n")
-    print("[OK] Modelos serializados en backend/models/")
-    print("  prophet_biblioteca_active.joblib")
-    print("  prophet_vehicular_active.joblib\n")
+            err = r.get("error", "Error desconocido")[:45]
+            print(f"| [CONSERVADO]{modelo:<28} Campeón conservado ({err})")
+    print("+--------------------------------------------------------------------------------+\n")
+    print(f"__RESULTADO_JSON__:{json.dumps(results, ensure_ascii=False)}")
+
 
 
 def main_train():
-    if len(sys.argv) < 2 or sys.argv[1] != "train-models":
-        print("Uso: python -m app.cli train-models")
-        sys.exit(1)
     asyncio.run(train())
