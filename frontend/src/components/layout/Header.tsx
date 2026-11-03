@@ -1,6 +1,8 @@
-import { BookOpen, Car, MapPin, Calendar, Sparkles, ShieldCheck, LogOut } from 'lucide-react'
-import { DateRange, DATE_PRESETS } from '../../types/dateRange'
+import { BookOpen, Car, MapPin, Sparkles, ShieldCheck, LogOut } from 'lucide-react'
+import { DateRange } from '../../types/dateRange'
+import { PeriodSelector } from './PeriodSelector'
 import { useAuth } from '../../context/AuthContext'
+import { useAssistant } from '../../context/AssistantContext'
 
 export type Tab = 'biblioteca' | 'estacionamiento' | 'admin'
 
@@ -12,7 +14,9 @@ interface Props {
   onOpenAssistant?: () => void
 }
 export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant }: Props) {
-  const { logout, userRole, isSuperAdmin, hasDatasetAccess } = useAuth()
+  const { logout, userRole, isSuperAdmin, canAccessAdmin, hasDatasetAccess } = useAuth()
+  const { isAiEnabled } = useAssistant()
+  const espacioId = active === 'biblioteca' ? 1 : active === 'estacionamiento' ? 2 : undefined
 
   return (
     <header className="bg-uct-blue-primary text-white shadow-xl sticky top-0 z-50">
@@ -28,24 +32,11 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10">
-            <Calendar size={14} className="text-uct-gold" />
-            <span className="text-xs text-white/70">Período:</span>
-            <select
-              value={selectedRange.label}
-              onChange={(e) => {
-                const found = DATE_PRESETS.find(p => p.label === e.target.value)
-                if (found) onRangeChange(found)
-              }}
-              className="bg-transparent text-xs text-white font-medium focus:outline-none cursor-pointer"
-            >
-              {DATE_PRESETS.map((p) => (
-                <option key={p.label} value={p.label} className="bg-uct-blue-primary text-white">
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <PeriodSelector
+            selectedRange={selectedRange}
+            onRangeChange={onRangeChange}
+            espacioId={espacioId}
+          />
 
           <div className="flex items-center gap-1.5 text-xs text-white/70 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10">
             <MapPin size={12} />
@@ -78,28 +69,26 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
               Estacionamiento CSF
             </button>
           )}
-          {isSuperAdmin && (
+          {canAccessAdmin && (
             <button
               onClick={() => onChange('admin')}
               className={`tab-btn flex items-center gap-2 ${active === 'admin' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
             >
               <ShieldCheck size={14} />
-              Panel Admin
+              Panel de Administración
             </button>
           )}
         </div>
 
         <div className="flex items-center gap-3">
-          {onOpenAssistant && (
+          {onOpenAssistant && isAiEnabled && (
             <button
               onClick={onOpenAssistant}
-              className="flex items-center gap-2 bg-gradient-to-r from-amber-500/20 to-uct-gold/30 hover:from-amber-500/30 hover:to-uct-gold/40 text-amber-200 hover:text-white px-3.5 py-1.5 rounded-lg border border-uct-gold/40 transition-all shadow-xs text-xs font-semibold cursor-pointer"
+              title="Abrir Asistente de IA"
+              className="flex items-center gap-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg border border-amber-200/90 shadow-md hover:shadow-amber-400/25 transition-all text-xs cursor-pointer"
             >
-              <Sparkles size={14} className="text-uct-gold animate-pulse" />
-              <span>Asistente IA (Gemini)</span>
-              <span className="bg-uct-gold text-uct-blue-primary text-[10px] font-bold px-1.5 py-0.2 rounded-full">
-                DSS
-              </span>
+              <Sparkles size={15} className="text-slate-950" />
+              <span>Asistente de IA</span>
             </button>
           )}
 
@@ -111,11 +100,10 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
             )}
             <button
               onClick={logout}
-              title="Cerrar sesión institucional y volver al portal"
-              className="flex items-center gap-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 hover:text-white px-3 py-1.5 rounded-lg border border-rose-400/30 transition-all text-xs font-semibold cursor-pointer shadow-2xs"
+              title="Cerrar sesión"
+              className="flex items-center justify-center bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 hover:text-white p-2 rounded-lg border border-rose-400/30 transition-all cursor-pointer shadow-2xs"
             >
-              <LogOut size={13} />
-              <span>Cerrar Sesión</span>
+              <LogOut size={15} />
             </button>
           </div>
         </div>

@@ -9,6 +9,8 @@ import {
   RefreshCw,
   TrendingUp,
   Building2,
+  Car,
+  ParkingCircle,
 } from 'lucide-react'
 import { fetchKpiSummary, KPISummary } from '../../api/client'
 import { DateRange } from '../../types/dateRange'
@@ -19,10 +21,14 @@ interface Props {
 }
 
 export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => {
+  const isEstacionamiento = espacioId === 2
+
   const { data, isLoading, isFetching, isError, refetch } = useQuery<KPISummary>({
     queryKey: ['kpi-summary', espacioId, selectedRange?.inicio, selectedRange?.fin],
     queryFn: () => fetchKpiSummary(espacioId, selectedRange?.inicio, selectedRange?.fin),
-    staleTime: 1000 * 60 * 5,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
   })
 
   const activePeriodLabel = selectedRange?.label || data?.periodo_label || 'Historial Semestre Completo'
@@ -33,7 +39,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5 pb-2.5 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-uct-blue-primary/10 flex items-center justify-center text-uct-blue-primary">
-              <Building2 size={16} />
+              {isEstacionamiento ? <Car size={16} /> : <Building2 size={16} />}
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -46,7 +52,9 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
                 </span>
               </div>
               <p className="text-[11px] text-slate-500">
-                Consolidado operacional dinámico sincronizado con el período seleccionado
+                {isEstacionamiento
+                  ? 'Consolidado operacional vehicular sincronizado con el período seleccionado'
+                  : 'Consolidado operacional dinámico sincronizado con el período seleccionado'}
               </p>
             </div>
           </div>
@@ -84,6 +92,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
+            {/* Card 1: Días Operativos */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-emerald-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-400 to-teal-500"></div>
               <div className="flex items-start justify-between">
@@ -101,37 +110,47 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                Con registro de actividad
+                {isEstacionamiento ? 'Con monitoreo ANPR activo' : 'Con registro de actividad'}
               </p>
             </div>
 
+            {/* Card 2: Carrera Más Concurrida (Biblioteca) / Sector Más Demandado (Estacionamiento) */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-blue-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-indigo-600"></div>
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Horas-Estudiante
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider truncate">
+                    {isEstacionamiento ? 'Sector Más Demandado' : 'Carrera Más Concurrida'}
                   </p>
-                  <p className="text-2xl font-black text-slate-900 mt-1 tracking-tight">
-                    {Number(data?.horas_estudiante ?? 0).toLocaleString('es-CL')}
-                    <span className="text-xs font-semibold text-slate-400 ml-1">hrs</span>
+                  <p
+                    className="text-lg font-black text-slate-900 mt-1 tracking-tight truncate"
+                    title={
+                      isEstacionamiento
+                        ? data?.sector_mas_concurrido || 'CSF11 — Edificio 11'
+                        : data?.carrera_mas_concurrida || 'Sin catalogar'
+                    }
+                  >
+                    {isEstacionamiento
+                      ? data?.sector_mas_concurrido || 'CSF11 — Edificio 11'
+                      : data?.carrera_mas_concurrida || 'Sin catalogar'}
                   </p>
                 </div>
-                <div className="w-9 h-9 rounded-lg bg-blue-50 text-uct-blue-primary border border-blue-200/60 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <GraduationCap size={18} />
+                <div className="w-9 h-9 shrink-0 rounded-lg bg-blue-50 text-uct-blue-primary border border-blue-200/60 flex items-center justify-center group-hover:scale-105 transition-transform">
+                  {isEstacionamiento ? <ParkingCircle size={18} /> : <GraduationCap size={18} />}
                 </div>
               </div>
-              <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                Horas efectivas de uso
+              <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium truncate">
+                {isEstacionamiento ? 'Mayor afluencia de accesos ANPR' : 'Mayor afluencia acumulada'}
               </p>
             </div>
 
+            {/* Card 3: Recurrencia */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-purple-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-purple-500 to-violet-600"></div>
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Recurrencia Mensual
+                    {isEstacionamiento ? 'Recurrencia Vehicular' : 'Recurrencia Mensual'}
                   </p>
                   <p className="text-2xl font-black text-slate-900 mt-1 tracking-tight">
                     {Number(data?.recurrencia_mensual ?? 0).toFixed(1)}x
@@ -142,19 +161,20 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                Visitas promedio / usuario
+                {isEstacionamiento ? 'Ingresos promedio / patente' : 'Visitas promedio / usuario'}
               </p>
             </div>
 
+            {/* Card 4: Hora Pico */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-amber-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-400 to-orange-500"></div>
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Hora Pico de Ingreso
+                    {isEstacionamiento ? 'Hora Pico de Acceso' : 'Hora Pico de Ingreso'}
                   </p>
                   <p className="text-2xl font-black text-slate-900 mt-1 tracking-tight">
-                    {data?.hora_pico_ingreso || '14:00 hrs'}
+                    {data?.hora_pico_ingreso || (isEstacionamiento ? '08:00 hrs' : '14:00 hrs')}
                   </p>
                 </div>
                 <div className="w-9 h-9 rounded-lg bg-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center group-hover:scale-105 transition-transform">
@@ -162,10 +182,11 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                Mayor afluencia histórica
+                {isEstacionamiento ? 'Mayor flujo vehicular matutino' : 'Mayor afluencia histórica'}
               </p>
             </div>
 
+            {/* Card 5: Pico Concurrente */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-rose-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 to-red-600"></div>
               <div className="flex items-start justify-between">
@@ -174,15 +195,18 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
                     Pico Concurrente
                   </p>
                   <p className="text-2xl font-black text-slate-900 mt-1 tracking-tight">
-                    {Number(data?.pico_concurrente ?? 0).toLocaleString('es-CL')} pers
+                    {Number(data?.pico_concurrente ?? 0).toLocaleString('es-CL')}{' '}
+                    <span className="text-sm font-bold text-slate-500">
+                      {isEstacionamiento ? 'veh' : 'pers'}
+                    </span>
                   </p>
                 </div>
                 <div className="w-9 h-9 rounded-lg bg-rose-50 text-rose-600 border border-rose-200/60 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <Users size={18} />
+                  {isEstacionamiento ? <Car size={18} /> : <Users size={18} />}
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                Máximo horario registrado
+                {isEstacionamiento ? 'Máximo aforo vehicular en 1h' : 'Máximo horario registrado'}
               </p>
             </div>
           </div>
