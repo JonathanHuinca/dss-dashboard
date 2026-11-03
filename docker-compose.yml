@@ -1,46 +1,79 @@
-services:
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: uct_backend
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./backend/.env
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-    depends_on:
-      - timescaledb
-      - redis
+name: uct-dss
 
-  timescaledb:
-    image: timescale/timescaledb:latest-pg16
-    container_name: uct_timescaledb_dev
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2019-latest
     restart: unless-stopped
-    ports:
-      - "5433:5432"
     environment:
-      POSTGRES_DB: uct_dashboard
-      POSTGRES_USER: uct_admin
-      POSTGRES_PASSWORD: uct_secret
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: ${MSSQL_PID:-Developer}
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Definir MSSQL_SA_PASSWORD en .env}
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2560}
+      TZ: America/Santiago
     volumes:
-      - timescaledb_data:/var/lib/postgresql/data
-      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init_db.sql:ro
+      - sqlserver_data:/var/opt/mssql
+      - respaldos_sql:/var/opt/mssql/backup
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U uct_admin -d uct_dashboard"]
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1'"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+    networks:
+      - red_interna
 
-  redis:
-    image: redis:alpine
-    container_name: uct_redis_dev
+  api:
+    image: ${REGISTRO:-uct}/uct-api:${VERSION:-local}
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      TZ: America/Santiago
+      WEB_CONCURRENCY: "1"
+    volumes:
+      - modelos_ml:/app/models
+      - ingesta_archivos:/app/datos_ingesta
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3g
+    networks:
+      - red_interna
+
+  frontend:
+    image: ${REGISTRO:-uct}/uct-frontend:${VERSION:-local}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks:
+      - red_interna
+
+networks:
+  red_interna:
+    driver: bridge
 
 volumes:
-  timescaledb_data:
-    driver: local
+  sqlserver_data:
+  respaldos_sql:
+  modelos_ml:
+  ingesta_archivos:

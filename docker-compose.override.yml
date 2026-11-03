@@ -1,0 +1,30 @@
+services:
+  db:
+    ports:
+      - "127.0.0.1:1433:1433"
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --proxy-headers
+    environment:
+      ENVIRONMENT: development
+      PLANIFICADOR_ACTIVO: "true"
+      SEMILLA_DEMO: "true"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/models:/app/models
+      - ./Documentos_soloVista:/Documentos_soloVista:ro
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3000:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
