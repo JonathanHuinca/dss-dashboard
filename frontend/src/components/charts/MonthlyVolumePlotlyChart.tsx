@@ -52,7 +52,16 @@ export function MonthlyVolumePlotlyChart({ data }: Props) {
       side: 'right' as const,
       automargin: true,
     },
-    margin: { t: 40, r: 50, b: 65, l: 60 },
+    margin: { t: 40, r: 55, b: 90, l: 60 },
+    showlegend: true,
+    legend: {
+      orientation: 'h' as const,
+      x: 0.5,
+      xanchor: 'center' as const,
+      y: -0.30,
+      yanchor: 'top' as const,
+      font: { size: 10.5, color: '#334155' },
+    },
   }
 
   return (
@@ -60,7 +69,7 @@ export function MonthlyVolumePlotlyChart({ data }: Props) {
       data={chartData}
       layout={layout}
       filename="volumen_mensual_biblioteca"
-      height={320}
+      height={340}
     />
   )
 }

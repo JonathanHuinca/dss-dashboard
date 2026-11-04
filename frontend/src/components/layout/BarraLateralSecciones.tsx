@@ -90,10 +90,18 @@ export function BarraLateralSecciones({
   }
 
   return (
-    <aside
-      aria-label={`Navegación de secciones de ${tituloModulo}`}
-      className="fixed left-0 top-28 z-30 flex items-start pointer-events-none"
-    >
+    <>
+      {abiertaEfectiva && (
+        <div
+          onClick={alternarBarraLateral}
+          className="fixed inset-0 z-20 bg-slate-900/40 backdrop-blur-xs md:hidden pointer-events-auto"
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        aria-label={`Navegación de secciones de ${tituloModulo}`}
+        className="fixed left-0 top-28 z-30 flex items-start pointer-events-none"
+      >
       {/* Pestaña compacta cuando la barra lateral está oculta/plegada */}
       {!abiertaEfectiva && (
         <button
@@ -253,6 +261,7 @@ export function BarraLateralSecciones({
         </div>
       )}
     </aside>
+  </>
   )
 }
 

@@ -210,7 +210,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
 
       {/* Popover Desplegable */}
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-[420px] sm:w-[470px] bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-2xl z-50 text-slate-100 p-4 animate-in fade-in zoom-in-95 duration-150">
+        <div className="absolute right-0 mt-2 w-[calc(100vw-2rem)] sm:w-[470px] max-w-[470px] bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-2xl z-50 text-slate-100 p-4 animate-in fade-in zoom-in-95 duration-150">
           {/* Cabecera del Popover */}
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-800">
             <div className="flex items-center gap-2">

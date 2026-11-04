@@ -12,11 +12,29 @@ interface Props {
 export const VisitProfilesPlotlyChart = memo(function VisitProfilesPlotlyChart({ data, height = 340 }: Props) {
   const [rebanadaSeleccionada, setRebanadaSeleccionada] = useState<string | null>(null)
 
-  if (!data || !data.items || data.items.length === 0) {
+  if (!data || !data.items || data.items.length === 0 || (data.total_visitas_analizadas === 0 && (data.total_eventos ?? 0) === 0)) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-slate-400 space-y-2">
         <Clock className="w-8 h-8 text-slate-300 animate-pulse" />
-        <p className="text-xs font-medium">Sin datos de perfiles de visita para los filtros seleccionados</p>
+        <p className="text-xs font-medium">Sin registros físicos de torniquetes para el período seleccionado</p>
+      </div>
+    )
+  }
+
+  if (data.total_visitas_analizadas === 0 && (data.total_eventos ?? 0) > 0) {
+    return (
+      <div className="space-y-3 p-4 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900">
+        <div className="flex items-center gap-2 font-bold text-amber-800">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>Datos Asimétricos Omitidos — Sin Ciclos Completos de Entrada y Salida</span>
+        </div>
+        <p className="text-[11px] text-amber-800/90 leading-relaxed">
+          Se identificaron <b>{data.total_eventos.toLocaleString('es-CL')} eventos físicos</b> en el período ({data.entradas_sin_salida.toLocaleString('es-CL')} entradas sin salida y {data.salidas_sin_entrada.toLocaleString('es-CL')} salidas sin entrada), pero ninguno completó un ciclo cerrado consecutivo para calcular la permanencia en minutos.
+        </p>
+        <div className="flex items-center gap-3 pt-1 text-[10.5px] font-semibold">
+          <span className="px-2 py-0.5 bg-amber-200/60 rounded">Total Bruto: {data.total_eventos.toLocaleString('es-CL')}</span>
+          <span className="px-2 py-0.5 bg-amber-200/60 rounded">Asimétricos: {data.total_no_analizados.toLocaleString('es-CL')}</span>
+        </div>
       </div>
     )
   }

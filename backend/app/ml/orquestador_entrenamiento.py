@@ -148,6 +148,54 @@ def _guardar_metadatos_campeon(clave_modelo: str, datos: Dict[str, Any]) -> None
         logger.error(f"[orquestador] Error guardando metadatos para {clave_modelo}: {e}")
 
 
+def _evaluar_campeon_existente(
+    clave_modelo: str,
+    archivo_activo: str,
+    familia: str,
+    test_features: Any,
+    y_true: np.ndarray,
+    cap_val: Optional[float] = None,
+    es_horario_abierto: Optional[np.ndarray] = None,
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Evalúa el modelo campeón activo en disco sobre el MISMO conjunto de prueba (test split)
+    utilizado para evaluar al retador, garantizando un benchmark metodológicamente pareado y justo.
+    Retorna (wape_campeon_actual, mae_campeon_actual). Si no existe o falla, retorna (None, None).
+    """
+    ruta_activo = DIRECTORIO_MODELOS / archivo_activo
+    if not ruta_activo.exists():
+        return None, None
+
+    try:
+        obj = joblib.load(ruta_activo)
+
+        if familia == "Prophet":
+            regressors = [r for r in getattr(obj, "extra_regressors", {}).keys() if r in test_features.columns]
+            cols = ["ds"] + regressors
+            forecast = obj.predict(test_features[cols])
+            y_pred = forecast["yhat"].values
+            if cap_val is not None:
+                y_pred = np.clip(y_pred, a_min=0, a_max=cap_val)
+            if es_horario_abierto is not None:
+                y_pred[es_horario_abierto == 0] = 0.0
+
+        elif familia == "HistGradientBoosting":
+            reg = obj["model"] if isinstance(obj, dict) and "model" in obj else obj
+            y_pred = np.clip(reg.predict(test_features), 0, None)
+
+        else:
+            return None, None
+
+        denom = np.sum(y_true)
+        wape = float(100.0 * np.sum(np.abs(y_true - y_pred)) / denom) if denom > 0 else 0.0
+        mae = float(np.mean(np.abs(y_true - y_pred)))
+        return round(wape, 2), round(mae, 2)
+
+    except Exception as err:
+        logger.warning(f"[orquestador] No se pudo evaluar campeón activo {clave_modelo} sobre test split: {err}")
+        return None, None
+
+
 # ---------------------------------------------------------------------------
 # Entrenamiento de Retadores Específicos
 # ---------------------------------------------------------------------------
@@ -162,10 +210,12 @@ async def _entrenar_retador_prophet(
     from app.ml.prophet_service import (
         MIN_ROWS_REQUIRED,
         TRAIN_RATIO,
+        REGRESORES_PROPHET,
         _build_prophet,
         _enrich_features,
         _fetch_calendar,
         _fetch_hourly_data,
+        _fetch_capacidades,
     )
 
     df = await _fetch_hourly_data(session, recinto=recinto, sala=sala)
@@ -173,13 +223,20 @@ async def _entrenar_retador_prophet(
         raise ValueError(f"Datos insuficientes para '{clave_modelo}': {len(df)} filas encontradas (requiere >= {MIN_ROWS_REQUIRED}).")
 
     cal = await _fetch_calendar(session)
+    capacidades = await _fetch_capacidades(session)
+    cap_val = float(capacidades.get(sala, capacidades.get("todas", 426)))
+    if recinto == "vehicular":
+        cap_val = float(capacidades.get("vehicular", 150))
+
     df = _enrich_features(df, cal, sala=sala)
+    df["cap"] = cap_val
+    df["floor"] = 0.0
 
     split_idx = int(len(df) * TRAIN_RATIO)
     train_df = df.iloc[:split_idx].copy()
     test_df = df.iloc[split_idx:].copy()
 
-    regressors = ["es_horario_abierto", "is_exam_period", "is_break", "is_strike"]
+    regressors = REGRESORES_PROPHET
     model = _build_prophet()
 
     import warnings
@@ -192,12 +249,23 @@ async def _entrenar_retador_prophet(
     forecast_test = model.predict(test_features)
 
     y_true = test_df["y"].values
-    y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=None)
+    y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=cap_val)
     y_pred[test_df["es_horario_abierto"].values == 0] = 0.0
 
     denom = np.sum(y_true)
     wape = float(100.0 * np.sum(np.abs(y_true - y_pred)) / denom) if denom > 0 else 0.0
     mae = float(np.mean(np.abs(y_true - y_pred)))
+
+    # Evaluación pareada del campeón activo existente sobre el MISMO conjunto de prueba
+    wape_camp_test, mae_camp_test = _evaluar_campeon_existente(
+        clave_modelo=clave_modelo,
+        archivo_activo=f"{clave_modelo}_active.joblib",
+        familia="Prophet",
+        test_features=test_features,
+        y_true=y_true,
+        cap_val=cap_val,
+        es_horario_abierto=test_df["es_horario_abierto"].values,
+    )
 
     # Guardar artefacto retador temporal
     ts = datetime.now().strftime("%Y%m%d_%H%M")
@@ -209,6 +277,8 @@ async def _entrenar_retador_prophet(
         "ruta_retador": ruta_retador,
         "wape": round(wape, 2),
         "mae": round(mae, 2),
+        "wape_campeon_test": wape_camp_test,
+        "mae_campeon_test": mae_camp_test,
         "filas_train": len(train_df),
         "filas_test": len(test_df),
         "version": ts,
@@ -286,15 +356,34 @@ async def _entrenar_retador_gbr(
     wape = float(100.0 * np.sum(np.abs(y_test.values - y_pred)) / denom) if denom > 0 else 0.0
     mae = float(np.mean(np.abs(y_test.values - y_pred)))
 
+    # Evaluación pareada del campeón activo existente sobre el MISMO conjunto de prueba
+    wape_camp_test, mae_camp_test = _evaluar_campeon_existente(
+        clave_modelo=clave_modelo,
+        archivo_activo=f"{clave_modelo}.joblib",
+        familia="HistGradientBoosting",
+        test_features=x_test,
+        y_true=y_test.values,
+    )
+
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     ruta_retador = DIRECTORIO_MODELOS / f"{clave_modelo}_retador_v{ts}.joblib"
-    joblib.dump(reg, ruta_retador)
+    payload = {
+        "model": reg,
+        "features": FEATURE_COLS,
+        "score_r2": float(reg.score(x_test, y_test)),
+        "wape": round(wape, 2),
+        "mae": round(mae, 2),
+        "version": ts,
+    }
+    joblib.dump(payload, ruta_retador)
 
     return {
-        "objeto_modelo": reg,
+        "objeto_modelo": payload,
         "ruta_retador": ruta_retador,
         "wape": round(wape, 2),
         "mae": round(mae, 2),
+        "wape_campeon_test": wape_camp_test,
+        "mae_campeon_test": mae_camp_test,
         "filas_train": len(x_train),
         "filas_test": len(x_test),
         "version": ts,
@@ -323,6 +412,16 @@ async def _entrenar_retador_kmeans(
     km.fit(x_scaled)
     inercia = float(km.inertia_)
 
+    # Inercia de referencia del campeón existente si está disponible
+    ruta_activo = DIRECTORIO_MODELOS / f"{clave_modelo}.joblib"
+    inercia_campeon = None
+    if ruta_activo.exists():
+        try:
+            c_data = joblib.load(ruta_activo)
+            inercia_campeon = c_data.get("inertia") if isinstance(c_data, dict) else None
+        except Exception:
+            pass
+
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     ruta_retador = DIRECTORIO_MODELOS / f"{clave_modelo}_retador_v{ts}.joblib"
     payload = {"model": km, "scaler": scaler, "features": feats, "inertia": inercia}
@@ -333,6 +432,7 @@ async def _entrenar_retador_kmeans(
         "ruta_retador": ruta_retador,
         "wape": 0.0,
         "mae": round(inercia, 2),
+        "inercia_campeon": inercia_campeon,
         "filas_train": len(df),
         "filas_test": 0,
         "version": ts,
@@ -616,17 +716,37 @@ async def entrenar_todos_los_modelos(
                 mae_retador = retador["mae"]
                 ruta_retador: Path = retador["ruta_retador"]
 
-                # 2. Evaluación de Promoción: Supera o iguala al campeón
-                debe_promover = (wape_campeon is None) or (wape_retador <= wape_campeon)
+                wape_campeon_pareado = retador.get("wape_campeon_test")
+                mae_campeon_pareado = retador.get("mae_campeon_test")
+                es_pareado = wape_campeon_pareado is not None
+
+                wape_benchmark = wape_campeon_pareado if es_pareado else wape_campeon
+                mae_benchmark = mae_campeon_pareado if es_pareado else mae_campeon
+
+                # 2. Evaluación de Promoción: Supera o iguala al benchmark del campeón
+                if config_m["familia"] == "KMeans":
+                    inercia_retador = mae_retador
+                    inercia_ref = retador.get("inercia_campeon") or mae_campeon
+                    debe_promover = (inercia_ref is None) or (inercia_retador <= inercia_ref * 1.05)
+                else:
+                    debe_promover = (wape_benchmark is None) or (wape_retador <= wape_benchmark)
+
+                desc_benchmark = (
+                    f"WAPE={wape_benchmark}% (evaluación pareada en test actual)"
+                    if es_pareado
+                    else f"WAPE={wape_benchmark}% (referencia histórica)"
+                )
 
                 if debe_promover:
-                    # Promover retador a campeón activo usando copyfile para evitar errores de chmod en volúmenes Docker
+                    # Promover retador a campeón activo de forma atómica
                     ruta_activa = DIRECTORIO_MODELOS / config_m["archivo_activo"]
+                    ruta_activa.unlink(missing_ok=True)
                     shutil.copyfile(ruta_retador, ruta_activa)
 
                     # Guardar copia versionada oficial
                     ts = retador["version"]
                     ruta_versionada = DIRECTORIO_MODELOS / f"{clave}_v{ts}.joblib"
+                    ruta_versionada.unlink(missing_ok=True)
                     shutil.copyfile(ruta_retador, ruta_versionada)
 
                     # Actualizar metadatos del campeón
@@ -641,13 +761,14 @@ async def entrenar_todos_los_modelos(
                         "estado": "activo",
                         "es_campeon": True,
                         "promovido_en": datetime.utcnow().isoformat(),
-                        "campeon_anterior_wape": wape_campeon,
+                        "campeon_anterior_wape": wape_benchmark,
+                        "evaluacion_pareada": es_pareado,
                     }
                     _guardar_metadatos_campeon(clave, nuevos_meta)
                     invalidar_cache_modelo(ruta_activa)
 
                     logger.info(
-                        f"[orquestador] ¡RETADOR PROMOVIDO! {clave}: WAPE={wape_retador}% (vs {wape_campeon}% del campeón)."
+                        f"[orquestador] ¡RETADOR PROMOVIDO! {clave}: Retador WAPE={wape_retador}% vs Campeón {desc_benchmark}."
                     )
                     resultados.append({
                         "modelo": clave,
@@ -656,23 +777,28 @@ async def entrenar_todos_los_modelos(
                         "promovido": True,
                         "wape": wape_retador,
                         "mae": mae_retador,
+                        "wape_retador": wape_retador,
+                        "wape_campeon": wape_benchmark,
                         "campeon_anterior_wape": wape_campeon,
+                        "evaluacion_pareada": es_pareado,
+                        "motivo": f"Retador promovido con éxito ({wape_retador}% vs {wape_benchmark}% del campeón pareado).",
                         "version": ts,
                     })
                 else:
                     # Retador no superó al campeón actual: se descarta
                     logger.warning(
-                        f"[orquestador] Retador descartado para {clave}: WAPE={wape_retador}% no superó al campeón ({wape_campeon}%)."
+                        f"[orquestador] Retador descartado para {clave}: WAPE={wape_retador}% no superó al campeón ({desc_benchmark})."
                     )
                     resultados.append({
                         "modelo": clave,
                         "familia": config_m["familia"],
                         "estado": "rechazado",
                         "promovido": False,
-                        "motivo": f"Retador (WAPE {wape_retador}%) no superó al campeón actual (WAPE {wape_campeon}%).",
+                        "motivo": f"Retador (WAPE {wape_retador}%) no superó al campeón actual ({desc_benchmark}).",
                         "wape_retador": wape_retador,
-                        "wape_campeon": wape_campeon,
+                        "wape_campeon": wape_benchmark,
                         "campeon_conservado": True,
+                        "evaluacion_pareada": es_pareado,
                     })
 
                 # Limpieza de archivo temporal retador

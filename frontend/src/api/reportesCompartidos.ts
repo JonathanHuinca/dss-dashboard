@@ -53,6 +53,12 @@ export interface ReporteCompartidoResumen {
   correo_enviado?: boolean
   enlace_activacion?: string | null
   destinatario: DestinatarioReporteInfo
+  creador?: {
+    id?: number | null
+    nombre_completo: string
+    email: string
+    rol: string
+  }
 }
 
 export interface CatalogoItemReporte {

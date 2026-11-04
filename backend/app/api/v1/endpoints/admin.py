@@ -878,7 +878,7 @@ async def actualizar_cuota_ia_rol(
     if not rol:
         raise HTTPException(status_code=404, detail="Rol no encontrado")
     
-    quota_raw = str(payload.get("rate_limit_quota", "30/day")).strip()
+    quota_raw = str(payload.get("rate_limit_quota", "30/día")).strip().replace("/day", "/día")
     cooldown_val = int(payload.get("cooldown_segundos", 10))
     if cooldown_val < 0:
         cooldown_val = 0

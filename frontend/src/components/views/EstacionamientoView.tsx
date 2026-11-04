@@ -947,7 +947,7 @@ export function EstacionamientoView({ dateRange }: Props) {
         </div>
       )}
 
-      {/* Resumen Final de Integridad ANPR y Picos */}
+      {/* Resumen Final de Integridad ANPR y Máximos Operacionales */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
           title="Parque Vehicular Único"
@@ -971,7 +971,7 @@ export function EstacionamientoView({ dateRange }: Props) {
         <KpiCard
           title="Máximo Aforo Simultáneo"
           value={`${fmt(kpis.data?.max_aforo_historico)} veh`}
-          subtitle="pico horario registrado"
+          subtitle="máximo horario registrado"
           icon={TrendingUp}
           iconColor="#2563EB"
         />

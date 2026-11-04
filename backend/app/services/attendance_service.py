@@ -950,7 +950,23 @@ class AttendanceService:
             desduplicar_rafagas=desduplicar_rafagas,
         )
         sql = text(f"""
-            WITH ad AS (
+            WITH hourly AS (
+                SELECT 
+                    CAST(time AS DATE) AS dia,
+                    DATEPART(hour, time) AS hora,
+                    COUNT(DISTINCT person_id_hash) AS aforo_hora
+                FROM eventos_asistencia
+                WHERE {where_sql}
+                GROUP BY CAST(time AS DATE), DATEPART(hour, time)
+            ),
+            daily_peak AS (
+                SELECT 
+                    dia, 
+                    MAX(aforo_hora) AS pico_hora_dia
+                FROM hourly
+                GROUP BY dia
+            ),
+            ad AS (
                 SELECT CAST(time AS DATE) AS dia, COUNT(*) AS total_dia
                 FROM eventos_asistencia
                 WHERE {where_sql}
@@ -966,8 +982,10 @@ class AttendanceService:
                 COUNT(ad.dia) AS dias_totales,
                 ROUND(AVG(ad.total_dia * 1.0), 1) AS promedio_diario,
                 COALESCE(MAX(ad.total_dia), 0) AS max_dia,
+                COALESCE(MAX(dp.pico_hora_dia), 0) AS aforo_pico_simultaneo,
                 SUM(ad.total_dia) AS total_asistencias
             FROM ad
+            LEFT JOIN daily_peak dp ON ad.dia = dp.dia
             LEFT JOIN calendario_academico ca ON ad.dia = ca.fecha
             GROUP BY 
                 CASE 
@@ -985,6 +1003,7 @@ class AttendanceService:
                 "dias_totales": int(r.dias_totales),
                 "promedio_diario": float(r.promedio_diario or 0),
                 "max_dia": int(r.max_dia or 0),
+                "aforo_pico_simultaneo": int(getattr(r, "aforo_pico_simultaneo", 0) or 0),
                 "total_asistencias": int(r.total_asistencias or 0),
             }
             for r in rows
@@ -1792,7 +1811,7 @@ class AttendanceService:
                 SELECT 
                     person_id_hash,
                     time,
-                    salida_imputada,
+                    CASE WHEN door_salida IS NOT NULL OR salida_imputada = 1 THEN 1 ELSE 0 END AS es_salida,
                     CAST(time AS DATE) AS fecha
                 FROM eventos_asistencia
                 WHERE {where_sql}
@@ -1801,9 +1820,9 @@ class AttendanceService:
                 SELECT 
                     person_id_hash,
                     time,
-                    salida_imputada,
+                    es_salida,
                     LEAD(time) OVER (PARTITION BY fecha, person_id_hash ORDER BY time) AS next_time,
-                    LEAD(salida_imputada) OVER (PARTITION BY fecha, person_id_hash ORDER BY time) AS next_es_salida
+                    LEAD(es_salida) OVER (PARTITION BY fecha, person_id_hash ORDER BY time) AS next_es_salida
                 FROM EventosFiltrados
             ),
             VisitasEmparejadas AS (
@@ -1815,7 +1834,7 @@ class AttendanceService:
                     END AS perfil,
                     DATEDIFF(MINUTE, time, next_time) AS duracion_min
                 FROM PasadasConsecutivas
-                WHERE salida_imputada = 0 AND next_es_salida = 1 AND DATEDIFF(MINUTE, time, next_time) >= 0
+                WHERE es_salida = 0 AND next_es_salida = 1 AND DATEDIFF(MINUTE, time, next_time) >= 0
             )
             SELECT 
                 perfil,
@@ -1830,8 +1849,8 @@ class AttendanceService:
         sql_counts = text(f"""
             SELECT 
                 COUNT(*) AS total_eventos,
-                SUM(CASE WHEN salida_imputada = 0 THEN 1 ELSE 0 END) AS total_entradas,
-                SUM(CASE WHEN salida_imputada = 1 THEN 1 ELSE 0 END) AS total_salidas
+                SUM(CASE WHEN door_entrada IS NOT NULL AND (door_salida IS NULL AND (salida_imputada IS NULL OR salida_imputada = 0)) THEN 1 ELSE 0 END) AS total_entradas,
+                SUM(CASE WHEN door_salida IS NOT NULL OR salida_imputada = 1 THEN 1 ELSE 0 END) AS total_salidas
             FROM eventos_asistencia
             WHERE {where_sql}
         """)
@@ -2820,8 +2839,27 @@ class AttendanceService:
                 return hora < 6
             return False
 
+        # Filtrar exclusivamente semanas que pertenezcan a períodos con régimen 24 Horas activo
+        rangos_24h = [
+            (c.fecha_inicio.date(), c.fecha_fin.date())
+            for c in todas_campanas if c.fecha_inicio and c.fecha_fin
+        ]
+
+        def es_semana_valida_24h(d_min, d_max) -> bool:
+            min_d = d_min if isinstance(d_min, date) else d_min.date()
+            max_d = d_max if isinstance(d_max, date) else d_max.date()
+            if regla_24h and regla_24h.fecha_inicio and regla_24h.fecha_fin:
+                c_ini = regla_24h.fecha_inicio.date()
+                c_fin = regla_24h.fecha_fin.date()
+                return not (max_d < c_ini or min_d > c_fin)
+            if rangos_24h:
+                return any(not (max_d < c_ini or min_d > c_fin) for c_ini, c_fin in rangos_24h)
+            return True
+
         semanas_dict = {}
         for r in rows_heatmap:
+            if not es_semana_valida_24h(r.min_fecha, r.max_fecha):
+                continue
             s_num = int(r.semana_num)
             idx_dia = dw_to_idx.get(int(r.dia_dw), 0)
             hora_int = int(r.hora)

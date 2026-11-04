@@ -66,9 +66,9 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
         ['Estudiantes Totales Únicos en el Período', data.kpis_comparativa.estudiantes_totales_unicos],
         ['Horas de Estudio Nocturnas Capturadas', `${data.kpis_comparativa.horas_estudio_nocturnas} hrs`],
         ['Permanencia Promedio Nocturna', `${data.kpis_comparativa.permanencia_promedio_nocturna_min} min`],
-        ['Pico de Concurrencia Nocturna Simultánea', `${data.pico_nocturno.aforo_maximo} personas`],
+        ['Máxima Concurrencia Nocturna Simultánea', `${data.pico_nocturno.aforo_maximo} personas`],
         ['Hora Crítica de Concurrencia Nocturna', data.pico_nocturno.hora_pico],
-        ['Tasa de Ocupación Pico sobre Asientos (226)', `${data.pico_nocturno.tasa_ocupacion_asientos_pct}%`],
+        ['Tasa de Ocupación Máxima sobre Asientos (226)', `${data.pico_nocturno.tasa_ocupacion_asientos_pct}%`],
       ]
       const wsResumen = XLSX.utils.aoa_to_sheet(resumenRows)
       XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen Ejecutivo')
@@ -239,7 +239,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
 
                 <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
                   <div className="flex items-center justify-between text-xs text-slate-700 dark:text-slate-300 mb-1">
-                    <span>Pico Simultaniedad</span>
+                    <span>Máxima Concurrencia</span>
                     <Flame className="w-3.5 h-3.5 text-amber-500" />
                   </div>
                   <div className="text-xl font-bold text-amber-600 dark:text-amber-400">

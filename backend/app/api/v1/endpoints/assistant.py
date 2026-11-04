@@ -47,7 +47,7 @@ METRICAS ANALITICAS GENERALES (CAMPUS SAN FRANCISCO 2026):
 - Semana de maxima afluencia historica: Semana ISO 2026-16 con 2.097 ingresos registrados.
 - Impacto de certamenes: Durante semanas con is_exam_period = True el promedio diario es de 321 ingresos/dia, en comparacion a ~70 ingresos/dia en semanas regulares sin evaluaciones (un aumento superior al 350%).
 - Recesos estudiantiles (is_break = True): Reduccion drastica del aforo diario a menos de 15 personas/dia.
-- Franja horaria de mayor congestion (Pico): 10:00 - 13:00 hrs (promedio 120-150 usuarios concurrentes) y 15:00 - 17:00 hrs.
+- Franja horaria de mayor afluencia y concurrencia: 10:00 - 13:00 hrs (promedio 120-150 usuarios concurrentes) y 15:00 - 17:00 hrs.
 - Distribucion de perfiles de permanencia: Visitas cortas (<60m) representan el 39.87%, medias (60-180m) el 37.23% y largas (>180m) el 22.90%.
 - Capacidad maxima de diseno Biblioteca CSF: 200 cupos simultaneos.
 """
@@ -109,7 +109,7 @@ def build_offline_response(prompt_text: str) -> str:
     return (
         "El DSS de Campus San Francisco cuenta con 24.430 ingresos consolidados en Biblioteca y monitoreo continuo de flujo vehicular. "
         "Los principales factores de variabilidad son los hitos del calendario academico (certamenes elevan el aforo a 321 usuarios/dia y recesos disminuyen a minimos operativos). "
-        "Las horas pico se concentran entre 10:00 - 13:00 y 15:00 - 17:00 hrs."
+        "Las horas de máxima afluencia se concentran entre 10:00 - 13:00 y 15:00 - 17:00 hrs."
     )
 
 @router.get("/models")

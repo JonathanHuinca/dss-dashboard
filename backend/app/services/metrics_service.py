@@ -11,8 +11,26 @@ class MetricsService:
         espacio_id: int = 1,
         fecha_inicio: Optional[date] = None,
         fecha_fin: Optional[date] = None,
+        alcance: str = "conformes",
+        regimen_horario: Optional[str] = "todos",
+        direccion: Optional[str] = "todos",
+        dias_semana: Optional[str] = None,
+        door: Optional[str] = None,
+        perfil_visita: Optional[str] = "todos",
+        marcajes: Optional[str] = "todos",
+        sala: Optional[str] = None,
+        carrera: Optional[str] = None,
+        facultad: Optional[str] = None,
+        cohorte: Optional[str] = None,
+        incluir_pausas_bano: bool = True,
+        desduplicar_rafagas: bool = True,
     ) -> dict:
         if espacio_id == 2:
+            params = {
+                "espacio_id": espacio_id,
+                "fecha_inicio": fecha_inicio,
+                "fecha_fin": fecha_fin,
+            }
             sql = text("""
             WITH bounds AS (
                 SELECT 
@@ -77,48 +95,63 @@ class MetricsService:
             CROSS JOIN max_hourly mh;
             """)
         else:
-            sql = text("""
-            WITH bounds AS (
-                SELECT 
-                    COALESCE(CAST(:fecha_inicio AS DATETIME2), (SELECT MIN(time) FROM eventos_asistencia WHERE espacio_id = :espacio_id), CAST('2000-01-01' AS DATETIME2)) AS start_time,
-                    COALESCE(DATEADD(day, 1, CAST(:fecha_fin AS DATETIME2)), (SELECT DATEADD(second, 1, MAX(time)) FROM eventos_asistencia WHERE espacio_id = :espacio_id), CAST('2100-01-01' AS DATETIME2)) AS end_time
-            ),
-            kpis AS (
+            from app.services.attendance_service import AttendanceService
+            where_sql, params = await AttendanceService._build_attendance_filters(
+                session=session,
+                espacio_id=espacio_id,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+                cohorte=cohorte,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+            )
+
+            sql = text(f"""
+            WITH kpis AS (
                 SELECT
-                    COALESCE(COUNT(DISTINCT CAST(ea.time AS DATE)), 0) AS dias_operativos,
-                    ROUND(COALESCE(SUM(ea.permanencia_min), 0) / 60.0, 0) AS horas_estudiante,
-                    ROUND(CAST(COUNT(*) AS FLOAT) / NULLIF(COUNT(DISTINCT ea.person_id_hash), 0), 1) AS recurrencia_mensual
-                FROM eventos_asistencia ea, bounds b
-                WHERE ea.time >= b.start_time AND ea.time < b.end_time
-                  AND ea.espacio_id = :espacio_id
-                  AND ea.alerta_coherencia_fechas = 0
+                    COALESCE(COUNT(DISTINCT CAST(time AS DATE)), 0) AS dias_operativos,
+                    ROUND(COALESCE(SUM(permanencia_min), 0) / 60.0, 0) AS horas_estudiante,
+                    ROUND(CAST(COUNT(*) AS FLOAT) / NULLIF(COUNT(DISTINCT person_id_hash), 0), 1) AS recurrencia_mensual
+                FROM eventos_asistencia
+                WHERE {where_sql}
             ),
             top_career AS (
                 SELECT TOP 1
-                    ea.carrera
-                FROM eventos_asistencia ea, bounds b
-                WHERE ea.time >= b.start_time AND ea.time < b.end_time
-                  AND ea.espacio_id = :espacio_id
-                  AND ea.carrera IS NOT NULL
-                  AND ea.carrera != 'Sin carrera catalogada'
-                  AND ea.carrera != ''
-                GROUP BY ea.carrera
+                    carrera
+                FROM eventos_asistencia
+                WHERE {where_sql}
+                  AND carrera IS NOT NULL
+                  AND carrera != 'Sin carrera catalogada'
+                  AND carrera != ''
+                GROUP BY carrera
                 ORDER BY COUNT(*) DESC
             ),
             peak_hour AS (
                 SELECT TOP 1
-                    DATEPART(hour, ea.time) AS hora
-                FROM eventos_asistencia ea, bounds b
-                WHERE ea.time >= b.start_time AND ea.time < b.end_time
-                  AND ea.espacio_id = :espacio_id
-                GROUP BY DATEPART(hour, ea.time)
+                    DATEPART(hour, time) AS hora
+                FROM eventos_asistencia
+                WHERE {where_sql}
+                GROUP BY DATEPART(hour, time)
                 ORDER BY COUNT(*) DESC
             ),
             max_hourly AS (
-                SELECT COALESCE(MAX(ingresos), 0) AS pico_concurrente
-                FROM aforo_horario_biblioteca, bounds b
-                WHERE bucket >= b.start_time AND bucket < b.end_time
-                  AND espacio_id = :espacio_id
+                SELECT COALESCE(MAX(cnt), 0) AS pico_concurrente
+                FROM (
+                    SELECT COUNT(DISTINCT person_id_hash) as cnt
+                    FROM eventos_asistencia
+                    WHERE {where_sql}
+                    GROUP BY DATEADD(hour, DATEDIFF(hour, 0, time), 0)
+                ) sub
             )
             SELECT
                 kp.dias_operativos,
@@ -131,16 +164,7 @@ class MetricsService:
             CROSS JOIN max_hourly mh;
             """)
 
-        row = (
-            await session.execute(
-                sql,
-                {
-                    "espacio_id": espacio_id,
-                    "fecha_inicio": fecha_inicio,
-                    "fecha_fin": fecha_fin,
-                },
-            )
-        ).fetchone()
+        row = (await session.execute(sql, params)).fetchone()
 
         default_hora = "08:00 hrs" if espacio_id == 2 else "14:00 hrs"
         if not row:

@@ -191,12 +191,12 @@ export function WeeklyEvolutionPlotlyChart({ data, anio = 2026 }: Props) {
 
   const layout = {
     title: { text: 'Evolución de Asistencia y Contexto Anual por Semana' },
-    margin: { t: 40, r: 25, b: 85, l: 55 },
+    margin: { t: 40, r: 25, b: 110, l: 55 },
     xaxis: {
       title: { text: 'Semana Académica (ISO)' },
       automargin: true,
-      tickangle: -45,
-      tickfont: { size: 10, color: '#475569' },
+      tickangle: -40,
+      tickfont: { size: 9.5, color: '#475569' },
       categoryorder: 'array' as const,
       categoryarray: xLabels,
     },
@@ -205,6 +205,15 @@ export function WeeklyEvolutionPlotlyChart({ data, anio = 2026 }: Props) {
       automargin: true,
     },
     barmode: 'group' as const,
+    showlegend: true,
+    legend: {
+      orientation: 'h' as const,
+      x: 0.5,
+      xanchor: 'center' as const,
+      y: -0.38,
+      yanchor: 'top' as const,
+      font: { size: 10.5, color: '#334155' },
+    },
     shapes,
   }
 
@@ -279,7 +288,7 @@ export function WeeklyEvolutionPlotlyChart({ data, anio = 2026 }: Props) {
         data={chartData}
         layout={layout}
         filename="evolucion_semanal_biblioteca"
-        height={320}
+        height={360}
       />
     </div>
   )

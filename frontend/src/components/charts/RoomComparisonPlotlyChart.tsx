@@ -85,6 +85,8 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
     title: {
       text: 'Afluencia Horaria Comparada por Sala (Ciclo 00:00 a 23:00)',
       font: { size: 12, color: '#1E293B' },
+      x: 0.02,
+      xanchor: 'left' as const,
     },
     xaxis: {
       title: { text: '' },
@@ -98,13 +100,15 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
       tickfont: { size: 10, color: '#64748B' },
       gridcolor: '#F1F5F9',
     },
-    margin: { t: 30, r: 20, b: 40, l: 45 },
+    margin: { t: 52, r: 20, b: 40, l: 45 },
+    showlegend: true,
     legend: {
       orientation: 'h' as const,
-      y: -0.22,
       x: 0.5,
       xanchor: 'center' as const,
-      font: { size: 10 },
+      y: 1.08,
+      yanchor: 'bottom' as const,
+      font: { size: 10.5, color: '#334155' },
     },
   }
 
@@ -145,14 +149,15 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
       x: 0.02,
       xanchor: 'left' as const,
     },
-    margin: { t: 30, r: 10, b: 50, l: 10 },
+    margin: { t: 35, r: 10, b: 50, l: 10 },
     showlegend: true,
     legend: {
       orientation: 'h' as const,
       x: 0.5,
       xanchor: 'center' as const,
-      y: -0.15,
-      font: { size: 9.5, color: '#334155' },
+      y: -0.12,
+      yanchor: 'top' as const,
+      font: { size: 10, color: '#334155' },
       itemclick: false as const,
       itemdoubleclick: false as const,
     },
@@ -278,15 +283,15 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
             data={chartHourlyData}
             layout={layoutHourly}
             filename="flujo_horario_comparado_salas_biblioteca"
-            height={310}
+            height={360}
           />
         </div>
-        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-center">
+        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
           <InteractiveChart
             data={chartDonutData}
             layout={layoutDonut}
             filename="participacion_salas_biblioteca"
-            height={310}
+            height={360}
             onClick={handleDonutClick}
           />
         </div>

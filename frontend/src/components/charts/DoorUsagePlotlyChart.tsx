@@ -42,12 +42,17 @@ export function DoorUsagePlotlyChart({ data }: Props) {
   const layout = {
     title: { 
       text: 'Distribución de Flujo por Torniquetes y Accesos Universales — Salas Biblioteca CSF',
-      font: { size: 13, color: '#1E293B' },
+      font: { size: 12.5, color: '#1E293B' },
+      x: 0.5,
+      xanchor: 'center' as const,
+      y: 0.98,
+      yanchor: 'top' as const,
     },
     xaxis: { 
       title: { text: '' },
       automargin: true,
-      tickfont: { size: 10, color: '#475569' },
+      tickangle: -30,
+      tickfont: { size: 9.5, color: '#475569' },
     },
     yaxis: { 
       title: { text: 'Total de Marcajes', font: { size: 11, color: '#64748B' } },
@@ -58,12 +63,15 @@ export function DoorUsagePlotlyChart({ data }: Props) {
     barmode: 'group' as const,
     bargap: 0.25,
     bargroupgap: 0.1,
-    margin: { t: 35, r: 25, b: 50, l: 55 },
+    margin: { t: 75, r: 25, b: 85, l: 55 },
+    showlegend: true,
     legend: {
       orientation: 'h' as const,
-      y: -0.2,
       x: 0.5,
       xanchor: 'center' as const,
+      y: 1.03,
+      yanchor: 'bottom' as const,
+      font: { size: 11, color: '#334155' },
     },
   }
 
@@ -73,7 +81,7 @@ export function DoorUsagePlotlyChart({ data }: Props) {
         data={chartData}
         layout={layout}
         filename="uso_torniquetes_salas_biblioteca"
-        height={300}
+        height={360}
       />
 
       {/* Tarjetas de Métricas Físicas por Torniquete y Acceso */}

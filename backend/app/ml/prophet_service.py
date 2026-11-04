@@ -227,16 +227,23 @@ async def _fetch_hourly_data(session: AsyncSession, recinto: str, sala: str = "t
     else:
         door_filter = ""
         if sala == "sala1":
-            door_filter = "AND door_entrada LIKE 'CSF02%'"
+            door_filter = "AND (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')"
         elif sala == "sala2":
-            door_filter = "AND door_entrada LIKE 'CSF04%'"
+            door_filter = "AND (door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')"
+        else:
+            door_filter = "AND (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%' OR door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')"
 
         sql = text(f"""
             SELECT 
                 DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126)) as ds,
-                COUNT(*) as y
+                COUNT(DISTINCT person_id_hash) as y
             FROM eventos_asistencia
-            WHERE espacio_id = 1 AND salida_imputada = 0 {door_filter}
+            WHERE espacio_id = 1 
+              AND alerta_coherencia_fechas = 0
+              AND person_id_hash NOT LIKE 'TEST_HASH%'
+              AND (marcajes_totales < 5 OR (permanencia_min IS NOT NULL AND permanencia_min > 0))
+              AND NOT (marcajes_totales >= 5 AND permanencia_min IS NULL)
+              {door_filter}
             GROUP BY DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126))
             ORDER BY ds ASC
         """)
@@ -281,6 +288,7 @@ def _enrich_features(
     df["is_holiday"] = df["is_holiday"].astype(int)
     df["is_break"] = df["is_break"].astype(int)
     df["is_exam_period"] = df["is_exam_period"].astype(int)
+    df["suspension_actividades"] = df["suspension_actividades"].astype(int)
     # Paro: los recintos siguen abiertos pero los alumnos no tienen clases presenciales
     df["is_strike"] = df["is_strike"].astype(int)
 
@@ -307,7 +315,7 @@ def _enrich_features(
         ]
     df["es_horario_abierto"] = abierto_vals
 
-    cols_to_drop = [c for c in ["_fecha", "fecha", "is_holiday", "suspension_actividades"] if c in df.columns]
+    cols_to_drop = [c for c in ["_fecha", "fecha"] if c in df.columns]
     df.drop(columns=cols_to_drop, inplace=True)
     return df
 
@@ -316,11 +324,21 @@ def _enrich_features(
 # Pipeline de Entrenamiento
 # ---------------------------------------------------------------------------
 
+REGRESORES_PROPHET: list[str] = [
+    "es_horario_abierto",
+    "is_holiday",
+    "suspension_actividades",
+    "is_exam_period",
+    "is_break",
+    "is_strike",
+]
+
+
 def _build_prophet() -> Prophet:
     model = Prophet(
         seasonality_mode="additive",
-        daily_seasonality=True,
-        weekly_seasonality=True,
+        daily_seasonality=False,
+        weekly_seasonality=False,
         yearly_seasonality=False,
         changepoint_prior_scale=0.05,
         seasonality_prior_scale=10.0,
@@ -328,7 +346,9 @@ def _build_prophet() -> Prophet:
     )
     model.add_seasonality(name="diaria_uct", period=1, fourier_order=8)
     model.add_seasonality(name="semanal_uct", period=7, fourier_order=4)
-    model.add_regressor("es_horario_abierto", standardize=False)
+    model.add_regressor("es_horario_abierto", prior_scale=15.0, standardize=False)
+    model.add_regressor("is_holiday", prior_scale=15.0, standardize=False)
+    model.add_regressor("suspension_actividades", prior_scale=10.0, standardize=False)
     model.add_regressor("is_exam_period", standardize=False)
     model.add_regressor("is_break", standardize=False)
     model.add_regressor("is_strike", standardize=False)
@@ -345,6 +365,12 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
     espacio_id_entrenamiento = 2 if recinto == "vehicular" else 1
     horarios_cfg = await _fetch_horarios_info(session, espacio_id=espacio_id_entrenamiento)
     contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=espacio_id_entrenamiento)
+    capacidades = await _fetch_capacidades(session)
+
+    cap_val = float(capacidades.get(sala, capacidades.get("todas", 426)))
+    if recinto == "vehicular":
+        cap_val = float(capacidades.get("vehicular", 150))
+
     df = _enrich_features(
         df,
         cal,
@@ -353,12 +379,14 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
         contingencias=contingencias_cfg,
         espacio_id=espacio_id_entrenamiento,
     )
+    df["cap"] = cap_val
+    df["floor"] = 0.0
 
     split_idx = int(len(df) * TRAIN_RATIO)
     train_df = df.iloc[:split_idx].copy()
     test_df = df.iloc[split_idx:].copy()
 
-    regressors = ["es_horario_abierto", "is_exam_period", "is_break", "is_strike"]
+    regressors = REGRESORES_PROPHET
     model = _build_prophet()
 
     import warnings
@@ -371,7 +399,7 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
     forecast_test = model.predict(test_features)
 
     y_true = test_df["y"].values
-    y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=None)
+    y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=cap_val)
     # Forzar a 0 en horas cerradas
     y_pred[test_df["es_horario_abierto"].values == 0] = 0.0
 
@@ -437,26 +465,39 @@ async def predict_continuous(
     if recinto == "vehicular":
         res_t = await session.execute(text("SELECT MAX(time) FROM eventos_vehiculares WHERE espacio_id = 2"))
     else:
-        res_t = await session.execute(text("SELECT MAX(time) FROM eventos_asistencia WHERE espacio_id = 1"))
+        res_t = await session.execute(text("""
+            SELECT MAX(time) 
+            FROM eventos_asistencia 
+            WHERE espacio_id = 1 
+              AND alerta_coherencia_fechas = 0 
+              AND person_id_hash NOT LIKE 'TEST_HASH%'
+        """))
     max_time_val = res_t.scalar()
     anchor_dt = (max_time_val or datetime.utcnow()).replace(minute=0, second=0, microsecond=0)
 
-    # 1. Extraer los últimos 10 días de datos reales (240 horas completas hasta anchor_dt inclusive)
-    h_start = anchor_dt - timedelta(hours=239)
+    # 1. Extraer los últimos 7 días de datos reales (168 horas completas hasta anchor_dt inclusive)
+    h_start = anchor_dt - timedelta(hours=167)
     h_end_exclusive = anchor_dt + timedelta(hours=1)
     door_filter = ""
     if recinto == "biblioteca":
         if sala == "sala1":
-            door_filter = "AND door_entrada LIKE 'CSF02%'"
+            door_filter = "AND (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')"
         elif sala == "sala2":
-            door_filter = "AND door_entrada LIKE 'CSF04%'"
+            door_filter = "AND (door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')"
+        else:
+            door_filter = "AND (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%' OR door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')"
 
         sql_hist = text(f"""
             SELECT 
                 DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126)) as ds,
-                COUNT(*) as actual
+                COUNT(DISTINCT person_id_hash) as actual
             FROM eventos_asistencia
-            WHERE espacio_id = 1 AND salida_imputada = 0 {door_filter}
+            WHERE espacio_id = 1 
+              AND alerta_coherencia_fechas = 0
+              AND person_id_hash NOT LIKE 'TEST_HASH%'
+              AND (marcajes_totales < 5 OR (permanencia_min IS NOT NULL AND permanencia_min > 0))
+              AND NOT (marcajes_totales >= 5 AND permanencia_min IS NULL)
+              {door_filter}
               AND time >= :h_start AND time < :h_end_exclusive
             GROUP BY DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126))
             ORDER BY ds ASC
@@ -498,29 +539,40 @@ async def predict_continuous(
         contingencias=contingencias_cfg,
         espacio_id=espacio_id_actual,
     )
+    df_fut["cap"] = cap_sala
+    df_fut["floor"] = 0.0
+
     if recinto == "biblioteca" and sala == "todas":
+        cap_s1 = float(capacidades.get("sala1", 200))
+        cap_s2 = float(capacidades.get("sala2", 226))
         df_fut_s1 = _enrich_features(
             df_fut_base, cal, sala="sala1", horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
         )
+        df_fut_s1["cap"] = cap_s1
+        df_fut_s1["floor"] = 0.0
+
         df_fut_s2 = _enrich_features(
             df_fut_base, cal, sala="sala2", horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
         )
+        df_fut_s2["cap"] = cap_s2
+        df_fut_s2["floor"] = 0.0
     else:
         df_fut_s1 = df_fut
         df_fut_s2 = df_fut
 
     # Cargar modelos según selección jerárquica
-    regressors = ["es_horario_abierto", "is_exam_period", "is_break", "is_strike"]
+    regressors = REGRESORES_PROPHET
 
     def _calcular_predicciones_sincronas() -> Tuple[pd.DataFrame, str]:
-        def _infer_single(m_key: str, df_features: pd.DataFrame) -> pd.DataFrame:
+        def _infer_single(m_key: str, df_features: pd.DataFrame, cap_max: float) -> pd.DataFrame:
             m = load_active_model(m_key)
             if not m:
                 return pd.DataFrame({"yhat": [0.0]*168, "yhat_lower": [0.0]*168, "yhat_upper": [0.0]*168})
-            pred = m.predict(df_features[["ds"] + regressors])
-            yhat = np.clip(pred["yhat"].values, 0, None)
-            lower = np.clip(pred["yhat_lower"].values, 0, None)
-            upper = np.clip(pred["yhat_upper"].values, 0, None)
+            cols = ["ds"] + [r for r in regressors if r in df_features.columns]
+            pred = m.predict(df_features[cols])
+            yhat = np.clip(pred["yhat"].values, 0, cap_max)
+            lower = np.clip(pred["yhat_lower"].values, 0, cap_max)
+            upper = np.clip(pred["yhat_upper"].values, 0, cap_max)
 
             # Forzar a cero en horas de cierre de esa sala específica
             cerrado_mask = df_features["es_horario_abierto"].values == 0
@@ -531,20 +583,22 @@ async def predict_continuous(
             return pd.DataFrame({"yhat": yhat, "yhat_lower": lower, "yhat_upper": upper})
 
         if recinto == "vehicular":
-            return _infer_single(MODELOS_SALA["vehicular"], df_fut), MODELOS_SALA["vehicular"]
+            return _infer_single(MODELOS_SALA["vehicular"], df_fut, cap_sala), MODELOS_SALA["vehicular"]
         elif sala == "sala1":
-            return _infer_single(MODELOS_SALA["sala1"], df_fut), MODELOS_SALA["sala1"]
+            return _infer_single(MODELOS_SALA["sala1"], df_fut, cap_sala), MODELOS_SALA["sala1"]
         elif sala == "sala2":
-            return _infer_single(MODELOS_SALA["sala2"], df_fut), MODELOS_SALA["sala2"]
-        else:  # Todas / Global: Suma jerárquica Sala 1 + Sala 2 respetando horarios y suspensiones de cada sala
-            df_s1 = _infer_single(MODELOS_SALA["sala1"], df_fut_s1)
-            df_s2 = _infer_single(MODELOS_SALA["sala2"], df_fut_s2)
+            return _infer_single(MODELOS_SALA["sala2"], df_fut, cap_sala), MODELOS_SALA["sala2"]
+        else:  # Reconciliación jerárquica Bottom-Up: Sala 1 + Sala 2 para coincidencia matemática exacta
+            cap_s1 = float(capacidades.get("sala1", 200))
+            cap_s2 = float(capacidades.get("sala2", 226))
+            df_s1 = _infer_single(MODELOS_SALA["sala1"], df_fut_s1, cap_s1)
+            df_s2 = _infer_single(MODELOS_SALA["sala2"], df_fut_s2, cap_s2)
             if df_s1["yhat"].sum() == 0 and df_s2["yhat"].sum() == 0:
-                return _infer_single(MODELOS_SALA["todas"], df_fut), MODELOS_SALA["todas"]
+                return _infer_single(MODELOS_SALA["todas"], df_fut, cap_sala), MODELOS_SALA["todas"]
             return pd.DataFrame({
-                "yhat": df_s1["yhat"] + df_s2["yhat"],
-                "yhat_lower": df_s1["yhat_lower"] + df_s2["yhat_lower"],
-                "yhat_upper": df_s1["yhat_upper"] + df_s2["yhat_upper"],
+                "yhat": np.clip(df_s1["yhat"] + df_s2["yhat"], 0, cap_sala),
+                "yhat_lower": np.clip(df_s1["yhat_lower"] + df_s2["yhat_lower"], 0, cap_sala),
+                "yhat_upper": np.clip(df_s1["yhat_upper"] + df_s2["yhat_upper"], 0, cap_sala),
             }), MODELOS_SALA["todas"]
 
     df_pred, active_key = await ejecutar_inferencia_en_hilo(_calcular_predicciones_sincronas)

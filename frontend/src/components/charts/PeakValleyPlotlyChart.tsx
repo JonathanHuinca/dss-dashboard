@@ -23,7 +23,7 @@ export function PeakValleyPlotlyChart({ data }: Props) {
   ]
 
   const layout = {
-    title: { text: 'Demanda Horaria: Pico y Valle Operativo' },
+    title: { text: 'Demanda Horaria: Períodos de Alta y Baja Afluencia' },
     xaxis: {
       title: { text: 'Franja Horaria' },
       categoryorder: 'category ascending' as const,
@@ -35,7 +35,7 @@ export function PeakValleyPlotlyChart({ data }: Props) {
     <InteractiveChart
       data={chartData}
       layout={layout}
-      filename="franjas_pico_valle_biblioteca"
+      filename="franjas_alta_baja_afluencia_biblioteca"
       height={300}
     />
   )

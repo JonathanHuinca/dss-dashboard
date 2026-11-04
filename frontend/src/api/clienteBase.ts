@@ -105,11 +105,31 @@ export interface KPISummary {
   pico_maximo_vehiculos?: number
 }
 
-export const fetchKpiSummary = (espacioId: number = 1, fechaInicio?: string, fechaFin?: string) =>
-  api.get<KPISummary>('/metrics/kpi-summary', {
+export const fetchKpiSummary = (
+  espacioId: number = 1,
+  fechaInicio?: string,
+  fechaFin?: string,
+  filters?: DataFilters | string
+) => {
+  const f: Record<string, any> = typeof filters === 'object' && filters !== null ? filters : {}
+  return api.get<KPISummary>('/metrics/kpi-summary', {
     params: {
       espacio_id: espacioId,
       fecha_inicio: fechaInicio || undefined,
       fecha_fin: fechaFin || undefined,
+      alcance: f.alcance,
+      regimen_horario: f.regimen_horario,
+      direccion: f.direccion,
+      dias_semana: f.dias_semana,
+      door: f.door,
+      perfil_visita: f.perfil_visita,
+      marcajes: f.marcajes,
+      sala: f.sala,
+      carrera: f.carrera,
+      facultad: f.facultad,
+      cohorte: f.cohorte,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
     },
   }).then(r => r.data)
+}

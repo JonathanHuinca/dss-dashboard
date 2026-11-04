@@ -807,7 +807,23 @@ class VehicleService:
     @staticmethod
     async def get_academic_milestones_comparison(session: AsyncSession, espacio_id: int = 2) -> list[dict]:
         sql = text("""
-            WITH vd AS (
+            WITH hourly AS (
+                SELECT 
+                    CAST(time AS DATE) AS dia,
+                    DATEPART(hour, time) AS hora,
+                    COUNT(DISTINCT patente_hash) AS aforo_hora
+                FROM eventos_vehiculares
+                WHERE espacio_id = :espacio_id AND direccion = 'entrada'
+                GROUP BY CAST(time AS DATE), DATEPART(hour, time)
+            ),
+            daily_peak AS (
+                SELECT 
+                    dia, 
+                    MAX(aforo_hora) AS pico_hora_dia
+                FROM hourly
+                GROUP BY dia
+            ),
+            vd AS (
                 SELECT CAST(time AS DATE) AS dia, SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END) AS total_dia
                 FROM eventos_vehiculares
                 WHERE espacio_id = :espacio_id
@@ -823,8 +839,10 @@ class VehicleService:
                 COUNT(vd.dia) AS dias_totales,
                 ROUND(AVG(vd.total_dia * 1.0), 1) AS promedio_diario,
                 COALESCE(MAX(vd.total_dia), 0) AS max_dia,
+                COALESCE(MAX(dp.pico_hora_dia), 0) AS aforo_pico_simultaneo,
                 SUM(vd.total_dia) AS total_accesos
             FROM vd
+            LEFT JOIN daily_peak dp ON vd.dia = dp.dia
             LEFT JOIN calendario_academico ca ON vd.dia = ca.fecha
             GROUP BY 
                 CASE 
@@ -842,6 +860,7 @@ class VehicleService:
                 "dias_totales": int(r.dias_totales),
                 "promedio_diario": float(r.promedio_diario or 0),
                 "max_dia": int(r.max_dia or 0),
+                "aforo_pico_simultaneo": int(getattr(r, "aforo_pico_simultaneo", 0) or 0),
                 "total_accesos": int(r.total_accesos or 0),
             }
             for r in rows

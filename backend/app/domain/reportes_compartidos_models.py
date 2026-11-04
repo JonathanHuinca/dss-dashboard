@@ -67,6 +67,9 @@ class ReporteCompartido(Base):
     destinatario: Mapped["DestinatarioReporte"] = relationship(
         "DestinatarioReporte", back_populates="reportes", lazy="selectin"
     )
+    creador: Mapped[Optional["app.domain.auth_models.Usuario"]] = relationship(
+        "app.domain.auth_models.Usuario", lazy="selectin", foreign_keys=[creado_por_id]
+    )
     accesos: Mapped[List["AuditoriaAccesoReporte"]] = relationship(
         "AuditoriaAccesoReporte",
         back_populates="reporte",

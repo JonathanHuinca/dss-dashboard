@@ -46,6 +46,7 @@ interface CompartirReporteModalProps {
   etiquetaPeriodoInicial?: string
   filtrosIniciales: DataFilters
   totalRegistrosInicial?: number
+  tieneCampana24hActiva?: boolean
 }
 
 const CATALOGO_POR_DEFECTO: Record<
@@ -67,13 +68,14 @@ const CATALOGO_POR_DEFECTO: Record<
       { id: 'hitos_academicos', titulo: 'Comparativa por Hito del Calendario Académico' },
       { id: 'distribucion_curricular', titulo: 'Distribución por Carrera y Facultad (Ley 21.719)' },
       { id: 'perfiles_visita', titulo: 'Perfiles de Estadía y Permanencia (Donut)' },
+      { id: 'campana_24_horas', titulo: '8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno' },
     ],
     indicadores: [
       { id: 'dias_operativos', titulo: 'Días Operativos' },
       { id: 'carrera_mas_concurrida', titulo: 'Carrera Más Concurrida' },
       { id: 'recurrencia_mensual', titulo: 'Recurrencia Mensual' },
-      { id: 'hora_pico_ingreso', titulo: 'Hora Pico de Ingreso' },
-      { id: 'pico_concurrente', titulo: 'Pico Concurrente' },
+      { id: 'hora_pico_ingreso', titulo: 'Hora de Máxima Afluencia' },
+      { id: 'pico_concurrente', titulo: 'Aforo Máximo Concurrente' },
       { id: 'afluencia_total', titulo: 'Afluencia Total' },
       { id: 'aforo_maximo_registrado', titulo: 'Aforo Máximo Registrado' },
       { id: 'estadia_promedio', titulo: 'Estadía Promedio' },
@@ -98,8 +100,8 @@ const CATALOGO_POR_DEFECTO: Record<
       { id: 'dias_operativos', titulo: 'Días Operativos' },
       { id: 'sector_mas_concurrido', titulo: 'Sector Más Demandado' },
       { id: 'recurrencia_vehicular', titulo: 'Recurrencia Vehicular' },
-      { id: 'hora_pico_acceso', titulo: 'Hora Pico de Acceso' },
-      { id: 'pico_concurrente', titulo: 'Pico Concurrente' },
+      { id: 'hora_pico_acceso', titulo: 'Hora de Mayor Demanda' },
+      { id: 'pico_concurrente', titulo: 'Máxima Ocupación Simultánea' },
       { id: 'vehiculos_dentro', titulo: 'Vehículos Dentro' },
       { id: 'plazas_libres', titulo: 'Plazas Libres' },
       { id: 'total_ingresos', titulo: 'Total Ingresos' },
@@ -171,6 +173,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
   etiquetaPeriodoInicial,
   filtrosIniciales,
   totalRegistrosInicial,
+  tieneCampana24hActiva = false,
 }) => {
   const [pestanaActiva, setPestanaActiva] = useState<'emitir' | 'consultores' | 'historial'>('emitir')
   const [cargando, setCargando] = useState<boolean>(false)
@@ -223,8 +226,15 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
   const [copiadoClave, setCopiadoClave] = useState<string | null>(null)
 
   const catalogoActual = useMemo(() => {
-    return catalogos[espacioIdInicial] || CATALOGO_POR_DEFECTO[espacioIdInicial] || CATALOGO_POR_DEFECTO[1]
-  }, [catalogos, espacioIdInicial])
+    const cat = catalogos[espacioIdInicial] || CATALOGO_POR_DEFECTO[espacioIdInicial] || CATALOGO_POR_DEFECTO[1]
+    if (espacioIdInicial !== 1 || !tieneCampana24hActiva) {
+      return {
+        ...cat,
+        graficos: cat.graficos.filter((g) => g.id !== 'campana_24_horas'),
+      }
+    }
+    return cat
+  }, [catalogos, espacioIdInicial, tieneCampana24hActiva])
 
   // Resumen legible y dinámico de TODOS los filtros activos en la pantalla del emisor
   const resumenFiltrosPantalla = useMemo(() => {
@@ -1603,6 +1613,18 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                             >
                               {rep.permitir_ia ? 'IA Habilitada' : 'IA Deshabilitada'}
                             </span>
+                          </div>
+                          <div className="flex items-center gap-2 pt-0.5 text-xs text-slate-700">
+                            <span className="font-semibold text-uct-blue-primary">Emitido por:</span>
+                            <span className="font-bold text-slate-900">{rep.creador?.nombre_completo || 'Sistema DSS'}</span>
+                            {rep.creador?.rol && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-bold bg-slate-100 border border-slate-300 text-slate-700">
+                                {rep.creador.rol}
+                              </span>
+                            )}
+                            {rep.creador?.email && (
+                              <span className="text-[11px] text-slate-400">({rep.creador.email})</span>
+                            )}
                           </div>
                           <p className="text-xs text-slate-600">
                             <strong>Consultor Destinatario:</strong> {rep.destinatario.nombre_completo} (

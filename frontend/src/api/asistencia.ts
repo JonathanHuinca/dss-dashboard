@@ -58,6 +58,7 @@ export interface AcademicMilestonePoint {
   dias_totales: number
   promedio_diario: number
   max_dia: number
+  aforo_pico_simultaneo?: number
   total_asistencias: number
 }
 

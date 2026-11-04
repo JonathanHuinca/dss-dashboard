@@ -205,7 +205,7 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
   // 2. Gráfico Donut de Porcentajes (Derecha)
   const chartDonutData: Data[] = useMemo(() => {
     let itemsDonut = elementosOrdenados
-    if (agrupacion === 'carreras' && topN === 'todas' && elementosOrdenados.length > 10) {
+    if (agrupacion === 'carreras' && (topN === 'todas' || (typeof topN === 'number' && topN > 10)) && elementosOrdenados.length > 10) {
       const top9 = elementosOrdenados.slice(0, 9)
       const resto = elementosOrdenados.slice(9)
       const visitasResto = resto.reduce((acc, curr) => acc + curr.visitas, 0)
@@ -263,7 +263,7 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
     title: {
       text: `Participación Porcentual (%) por ${
         agrupacion === 'carreras'
-          ? (topN === 'todas' ? 'Carrera (Top 9 + Otras)' : `Carrera (Top ${topN})`)
+          ? (topN === 'todas' || (typeof topN === 'number' && topN > 10) ? 'Carrera (Top 9 + Otras)' : `Carrera (Top ${topN})`)
           : agrupacion === 'facultades'
           ? 'Facultad'
           : 'Cohorte'
@@ -277,12 +277,13 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
       orientation: 'h' as const,
       x: 0.5,
       xanchor: 'center' as const,
-      y: -0.15,
-      font: { size: 9, color: '#334155' },
+      y: -0.12,
+      yanchor: 'top' as const,
+      font: { size: 9.5, color: '#334155' },
       itemclick: false as const,
       itemdoubleclick: false as const,
     },
-    margin: { t: 30, r: 10, b: 65, l: 10 },
+    margin: { t: 35, r: 15, b: 85, l: 15 },
   }
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
@@ -426,8 +427,8 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
         </div>
       </div>
 
-      {/* Cuadrícula Lado a Lado: Gráfico de Barras Absolutas + Gráfico Donut de Porcentajes */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+      {/* Cuadrícula Lado a Lado: Gráfico de Barras Absolutas + Gráfico Donut con Tamaño Máximo Fijo */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
         {/* Columna Izquierda (7 columnas): Gráfico de Barras con Valores Absolutos */}
         <div className="xl:col-span-7 bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="flex items-center gap-1.5 mb-2 text-slate-700 text-xs font-bold">
@@ -442,8 +443,8 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
           />
         </div>
 
-        {/* Columna Derecha (5 columnas): Gráfico Donut de Porcentajes */}
-        <div className="xl:col-span-5 bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        {/* Columna Derecha (5 columnas): Gráfico Donut de Porcentajes con Límite Fijo Óptimo */}
+        <div className="xl:col-span-5 bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs xl:sticky xl:top-4">
           <div className="flex items-center gap-1.5 mb-2 text-slate-700 text-xs font-bold">
             <PieChart size={15} className="text-uct-blue-primary" />
             <span>Distribución Porcentual (%)</span>
@@ -452,7 +453,7 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
             data={chartDonutData}
             layout={layoutDonut}
             filename={`porcentaje_${agrupacion}_${metrica}_uct`}
-            height={340}
+            height={480}
             onClick={handleDonutClick}
           />
         </div>

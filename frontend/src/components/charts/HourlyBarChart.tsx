@@ -50,29 +50,38 @@ export function HourlyBarChart({ data }: Props) {
   ]
 
   const layout: Partial<Layout> = {
+    title: {
+      text: 'Flujo Horario de Ingresos y Salidas',
+      font: { size: 12.5, color: '#1E293B' },
+      x: 0.02,
+      xanchor: 'left',
+    },
     barmode: 'group',
     bargap: 0.25,
     bargroupgap: 0.1,
-    height: 240,
-    margin: { t: 25, r: 20, b: 45, l: 45 },
+    margin: { t: 40, r: 25, b: 75, l: 55 },
     xaxis: {
+      title: { text: 'Hora del Día (00:00 - 23:00 hrs)', font: { size: 10, color: '#64748B' } },
       showgrid: false,
       automargin: true,
       tickfont: { size: 10, color: '#64748B' },
       categoryorder: 'category ascending',
     },
     yaxis: {
+      title: { text: 'Cantidad de Marcajes', font: { size: 10, color: '#64748B' } },
       showgrid: true,
       automargin: true,
       gridcolor: '#e2e8f0',
       tickfont: { size: 10, color: '#64748B' },
     },
+    showlegend: true,
     legend: {
       orientation: 'h',
-      y: 1.15,
-      x: 1,
-      xanchor: 'right',
-      font: { size: 10 },
+      y: -0.28,
+      x: 0.5,
+      xanchor: 'center',
+      yanchor: 'top',
+      font: { size: 10.5, color: '#334155' },
     },
   }
 
@@ -81,7 +90,7 @@ export function HourlyBarChart({ data }: Props) {
       data={chartData}
       layout={layout}
       filename="flujo_horario_accesos"
-      height={320}
+      height={340}
     />
   )
 }

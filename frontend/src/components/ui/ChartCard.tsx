@@ -588,14 +588,14 @@ export function ChartCard({
   const getLayoutClass = () => {
     switch (layout) {
       case 'third':
-        return 'w-full xl:w-[calc(33.333%-0.7rem)]'
+        return 'w-full md:w-[calc(50%-0.5rem)] xl:w-[calc(33.333%-0.7rem)]'
       case 'two-thirds':
-        return 'w-full xl:w-[calc(66.666%-0.5rem)]'
+        return 'w-full lg:w-[calc(66.666%-0.5rem)]'
       case 'full':
         return 'w-full'
       case 'half':
       default:
-        return 'w-full xl:w-[calc(50%-0.5rem)]'
+        return 'w-full lg:w-[calc(50%-0.5rem)]'
     }
   }
 
@@ -642,7 +642,7 @@ export function ChartCard({
                 type="button"
                 onClick={() => setIsFullWidth(!isFullWidth)}
                 title={isFullWidth ? 'Restaurar ancho normal' : 'Expandir a ancho completo (100% de la fila)'}
-                className={`hidden xl:flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer shadow-2xs ${isFullWidth
+                className={`hidden sm:flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold border transition cursor-pointer shadow-2xs ${isFullWidth
                     ? 'bg-blue-50 text-uct-blue-primary border-blue-300 font-bold'
                     : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'
                   }`}
@@ -751,12 +751,16 @@ export function ChartCard({
           </div>
         </div>
 
-        {/* Contenedor del gráfico: ocupa todo el alto y ancho dinámico del card */}
+        {/* Contenedor del gráfico: ocupa todo el alto y ancho dinámico del card con soporte de scroll vertical */}
         <div className="flex-1 w-full min-h-[240px] min-w-0 flex flex-col overflow-hidden relative">
           <div
             ref={chartRef}
             id={`chart-container-${resolvedContext}`}
-            className="w-full h-full min-w-0 flex-1 flex flex-col overflow-hidden"
+            className="w-full h-full min-w-0 flex-1 flex flex-col overflow-y-auto overflow-x-hidden"
+            style={{
+              scrollbarWidth: 'thin',
+              scrollbarColor: '#CBD5E1 transparent',
+            }}
           >
             {children}
           </div>
@@ -860,34 +864,49 @@ export function ChartCard({
               </div>
             </div>
 
-            {/* Contenedor del Gráfico en Gran Tamaño */}
+            {/* Contenedor del Gráfico en Gran Tamaño con Desplazamiento Vertical Fluido */}
             <div
               id={`maximized-chart-${resolvedContext}`}
-              className="flex-1 w-full p-3 sm:p-5 overflow-hidden bg-white flex flex-col min-h-0 uct-maximized-chart-wrapper"
+              className="flex-1 w-full p-4 sm:p-6 pb-16 overflow-y-auto overflow-x-hidden bg-white min-h-0 uct-maximized-chart-wrapper"
+              style={{
+                scrollbarWidth: 'thin',
+                scrollbarColor: '#94A3B8 #F1F5F9',
+                scrollbarGutter: 'stable',
+              }}
             >
               <style>{`
-                .uct-maximized-chart-wrapper,
-                .uct-maximized-chart-wrapper > div,
-                .uct-maximized-chart-wrapper .space-y-3,
-                .uct-maximized-chart-wrapper [data-chart-card="true"] {
-                  display: flex !important;
-                  flex-direction: column !important;
-                  flex: 1 1 0% !important;
-                  width: 100% !important;
-                  height: 100% !important;
-                  min-height: 0 !important;
+                .uct-maximized-chart-wrapper {
+                  overflow-y: auto !important;
+                  overflow-x: hidden !important;
+                  scroll-behavior: smooth;
+                  scrollbar-gutter: stable;
                 }
-                .uct-maximized-chart-wrapper .js-plotly-plot,
-                .uct-maximized-chart-wrapper .plot-container,
-                .uct-maximized-chart-wrapper .svg-container,
-                .uct-maximized-chart-wrapper .main-svg {
+                .uct-maximized-chart-wrapper::-webkit-scrollbar {
+                  width: 10px;
+                }
+                .uct-maximized-chart-wrapper::-webkit-scrollbar-track {
+                  background: #F1F5F9;
+                  border-radius: 8px;
+                }
+                .uct-maximized-chart-wrapper::-webkit-scrollbar-thumb {
+                  background: #94A3B8;
+                  border-radius: 8px;
+                  border: 2px solid #F1F5F9;
+                }
+                .uct-maximized-chart-wrapper::-webkit-scrollbar-thumb:hover {
+                  background: #475569;
+                }
+                .uct-maximized-chart-wrapper .js-plotly-plot {
                   width: 100% !important;
-                  height: 100% !important;
-                  min-height: calc(88vh - 120px) !important;
-                  flex: 1 1 0% !important;
+                }
+                .uct-maximized-chart-wrapper .plot-container {
+                  width: 100% !important;
+                }
+                .uct-maximized-chart-wrapper > div:only-child > .js-plotly-plot {
+                  min-height: calc(85vh - 120px) !important;
                 }
               `}</style>
-              <div className="w-full h-full flex-1 flex flex-col min-h-0">
+              <div className="w-full min-h-0 flex flex-col space-y-4 pb-8">
                 {children}
               </div>
             </div>

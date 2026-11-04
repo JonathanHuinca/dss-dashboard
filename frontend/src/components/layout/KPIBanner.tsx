@@ -12,20 +12,21 @@ import {
   Car,
   ParkingCircle,
 } from 'lucide-react'
-import { fetchKpiSummary, KPISummary } from '../../api/client'
+import { fetchKpiSummary, KPISummary, DataFilters } from '../../api/client'
 import { DateRange } from '../../types/dateRange'
 
 interface Props {
   espacioId?: number
   selectedRange?: DateRange
+  filters?: DataFilters
 }
 
-export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => {
+export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filters }) => {
   const isEstacionamiento = espacioId === 2
 
   const { data, isLoading, isFetching, isError, refetch } = useQuery<KPISummary>({
-    queryKey: ['kpi-summary', espacioId, selectedRange?.inicio, selectedRange?.fin],
-    queryFn: () => fetchKpiSummary(espacioId, selectedRange?.inicio, selectedRange?.fin),
+    queryKey: ['kpi-summary', espacioId, selectedRange?.inicio, selectedRange?.fin, filters],
+    queryFn: () => fetchKpiSummary(espacioId, selectedRange?.inicio, selectedRange?.fin, filters),
     staleTime: 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
@@ -50,6 +51,24 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
                   <TrendingUp size={11} className="shrink-0" />
                   <span className="truncate">{activePeriodLabel}</span>
                 </span>
+                {filters?.alcance && filters.alcance !== 'todos' && (
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-bold border ${
+                    filters.alcance === 'conformes'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      : 'bg-rose-50 text-rose-800 border-rose-200'
+                  }`}>
+                    {filters.alcance === 'conformes' ? 'Datos Conformes' : 'Anomalías'}
+                  </span>
+                )}
+                {filters?.sala && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                    {filters.sala === 'sala_1' || filters.sala === 'sala1'
+                      ? 'Sala 1'
+                      : filters.sala === 'sala_2' || filters.sala === 'sala2'
+                      ? 'Sala 2'
+                      : filters.sala}
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500">
                 {isEstacionamiento
@@ -165,13 +184,13 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
               </p>
             </div>
 
-            {/* Card 4: Hora Pico */}
+            {/* Card 4: Hora de Máxima Afluencia */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-amber-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-amber-400 to-orange-500"></div>
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    {isEstacionamiento ? 'Hora Pico de Acceso' : 'Hora Pico de Ingreso'}
+                    {isEstacionamiento ? 'Hora de Mayor Demanda' : 'Hora de Máxima Afluencia'}
                   </p>
                   <p className="text-2xl font-black text-slate-900 mt-1 tracking-tight">
                     {data?.hora_pico_ingreso || (isEstacionamiento ? '08:00 hrs' : '14:00 hrs')}
@@ -186,13 +205,13 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange }) => 
               </p>
             </div>
 
-            {/* Card 5: Pico Concurrente */}
+            {/* Card 5: Máxima Concurrencia Simultánea */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-rose-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-rose-500 to-red-600"></div>
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Pico Concurrente
+                    {isEstacionamiento ? 'Máxima Ocupación Simultánea' : 'Aforo Máximo Concurrente'}
                   </p>
                   <p className="text-2xl font-black text-slate-900 mt-1 tracking-tight">
                     {Number(data?.pico_concurrente ?? 0).toLocaleString('es-CL')}{' '}

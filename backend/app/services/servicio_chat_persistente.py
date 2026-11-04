@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -227,7 +228,7 @@ async def obtener_cuota_ia_usuario(
     es_ilimitado: bool = False
 
     for r in roles_objs:
-        q_str = str(getattr(r, "rate_limit_quota", "") or "30/day").lower().strip()
+        q_str = str(getattr(r, "rate_limit_quota", "") or "30/día").lower().strip()
         cd = int(getattr(r, "cooldown_segundos", 10) or 10)
         if cd < min_cooldown:
             min_cooldown = cd
@@ -235,15 +236,15 @@ async def obtener_cuota_ia_usuario(
         if any(unl in q_str for unl in ("ilimitado", "unlimited", "none", "-1", "100000")):
             es_ilimitado = True
         elif not es_ilimitado:
-            num_part = q_str.split("/")[0].strip()
-            if num_part.isdigit():
-                val = int(num_part)
+            match = re.search(r'\d+', q_str)
+            if match:
+                val = int(match.group(0))
                 if limite is None or val > limite:
                     limite = val
             elif limite is None:
                 limite = 30
 
-    if es_ilimitado or "Admin_Sistema" in roles_nombres or "SuperAdmin" in roles_nombres:
+    if es_ilimitado:
         limite = None
 
     ahora = datetime.utcnow()

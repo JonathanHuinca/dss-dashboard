@@ -683,12 +683,12 @@ export function ForecastLineChart({
         <div className="flex items-center gap-3 text-slate-600 dark:text-slate-300">
           <span className="flex items-center gap-1 font-medium text-uct-navy dark:text-sky-300">
             <Activity className="w-3.5 h-3.5" />
-            Pico Histórico: <strong className="font-semibold">{stats.maxHist} p/h</strong>
+            Máximo Histórico: <strong className="font-semibold">{stats.maxHist} p/h</strong>
           </span>
           <span className="text-gray-300 dark:text-gray-700">|</span>
           <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-400">
             <Users className="w-3.5 h-3.5" />
-            Pico Pronosticado: <strong className="font-semibold">{stats.maxFut} p/h</strong>
+            Máximo Proyectado: <strong className="font-semibold">{stats.maxFut} p/h</strong>
           </span>
           {capacidad && (
             <>

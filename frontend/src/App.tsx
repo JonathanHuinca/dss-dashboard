@@ -15,7 +15,7 @@ import { AssistantProvider, useAssistant } from './context/AssistantContext'
 import { DownloadProgressProvider } from './context/DownloadProgressContext'
 import { DownloadProgressModal } from './components/ui/DownloadProgressModal'
 import { DateRange, DATE_PRESETS, buildLatestWeekPreset } from './types/dateRange'
-import { fetchDateBounds, DateBoundsResponse } from './api/client'
+import { fetchDateBounds, DateBoundsResponse, DataFilters } from './api/client'
 import './index.css'
 
 const queryClient = new QueryClient({
@@ -47,8 +47,15 @@ function guardarRangoInicialCache(espacioId: number | undefined, fechaMax: strin
 
 function AppRouter() {
   const { isAuthenticated, userRole, roles, hasDatasetAccess, isSuperAdmin, canAccessAdmin, setCurrentEspacioId } = useAuth()
-  const [tab, setTab] = useState<Tab>('biblioteca')
   const esConsultorReporte = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
+  const esSoloConsultor = esConsultorReporte && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
+
+  const [tab, setTab] = useState<Tab>(() => {
+    if (userRole === 'Consultor_Reporte' && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin) {
+      return 'reportes'
+    }
+    return 'biblioteca'
+  })
   const currentEspacioId = tab === 'biblioteca' ? 1 : tab === 'estacionamiento' ? 2 : undefined
 
   const fechaMaxCacheada = obtenerFechaMaxCacheada(currentEspacioId)
@@ -66,6 +73,17 @@ function AppRouter() {
   const [range, setRange] = useState<DateRange>(() =>
     buildLatestWeekPreset(fechaMaxCacheada || '2026-10-14')
   )
+  const [bibliotecaFilters, setBibliotecaFilters] = useState<DataFilters>({
+    alcance: 'conformes',
+    regimen_horario: 'todos',
+    direccion: 'todos',
+    dias_semana: '',
+    door: '',
+    perfil_visita: 'todos',
+    marcajes: 'todos',
+    incluir_pausas_bano: true,
+    desduplicar_rafagas: true,
+  })
   const rango_fechas_listo = Boolean(fechaMaxCacheada || dateBounds?.fecha_max || errorLimitesFechas || tab === 'admin')
   const { isOpen, openAssistant, closeAssistant, contextoGrafico } = useAssistant()
 
@@ -114,31 +132,37 @@ function AppRouter() {
         setTab('estacionamiento')
       } else if (canAccessAdmin) {
         setTab('admin')
+      } else if (esConsultorReporte) {
+        setTab('reportes')
       }
     } else if (tab === 'estacionamiento' && !hasDatasetAccess('estacionamiento')) {
       if (hasDatasetAccess('biblioteca')) {
         setTab('biblioteca')
       } else if (canAccessAdmin) {
         setTab('admin')
+      } else if (esConsultorReporte) {
+        setTab('reportes')
       }
     } else if (tab === 'admin' && !canAccessAdmin) {
       if (hasDatasetAccess('biblioteca')) {
         setTab('biblioteca')
       } else if (hasDatasetAccess('estacionamiento')) {
         setTab('estacionamiento')
+      } else if (esConsultorReporte) {
+        setTab('reportes')
       }
     }
     
     // Sincronizar tab con RLS
     if (tab === 'biblioteca') setCurrentEspacioId(1)
     else if (tab === 'estacionamiento') setCurrentEspacioId(2)
-  }, [hasDatasetAccess, isSuperAdmin, canAccessAdmin, tab, setCurrentEspacioId])
+  }, [hasDatasetAccess, isSuperAdmin, canAccessAdmin, tab, setCurrentEspacioId, esConsultorReporte])
 
   if (!isAuthenticated) {
     return <LoginView />
   }
 
-  if (esConsultorReporte) {
+  if (esSoloConsultor) {
     return <ReporteCompartidoView modoRuta="consultor" />
   }
 
@@ -151,11 +175,17 @@ function AppRouter() {
         onRangeChange={setRange}
         onOpenAssistant={() => openAssistant()}
       />
-      {tab !== 'admin' && rango_fechas_listo && (
-        <KPIBanner espacioId={tab === 'biblioteca' ? 1 : 2} selectedRange={range} />
+      {tab !== 'admin' && tab !== 'reportes' && rango_fechas_listo && (
+        <KPIBanner
+          espacioId={tab === 'biblioteca' ? 1 : 2}
+          selectedRange={range}
+          filters={tab === 'biblioteca' ? bibliotecaFilters : undefined}
+        />
       )}
       <main>
-        {!rango_fechas_listo ? (
+        {tab === 'reportes' ? (
+          <ReporteCompartidoView modoRuta="consultor" />
+        ) : !rango_fechas_listo ? (
           <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-8">
             <div className="h-32 w-full rounded-2xl bg-slate-100 animate-pulse mb-6" />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -165,7 +195,14 @@ function AppRouter() {
           </div>
         ) : (
           <>
-            {tab === 'biblioteca' && <BibliotecaView dateRange={range} onRangeChange={setRange} />}
+            {tab === 'biblioteca' && (
+              <BibliotecaView
+                dateRange={range}
+                onRangeChange={setRange}
+                filters={bibliotecaFilters}
+                onFiltersChange={setBibliotecaFilters}
+              />
+            )}
             {tab === 'estacionamiento' && <EstacionamientoView dateRange={range} onRangeChange={setRange} />}
             {tab === 'admin' && <AdminDashboard />}
           </>

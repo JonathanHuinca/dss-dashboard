@@ -151,7 +151,7 @@ export function DailyAverageAttendancePlotlyChart({ data }: Props) {
   const layout: Partial<Layout> = {
     autosize: true,
     barmode: vista === 'desglose_salas' ? 'group' : 'group',
-    margin: { t: 25, r: 20, b: 50, l: 45 },
+    margin: { t: 25, r: 20, b: 75, l: 45 },
     xaxis: {
       automargin: true,
       tickfont: { size: 11, color: '#334155' },
@@ -170,7 +170,8 @@ export function DailyAverageAttendancePlotlyChart({ data }: Props) {
       orientation: 'h',
       x: 0.5,
       xanchor: 'center',
-      y: -0.22,
+      y: -0.28,
+      yanchor: 'top',
       font: { size: 10, color: '#334155' },
     },
     paper_bgcolor: 'transparent',
@@ -184,7 +185,7 @@ export function DailyAverageAttendancePlotlyChart({ data }: Props) {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-2xs">
             <Award className="w-4 h-4 text-amber-500" />
-            <span className="text-xs text-slate-500">Día Pico Promedio:</span>
+            <span className="text-xs text-slate-500">Día de Mayor Afluencia:</span>
             <span className="text-xs font-bold text-slate-800">
               {resumen.dia_mayor_afluencia} ({resumen.pico_promedio_diario.toFixed(1)} ing/d)
             </span>
@@ -232,11 +233,12 @@ export function DailyAverageAttendancePlotlyChart({ data }: Props) {
       </div>
 
       {/* Gráfico Principal Plotly */}
-      <div className="w-full flex-1 min-h-[320px]">
+      <div className="w-full flex-1 min-h-[340px]">
         <InteractiveChart
           data={plotData}
           layout={layout}
-          className="w-full h-full min-h-[320px]"
+          className="w-full h-full min-h-[340px]"
+          height={340}
           config={{
             responsive: true,
             displayModeBar: false,

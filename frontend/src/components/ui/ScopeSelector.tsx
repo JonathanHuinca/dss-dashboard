@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import {
   ShieldCheck,
   Database,
@@ -72,15 +72,88 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
   // Sincronización entre props legacy (value/onChange) y filters completos
   const currentScope = filters.alcance || value || 'conformes'
 
+  // --- 1. Régimen Horario Dinámico (Casillas Multi-Selección) ---
+  const espacioId = modulo === 'biblioteca' ? 1 : 2
+  const { data: salasBiblioteca = [] } = useSalasBiblioteca(espacioId)
+  const { data: availableFilters } = useAvailableFilters(espacioId)
+
+  // Año dinámico derivado del rango de fechas consultado (dateRange)
+  const anioConsultado = useMemo(() => {
+    if (dateRange?.fin) {
+      const y = parseInt(dateRange.fin.slice(0, 4), 10)
+      if (!isNaN(y)) return y
+    }
+    if (dateRange?.inicio) {
+      const y = parseInt(dateRange.inicio.slice(0, 4), 10)
+      if (!isNaN(y)) return y
+    }
+    return new Date().getFullYear()
+  }, [dateRange?.fin, dateRange?.inicio])
+
+  const { data: horariosList = [] } = useQuery({
+    queryKey: ['horarios-operacion-scope', espacioId, anioConsultado],
+    queryFn: () => fetchHorarios({ espacio_id: espacioId, anio: anioConsultado }),
+    staleTime: 60_000,
+  })
+
+  const [pendingScheduleModal, setPendingScheduleModal] = useState<HorarioOperacion | null>(null)
+  const [noticeMessage, setNoticeMessage] = useState<string | null>(null)
+
+  // Campañas especiales o 24h activas en la BD para el año consultado
+  const specialSchedules = useMemo(() => {
+    return horariosList.filter(
+      h => h.activo && (h.es_continuo_24h || h.tipo_horario === 'extendido_24h' || (h.fecha_inicio && h.fecha_fin && h.tipo_horario !== 'regular'))
+    )
+  }, [horariosList])
+
+  const isScheduleActiveInDateRange = (h: HorarioOperacion) => {
+    if (!h.fecha_inicio || !h.fecha_fin || !dateRange?.inicio || !dateRange?.fin) {
+      return true
+    }
+    const hStart = new Date(h.fecha_inicio.slice(0, 10)).getTime()
+    const hEnd = new Date(h.fecha_fin.slice(0, 10)).getTime()
+    const rStart = new Date(dateRange.inicio.slice(0, 10)).getTime()
+    const rEnd = new Date(dateRange.fin.slice(0, 10)).getTime()
+    return !(rEnd < hStart || rStart > hEnd)
+  }
+
+  const formatIsoDate = (dStr?: string | null) => {
+    if (!dStr) return ''
+    try {
+      const [y, m, d] = dStr.slice(0, 10).split('-')
+      return `${d}/${m}/${y}`
+    } catch {
+      return dStr
+    }
+  }
+
+  const getNombreCampaña = (h: HorarioOperacion) => {
+    if (h.descripcion) {
+      return h.descripcion.replace(/^(Sala \d+ [^—–-]+ [—–-] )/i, '')
+    }
+    return 'Campaña 24 Horas'
+  }
+
   // Presets inteligentes al cambiar el alcance superior
   const handleScopeChange = (newScope: DataScope) => {
     if (onChange) onChange(newScope)
     if (!onChangeFilters) return
 
     if (newScope === 'conformes') {
+      // 1. Detectar si en el período consultado hay fechas de campaña 24h activas
+      const active24h = specialSchedules.filter(
+        h => (h.es_continuo_24h || h.tipo_horario === 'extendido_24h') && isScheduleActiveInDateRange(h)
+      )
+
+      // Si hay fechas de 24h en el rango consultado, marcar el filtro 24h junto al horario oficial
+      // para habilitar el uso y análisis del período de horario nocturno y dominical 24h conforme
+      const defaultRegimen = active24h.length > 0
+        ? ['dentro_horario', ...active24h.map(h => `horario_${h.id}_delta`), '24h_delta'].join(',')
+        : 'dentro_horario'
+
       onChangeFilters({
         alcance: 'conformes',
-        regimen_horario: 'dentro_horario',
+        regimen_horario: defaultRegimen,
         direccion: modulo === 'biblioteca' ? 'completos' : 'todos',
         dias_semana: '',
         door: '',
@@ -146,7 +219,7 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
         if (
           key === 'regimen_horario' &&
           typeof val === 'string' &&
-          (val.includes('fuera_horario') || val.includes('dias_cierre') || val.includes('24h_delta'))
+          (val.includes('fuera_horario') || val.includes('dias_cierre'))
         ) {
           nextFilters.alcance = 'todos'
         }
@@ -166,31 +239,34 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     }
   }
 
-  // --- 1. Régimen Horario Dinámico (Casillas Multi-Selección) ---
-  const espacioId = modulo === 'biblioteca' ? 1 : 2
-  const { data: salasBiblioteca = [] } = useSalasBiblioteca(espacioId)
-  const { data: availableFilters } = useAvailableFilters(espacioId)
-  const { data: horariosList = [] } = useQuery({
-    queryKey: ['horarios-operacion-scope', espacioId],
-    queryFn: () => fetchHorarios({ espacio_id: espacioId, anio: 2026 }),
-    staleTime: 60_000,
-  })
+  // Sincronizar automáticamente el régimen conforme si el rango de fechas cambia mientras se está en Datos Conformes
+  useEffect(() => {
+    if (currentScope !== 'conformes' || !onChangeFilters) return
+    const active24h = specialSchedules.filter(
+      h => (h.es_continuo_24h || h.tipo_horario === 'extendido_24h') && isScheduleActiveInDateRange(h)
+    )
+    const expectedRegimen = active24h.length > 0
+      ? ['dentro_horario', ...active24h.map(h => `horario_${h.id}_delta`), '24h_delta'].join(',')
+      : 'dentro_horario'
 
-  const [pendingScheduleModal, setPendingScheduleModal] = useState<HorarioOperacion | null>(null)
-  const [noticeMessage, setNoticeMessage] = useState<string | null>(null)
+    const esRegimenConformeActual =
+      filters.regimen_horario === 'dentro_horario' ||
+      (filters.regimen_horario?.includes('dentro_horario') && (filters.regimen_horario?.includes('24h_delta') || filters.regimen_horario?.includes('horario_')))
 
-  const specialSchedules = horariosList.filter(
-    h => h.activo && (h.es_continuo_24h || h.tipo_horario === 'extendido_24h' || (h.fecha_inicio && h.fecha_fin && h.tipo_horario !== 'regular'))
-  )
+    if (esRegimenConformeActual && filters.regimen_horario !== expectedRegimen) {
+      updateFilter('regimen_horario', expectedRegimen)
+    }
+  }, [dateRange?.inicio, dateRange?.fin, specialSchedules, currentScope])
 
   const allBaseRegimenes = ['dentro_horario', 'fuera_horario', 'dias_cierre', 'paro_federado', 'paro_carrera']
-  const allSpecialRegimenes = specialSchedules.flatMap(h =>
-    h.es_continuo_24h
-      ? ['24h_delta', '24h_total']
-      : h.tipo_horario === 'historico_regular'
-      ? [`horario_${h.id}_total`]
-      : [`horario_${h.id}_delta`, `horario_${h.id}_total`]
-  )
+  const allSpecialRegimenes = useMemo(() => {
+    return specialSchedules.flatMap(h => [
+      `horario_${h.id}_delta`,
+      `horario_${h.id}_total`,
+      '24h_delta',
+      '24h_total',
+    ])
+  }, [specialSchedules])
   const allRegimenes = [...allBaseRegimenes, ...allSpecialRegimenes]
 
   const selectedRegimenes =
@@ -198,33 +274,31 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
       ? filters.regimen_horario.split(',').map(r => r.trim())
       : []
 
-  const isScheduleActiveInDateRange = (h: HorarioOperacion) => {
-    if (!h.fecha_inicio || !h.fecha_fin || !dateRange?.inicio || !dateRange?.fin) {
-      return true
-    }
-    const hStart = new Date(h.fecha_inicio).getTime()
-    const hEnd = new Date(h.fecha_fin).getTime()
-    const rStart = new Date(dateRange.inicio).getTime()
-    const rEnd = new Date(dateRange.fin).getTime()
-    return !(rEnd < hStart || rStart > hEnd)
-  }
-
-  const formatIsoDate = (dStr?: string | null) => {
-    if (!dStr) return ''
-    try {
-      const [y, m, d] = dStr.slice(0, 10).split('-')
-      return `${d}/${m}/${y}`
-    } catch {
-      return dStr
-    }
-  }
-
   const toggleRegimen = (regimenId: string, specialH?: HorarioOperacion) => {
-    const isCurrentlyChecked = selectedRegimenes.length === 0 || selectedRegimenes.includes(regimenId)
+    const inRange = specialH ? isScheduleActiveInDateRange(specialH) : true
+    let isCurrentlyChecked = false
+
+    if (specialH) {
+      if (regimenId.endsWith('_delta')) {
+        isCurrentlyChecked =
+          selectedRegimenes.length === 0 ||
+          selectedRegimenes.includes(regimenId) ||
+          (inRange && (selectedRegimenes.includes('24h_delta') || selectedRegimenes.includes('24h')))
+      } else if (regimenId.endsWith('_total')) {
+        isCurrentlyChecked =
+          selectedRegimenes.length === 0 ||
+          selectedRegimenes.includes(regimenId) ||
+          (inRange && (selectedRegimenes.includes('24h_total') || selectedRegimenes.includes('24h')))
+      } else {
+        isCurrentlyChecked = selectedRegimenes.length === 0 || selectedRegimenes.includes(regimenId)
+      }
+    } else {
+      isCurrentlyChecked = selectedRegimenes.length === 0 || selectedRegimenes.includes(regimenId)
+    }
+
     const willBeChecked = !isCurrentlyChecked
 
     if (specialH && willBeChecked) {
-      const inRange = isScheduleActiveInDateRange(specialH)
       if (!inRange) {
         setPendingScheduleModal(specialH)
         return
@@ -233,10 +307,14 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
 
     let next: string[]
     if (selectedRegimenes.length === 0) {
-      // Si todos estaban activos ('todos'), al hacer clic se desmarca este régimen y los demás permanecen activos
-      next = allRegimenes.filter(r => r !== regimenId)
-    } else if (selectedRegimenes.includes(regimenId)) {
-      next = selectedRegimenes.filter(r => r !== regimenId)
+      next = allRegimenes.filter(r => r !== regimenId && r !== '24h_delta' && r !== '24h_total')
+    } else if (isCurrentlyChecked) {
+      next = selectedRegimenes.filter(r => {
+        if (r === regimenId) return false
+        if (regimenId.endsWith('_delta') && r === '24h_delta') return false
+        if (regimenId.endsWith('_total') && (r === '24h_total' || r === '24h')) return false
+        return true
+      })
     } else {
       next = [...selectedRegimenes, regimenId]
     }
@@ -250,31 +328,26 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
   const handleConfirmSchedule = () => {
     if (!pendingScheduleModal) return
     const h = pendingScheduleModal
-    const iniStr = h.fecha_inicio ? h.fecha_inicio.slice(0, 10) : '2026-07-01'
-    const finStr = h.fecha_fin ? h.fecha_fin.slice(0, 10) : '2026-07-31'
-
-    let monthLabel = 'Período Especial'
-    if (iniStr.includes('-07-')) monthLabel = 'Julio 2026'
-    else if (iniStr.includes('-08-')) monthLabel = 'Agosto 2026'
-    else if (iniStr.includes('-11-')) monthLabel = 'Noviembre 2026'
-    else if (iniStr.includes('-12-')) monthLabel = 'Diciembre 2026'
+    const iniStr = h.fecha_inicio ? h.fecha_inicio.slice(0, 10) : ''
+    const finStr = h.fecha_fin ? h.fecha_fin.slice(0, 10) : ''
+    const labelCampaña = getNombreCampaña(h)
 
     const newRange: DateRange = {
       inicio: iniStr,
       fin: finStr,
-      label: `${h.descripcion} (${monthLabel})`,
+      label: `${labelCampaña} (${formatIsoDate(iniStr)} - ${formatIsoDate(finStr)})`,
     }
 
     if (onRangeChange) {
       onRangeChange(newRange)
     }
-    const targetFilter = h.es_continuo_24h ? '24h' : `horario_${h.id}`
+    const targetFilter = `horario_${h.id}_delta`
     const next =
       selectedRegimenes.length === 0
-        ? [targetFilter]
+        ? ['dentro_horario', targetFilter, '24h_delta']
         : selectedRegimenes.includes(targetFilter)
         ? selectedRegimenes
-        : [...selectedRegimenes, targetFilter]
+        : [...selectedRegimenes, targetFilter, '24h_delta']
 
     updateFilter('regimen_horario', next.join(','))
     setPendingScheduleModal(null)
@@ -586,7 +659,9 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
   // Estados de coincidencia exacta con los presets estándar
   const isConformesPreset =
     currentScope === 'conformes' &&
-    filters.regimen_horario === 'dentro_horario' &&
+    (filters.regimen_horario === 'dentro_horario' ||
+      (filters.regimen_horario?.includes('dentro_horario') &&
+       (filters.regimen_horario?.includes('24h_delta') || filters.regimen_horario?.includes('horario_')))) &&
     (modulo === 'biblioteca' ? filters.direccion === 'completos' : (filters.direccion === 'todos' || !filters.direccion)) &&
     (filters.marcajes === 'todos' || filters.marcajes === '1,2,3-4' || !filters.marcajes) &&
     filters.incluir_pausas_bano !== false &&
@@ -1155,132 +1230,109 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
                 )
               })()}
 
-              {/* Períodos Especiales Dinámicos (Desglosados en Delta y Total) */}
-              {specialSchedules.flatMap((h) => {
-                const inRange = isScheduleActiveInDateRange(h)
-                const items = []
+              {/* Períodos Especiales Dinámicos Activos en el Rango Consultado */}
+              {specialSchedules
+                .filter((h) => isScheduleActiveInDateRange(h))
+                .flatMap((h) => {
+                  const inRange = true
+                  const items = []
+                  const etiquetaPeriodo = h.descripcion
+                    ? h.descripcion.replace(/Sala \d+ [^—–-]+ [—–-] /i, '').replace(/Campaña 24 Horas\s*[-—–]?\s*/i, '').trim()
+                    : `${formatIsoDate(h.fecha_inicio)} - ${formatIsoDate(h.fecha_fin)}`
 
-                if (h.es_continuo_24h) {
-                  // Opción A: Solo Extensión Nocturna / Delta (24h menos oficial)
-                  const deltaKey = '24h_delta'
-                  const isCheckedDelta = selectedRegimenes.length === 0 || selectedRegimenes.includes(deltaKey)
-                  items.push(
-                    <label
-                      key={`${h.id}-delta`}
-                      onClick={(e) => {
-                        if (!inRange && !isCheckedDelta) {
-                          e.preventDefault()
-                          toggleRegimen(deltaKey, h)
-                        }
-                      }}
-                      className={`flex items-start gap-1.5 p-1 rounded-md cursor-pointer transition select-none border ${
-                        isCheckedDelta
-                          ? 'bg-indigo-50/90 border-indigo-400/60 text-indigo-950 font-semibold shadow-2xs'
-                          : inRange
-                          ? 'bg-white/80 border-slate-200/60 hover:bg-slate-100 text-slate-700 opacity-70'
-                          : 'bg-slate-100/60 border-dashed border-slate-300/80 text-slate-500 hover:bg-slate-200/60'
-                      }`}
-                      title={
-                        inRange
-                          ? `Extensión nocturna Campaña 24h: 20:30 a 08:30 y domingos (${formatIsoDate(h.fecha_inicio)} al ${formatIsoDate(h.fecha_fin)})`
-                          : `Vigencia: ${formatIsoDate(h.fecha_inicio)} al ${formatIsoDate(h.fecha_fin)}. Clic para ajustar período de consulta.`
-                      }
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isCheckedDelta}
-                        onChange={() => toggleRegimen(deltaKey, h)}
-                        className="mt-0.5 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
-                      />
-                      <div className="min-w-0 flex-1 leading-tight">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[10.5px] font-medium truncate">Extensión Nocturna 24h</span>
-                          <span
-                            className={`text-[8.5px] px-1 py-0.2 rounded font-mono shrink-0 ${
-                              isCheckedDelta
-                                ? 'bg-indigo-600 text-white font-bold'
-                                : inRange
-                                ? 'bg-indigo-100 text-indigo-700'
-                                : 'bg-slate-200 text-slate-600'
-                            }`}
-                          >
-                            Delta 24h
-                          </span>
-                        </div>
-                        <div className="text-[9px] font-normal truncate flex items-center justify-between gap-1 mt-0.5">
-                          <span className={inRange ? 'text-slate-400' : 'text-slate-500 font-medium'}>
-                            Noches 20:30-08:30 y domingos
-                          </span>
-                          {!inRange && (
-                            <span className="text-[8.5px] text-uct-blue-primary font-bold underline shrink-0">
-                              Ajustar fecha
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </label>
-                  )
+                  if (h.es_continuo_24h) {
+                    // Opción A: Solo Extensión Nocturna / Delta (24h menos oficial)
+                    const deltaKey = `horario_${h.id}_delta`
+                    const isCheckedDelta =
+                      selectedRegimenes.length === 0 ||
+                      selectedRegimenes.includes(deltaKey) ||
+                      selectedRegimenes.includes('24h_delta') ||
+                      selectedRegimenes.includes('24h')
 
-                  // Opción B: Régimen 24 Horas Total
-                  const totalKey = '24h_total'
-                  const isCheckedTotal = selectedRegimenes.length === 0 || selectedRegimenes.includes(totalKey)
-                  items.push(
-                    <label
-                      key={`${h.id}-total`}
-                      onClick={(e) => {
-                        if (!inRange && !isCheckedTotal) {
-                          e.preventDefault()
-                          toggleRegimen(totalKey, h)
-                        }
-                      }}
-                      className={`flex items-start gap-1.5 p-1 rounded-md cursor-pointer transition select-none border ${
-                        isCheckedTotal
-                          ? 'bg-purple-50/90 border-purple-400/60 text-purple-950 font-semibold shadow-2xs'
-                          : inRange
-                          ? 'bg-white/80 border-slate-200/60 hover:bg-slate-100 text-slate-700 opacity-70'
-                          : 'bg-slate-100/60 border-dashed border-slate-300/80 text-slate-500 hover:bg-slate-200/60'
-                      }`}
-                      title={
-                        inRange
-                          ? `Campaña 24 Horas completa (diurno + nocturno): ${formatIsoDate(h.fecha_inicio)} al ${formatIsoDate(h.fecha_fin)}`
-                          : `Vigencia: ${formatIsoDate(h.fecha_inicio)} al ${formatIsoDate(h.fecha_fin)}. Clic para ajustar período de consulta.`
-                      }
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isCheckedTotal}
-                        onChange={() => toggleRegimen(totalKey, h)}
-                        className="mt-0.5 text-purple-600 focus:ring-purple-500 h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
-                      />
-                      <div className="min-w-0 flex-1 leading-tight">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-[10.5px] font-medium truncate">Campaña 24h Total</span>
-                          <span
-                            className={`text-[8.5px] px-1 py-0.2 rounded font-mono shrink-0 ${
-                              isCheckedTotal
-                                ? 'bg-purple-600 text-white font-bold'
-                                : inRange
-                                ? 'bg-purple-100 text-purple-700'
-                                : 'bg-slate-200 text-slate-600'
-                            }`}
-                          >
-                            24h Total
-                          </span>
-                        </div>
-                        <div className="text-[9px] font-normal truncate flex items-center justify-between gap-1 mt-0.5">
-                          <span className={inRange ? 'text-slate-400' : 'text-slate-500 font-medium'}>
-                            24 hrs continuas en julio
-                          </span>
-                          {!inRange && (
-                            <span className="text-[8.5px] text-uct-blue-primary font-bold underline shrink-0">
-                              Ajustar fecha
+                    items.push(
+                      <label
+                        key={`${h.id}-delta`}
+                        className={`flex items-start gap-1.5 p-1 rounded-md cursor-pointer transition select-none border ${
+                          isCheckedDelta
+                            ? 'bg-indigo-50/90 border-indigo-400/60 text-indigo-950 font-semibold shadow-2xs'
+                            : 'bg-white/80 border-slate-200/60 hover:bg-slate-100 text-slate-700 opacity-70'
+                        }`}
+                        title={`Extensión nocturna (${etiquetaPeriodo}): 20:30 a 08:30 y domingos (${formatIsoDate(h.fecha_inicio)} al ${formatIsoDate(h.fecha_fin)})`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isCheckedDelta}
+                          onChange={() => toggleRegimen(deltaKey, h)}
+                          className="mt-0.5 text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
+                        />
+                        <div className="min-w-0 flex-1 leading-tight">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[10.5px] font-medium truncate" title={`Extensión Nocturna (${etiquetaPeriodo})`}>
+                              Extensión Nocturna ({etiquetaPeriodo})
                             </span>
-                          )}
+                            <span
+                              className={`text-[8.5px] px-1 py-0.2 rounded font-mono shrink-0 ${
+                                isCheckedDelta
+                                  ? 'bg-indigo-600 text-white font-bold'
+                                  : 'bg-indigo-100 text-indigo-700'
+                              }`}
+                            >
+                              Delta 24h
+                            </span>
+                          </div>
+                          <div className="text-[9px] text-slate-400 font-normal truncate mt-0.5">
+                            Noches 20:30-08:30 y domingos ({formatIsoDate(h.fecha_inicio)} al {formatIsoDate(h.fecha_fin)})
+                          </div>
                         </div>
-                      </div>
-                    </label>
-                  )
-                } else {
+                      </label>
+                    )
+
+                    // Opción B: Régimen 24 Horas Total
+                    const totalKey = `horario_${h.id}_total`
+                    const isCheckedTotal =
+                      selectedRegimenes.length === 0 ||
+                      selectedRegimenes.includes(totalKey) ||
+                      selectedRegimenes.includes('24h_total') ||
+                      selectedRegimenes.includes('24h')
+
+                    items.push(
+                      <label
+                        key={`${h.id}-total`}
+                        className={`flex items-start gap-1.5 p-1 rounded-md cursor-pointer transition select-none border ${
+                          isCheckedTotal
+                            ? 'bg-purple-50/90 border-purple-400/60 text-purple-950 font-semibold shadow-2xs'
+                            : 'bg-white/80 border-slate-200/60 hover:bg-slate-100 text-slate-700 opacity-70'
+                        }`}
+                        title={`Campaña 24 Horas completa (diurno + nocturno): ${formatIsoDate(h.fecha_inicio)} al ${formatIsoDate(h.fecha_fin)}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isCheckedTotal}
+                          onChange={() => toggleRegimen(totalKey, h)}
+                          className="mt-0.5 text-purple-600 focus:ring-purple-500 h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
+                        />
+                        <div className="min-w-0 flex-1 leading-tight">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[10.5px] font-medium truncate" title={`Campaña 24h Total (${etiquetaPeriodo})`}>
+                              Campaña 24h Total ({etiquetaPeriodo})
+                            </span>
+                            <span
+                              className={`text-[8.5px] px-1 py-0.2 rounded font-mono shrink-0 ${
+                                isCheckedTotal
+                                  ? 'bg-purple-600 text-white font-bold'
+                                  : 'bg-purple-100 text-purple-700'
+                              }`}
+                            >
+                              24h Total
+                            </span>
+                          </div>
+                          <div className="text-[9px] text-slate-400 font-normal truncate mt-0.5">
+                            24 hrs continuas ({formatIsoDate(h.fecha_inicio)} al {formatIsoDate(h.fecha_fin)})
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  } else {
                   // Horarios Extendidos Especiales Parciales o Cambios Temporales por Sala
                   const deltaKey = `horario_${h.id}_delta`
                   const totalKey = `horario_${h.id}_total`

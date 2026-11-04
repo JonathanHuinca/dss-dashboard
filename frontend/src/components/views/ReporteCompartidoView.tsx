@@ -27,6 +27,7 @@ import {
   Repeat,
   ParkingCircle,
   CheckCircle,
+  Moon,
 } from 'lucide-react'
 import {
   RespuestaReportePublico,
@@ -115,6 +116,13 @@ const VehicleBehavioralClustersPlotlyChart = memo(
     }))
   )
 )
+const SeccionCampana24Horas = memo(
+  lazy(() =>
+    import('./biblioteca/SeccionCampana24Horas').then((m) => ({
+      default: m.SeccionCampana24Horas,
+    }))
+  )
+)
 
 function EsqueletoGraficoInstitucional() {
   return (
@@ -133,7 +141,7 @@ interface ReporteCompartidoViewProps {
 }
 
 export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ modoRuta, token = '' }) => {
-  const { isAuthenticated, logout } = useAuth()
+  const { isAuthenticated, logout, loginWithCredentials } = useAuth()
   const { isAiEnabled } = useAssistant()
   const [tokenReporteActivo, setTokenReporteActivo] = useState<string>(modoRuta === 'reporte' ? token : '')
   const [datosReporte, setDatosReporte] = useState<RespuestaReportePublico | null>(null)
@@ -146,6 +154,11 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
   const [consultandoIA, setConsultandoIA] = useState<boolean>(false)
   const [conversacionIA, setConversacionIA] = useState<Array<{ pregunta: string; respuesta: string; hora: string }>>([])
   const [errorIA, setErrorIA] = useState<string | null>(null)
+
+  const [emailIngreso, setEmailIngreso] = useState<string>('')
+  const [passwordIngreso, setPasswordIngreso] = useState<string>('')
+  const [ingresandoLogin, setIngresandoLogin] = useState<boolean>(false)
+  const [errorLogin, setErrorLogin] = useState<string | null>(null)
 
   const [nuevaPassword, setNuevaPassword] = useState<string>('')
   const [confirmarPassword, setConfirmarPassword] = useState<string>('')
@@ -210,6 +223,9 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
       const resp = await fetchReportePublicoPorToken(tokenRep)
       setDatosReporte(resp)
       setTokenReporteActivo(tokenRep)
+      if (resp.reporte?.destinatario?.email) {
+        setEmailIngreso(resp.reporte.destinatario.email)
+      }
     } catch (err: any) {
       setErrorAcceso(
         err?.response?.data?.detail || 'Este enlace de reporte compartido no está disponible o ha sido deshabilitado.'
@@ -266,6 +282,23 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
       )
     } finally {
       setCreandoPassword(false)
+    }
+  }
+
+  const handleLoginReporte = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!emailIngreso.trim() || !passwordIngreso) return
+    setIngresandoLogin(true)
+    setErrorLogin(null)
+    try {
+      const ok = await loginWithCredentials(emailIngreso.trim(), passwordIngreso)
+      if (!ok) {
+        setErrorLogin('Credenciales institucionales incorrectas. Verifique su correo y contraseña.')
+      }
+    } catch (err: any) {
+      setErrorLogin(err?.message || 'Error al autenticar credenciales institucionales.')
+    } finally {
+      setIngresandoLogin(false)
     }
   }
 
@@ -403,6 +436,85 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
     )
   }
 
+  if (!isAuthenticated && !passwordCreadaExito) {
+    return (
+      <div className="min-h-screen bg-uct-bg-main text-slate-800 flex flex-col items-center justify-center p-6">
+        <div className="max-w-md w-full bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
+          <div className="bg-uct-blue-primary px-6 py-5 border-b-4 border-uct-gold flex items-center gap-3">
+            <div className="h-10 px-2.5 py-1 rounded-lg bg-white border border-uct-gold/50 shadow-xs shrink-0 flex items-center justify-center">
+              <img src="/uct_logo.png" alt="UCT" className="h-6 w-auto object-contain" />
+            </div>
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-uct-gold block">
+                Acceso a Reporte Confidencial
+              </span>
+              <h2 className="text-sm font-bold text-white leading-snug">
+                Universidad Católica de Temuco — DSS Campus San Francisco
+              </h2>
+            </div>
+          </div>
+
+          <form onSubmit={handleLoginReporte} className="p-6 space-y-4">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs text-slate-700 space-y-1">
+              <p className="font-bold text-uct-blue-primary">
+                Identificación Requerida
+              </p>
+              <p className="text-slate-600">
+                Para visualizar el reporte ejecutivo{' '}
+                <strong className="text-slate-800">"{reporte?.titulo_reporte}"</strong> ({reporte?.codigo_corto}),
+                ingrese sus credenciales institucionales.
+              </p>
+            </div>
+
+            {errorLogin && (
+              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
+                <span>{errorLogin}</span>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Correo Electrónico Institucional *
+              </label>
+              <input
+                type="email"
+                required
+                value={emailIngreso}
+                onChange={(e) => setEmailIngreso(e.target.value)}
+                placeholder="ejemplo@uct.cl"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:border-uct-blue-primary outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Contraseña Institucional *
+              </label>
+              <input
+                type="password"
+                required
+                value={passwordIngreso}
+                onChange={(e) => setPasswordIngreso(e.target.value)}
+                placeholder="Ingrese su contraseña"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:border-uct-blue-primary outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={ingresandoLogin}
+              className="w-full py-2.5 px-4 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-dark disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Lock className="w-4 h-4 text-uct-gold" />
+              {ingresandoLogin ? 'Verificando credenciales...' : 'Ingresar y Ver Reporte'}
+            </button>
+          </form>
+        </div>
+      </div>
+    )
+  }
+
   const obtenerNotasDeSeccion = (seccionId: string) => {
     return notasItems.filter((n) => n.seccion === seccionId)
   }
@@ -483,7 +595,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
         case 'aforo_maximo_registrado':
           return {
             valor: `${Number(indEjecutivos.aforo_maximo_registrado ?? 0).toLocaleString('es-CL')} personas`,
-            subtitulo: `Pico vs ${indEjecutivos.capacidad_asientos ?? 276} asientos (${indEjecutivos.sala_filtrada || 'Global'})`,
+            subtitulo: `Máximo vs ${indEjecutivos.capacidad_asientos ?? 276} asientos (${indEjecutivos.sala_filtrada || 'Global'})`,
             icono: BarChart2,
             color: '#16A34A',
           }
@@ -1242,6 +1354,44 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                           />
                         </Suspense>
                       </ChartCard>
+                    </div>
+                  )}
+
+                  {grafVisibles.includes('campana_24_horas') && grafData.campana_24_horas && (
+                    <div className="w-full space-y-3">
+                      <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-sm border border-slate-800 flex items-center justify-between">
+                        <div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <Moon className="w-5 h-5 text-uct-gold" />
+                            <h3 className="text-sm font-bold text-white">
+                              8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno
+                            </h3>
+                          </div>
+                          <p className="text-xs text-slate-300">
+                            Monitoreo de demanda fuera de horario habitual (20:30 a 07:00 hrs) y justificación de capacidad en Sala 2 Pecera
+                          </p>
+                        </div>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-uct-gold border border-uct-gold/40">
+                          Régimen Continuo 24h
+                        </span>
+                      </div>
+                      <Suspense fallback={<EsqueletoGraficoInstitucional />}>
+                        <SeccionCampana24Horas
+                          data={grafData.campana_24_horas}
+                          isLoading={false}
+                          selectedCampanaId={grafData.campana_24_horas?.campana?.id ?? 0}
+                          fechaInicioPersonalizada={reporte.fecha_inicio}
+                          fechaFinPersonalizada={reporte.fecha_fin}
+                          bloqueHorario="todos"
+                          currentDateRange={{
+                            inicio: reporte.fecha_inicio,
+                            fin: reporte.fecha_fin,
+                            label: `Período Reporte (${reporte.fecha_inicio} al ${reporte.fecha_fin})`,
+                            isCustom: true,
+                          }}
+                          ocultarAccionesReporte={true}
+                        />
+                      </Suspense>
                     </div>
                   )}
                 </>

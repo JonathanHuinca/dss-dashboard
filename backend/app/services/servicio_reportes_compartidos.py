@@ -45,6 +45,7 @@ CATALOGO_GRAFICOS_BIBLIOTECA = [
     {"id": "hitos_academicos", "titulo": "Comparativa por Hito del Calendario Académico"},
     {"id": "distribucion_curricular", "titulo": "Distribución por Carrera y Facultad (Ley 21.719)"},
     {"id": "perfiles_visita", "titulo": "Perfiles de Estadía y Permanencia (Donut)"},
+    {"id": "campana_24_horas", "titulo": "8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno"},
 ]
 
 CATALOGO_INDICADORES_BIBLIOTECA = [
@@ -556,6 +557,18 @@ class ServicioReportesCompartidos:
                     incluir_pausas_bano=incluir_pausas_bano,
                     desduplicar_rafagas=desduplicar_rafagas,
                 )
+            if "campana_24_horas" in graficos_visibles:
+                try:
+                    graficos_resultado["campana_24_horas"] = await AttendanceService.get_analisis_24h(
+                        session=session,
+                        espacio_id=1,
+                        fecha_inicio=fecha_inicio,
+                        fecha_fin=fecha_fin,
+                        bloque_horario="todos",
+                    )
+                except Exception as exc:
+                    logger.warning("Fallo analisis 24h en reporte confinado: %s", exc)
+                    graficos_resultado["campana_24_horas"] = None
         else:
             kpis_base = await VehicleService.get_kpis(
                 session=session,
@@ -730,19 +743,10 @@ class ServicioReportesCompartidos:
             )
             await session.flush()
         else:
-            if (
-                forzar_nuevo_token
-                and email_dest not in CUENTAS_SISTEMA_PROTEGIDAS
-                and usuario_dest.id != creador_id
-            ):
-                from sqlalchemy import delete as sql_delete
-
-                usuario_dest.nombre_completo = nombre_dest
-                usuario_dest.hashed_password = "PENDIENTE_ACTIVACION"
-                usuario_dest.is_active = False
-                await session.execute(
-                    sql_delete(UsuarioRol).where(UsuarioRol.usuario_id == usuario_dest.id)
-                )
+            # Si el usuario ya existe en el sistema (ej. Admin_Sistema, Directora, etc.):
+            # Su contraseña se preserva intacta y solo se le agrega el rol Consultor_Reporte.
+            roles_actuales_ids = {r.id for r in (usuario_dest.roles or [])}
+            if rol_consultor.id not in roles_actuales_ids:
                 session.add(UsuarioRol(usuario_id=usuario_dest.id, rol_id=rol_consultor.id))
                 await session.flush()
 
@@ -750,7 +754,7 @@ class ServicioReportesCompartidos:
                 usuario_dest.hashed_password == "PENDIENTE_ACTIVACION"
                 or not usuario_dest.hashed_password.startswith("$2")
             )
-            if pendiente_clave or forzar_nuevo_token:
+            if pendiente_clave or (forzar_nuevo_token and pendiente_clave):
                 token_plano, token_hash = generar_token_activacion()
                 session.add(
                     TokenActivacion(
@@ -1055,6 +1059,12 @@ class ServicioReportesCompartidos:
                 "token_portal": dest.token_portal if dest else "",
                 "activo": dest.activo if dest else True,
             },
+            "creador": {
+                "id": reporte.creador.id if reporte.creador else reporte.creado_por_id,
+                "nombre_completo": reporte.creador.nombre_completo if reporte.creador else "Sistema DSS",
+                "email": reporte.creador.email if reporte.creador else "",
+                "rol": (reporte.creador.roles[0].nombre if reporte.creador and reporte.creador.roles else "Usuario"),
+            },
         }
 
     @classmethod
@@ -1064,17 +1074,31 @@ class ServicioReportesCompartidos:
         usuario_actual: Usuario,
         espacio_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Devuelve la lista de reportes emitidos y el catálogo de destinatarios registrados."""
+        """Devuelve la lista de reportes emitidos y el catálogo de destinatarios registrados según jerarquía RLS."""
         roles_usuario = {r.nombre for r in usuario_actual.roles}
-        es_admin = "Admin_Sistema" in roles_usuario or "SuperAdmin" in roles_usuario
+        es_admin = bool({"Admin_Sistema", "SuperAdmin"}.intersection(roles_usuario))
+        es_directora = bool({"Directora_Recinto", "Director_Recinto"}.intersection(roles_usuario))
 
         stmt = (
             select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario))
+            .options(
+                selectinload(ReporteCompartido.destinatario),
+                selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
+            )
             .order_by(desc(ReporteCompartido.creado_en))
         )
         if not es_admin:
-            stmt = stmt.where(ReporteCompartido.creado_por_id == usuario_actual.id)
+            if es_directora:
+                subquery_analistas = select(Usuario.id).where(
+                    (Usuario.created_by_user_id == usuario_actual.id) |
+                    ((Usuario.espacio_id == usuario_actual.espacio_id) & (Usuario.espacio_id != None))
+                )
+                stmt = stmt.where(
+                    (ReporteCompartido.creado_por_id == usuario_actual.id) |
+                    (ReporteCompartido.creado_por_id.in_(subquery_analistas))
+                )
+            else:
+                stmt = stmt.where(ReporteCompartido.creado_por_id == usuario_actual.id)
         if espacio_id is not None:
             stmt = stmt.where(ReporteCompartido.espacio_id == espacio_id)
 

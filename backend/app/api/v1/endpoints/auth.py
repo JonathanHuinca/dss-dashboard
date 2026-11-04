@@ -178,7 +178,7 @@ async def list_roles_endpoint(
             id=r.id,
             nombre=r.nombre,
             descripcion=r.descripcion,
-            rate_limit_quota=r.rate_limit_quota or "30/day",
+            rate_limit_quota=(r.rate_limit_quota or "30/día").replace("/day", "/día"),
             cooldown_segundos=getattr(r, "cooldown_segundos", 10) or 10,
         )
         for r in roles
@@ -263,19 +263,27 @@ async def resend_invitation_endpoint(
     )
     enlace_activacion = f"{settings.FRONTEND_URL}/activar-cuenta?token={token_plano}"
 
-    background_tasks.add_task(
-        enviar_correo_activacion,
-        email_destinatario=user.email,
-        nombre_usuario=user.nombre_completo,
-        enlace_activacion=enlace_activacion,
-        token_plano=token_plano,
-    )
+    if token_obj.tipo_token == "RECUPERACION_PASSWORD":
+        background_tasks.add_task(
+            enviar_correo_recuperacion,
+            destinatario=user.email,
+            nombre_destinatario=user.nombre_completo or "",
+            enlace_recuperacion=enlace_activacion,
+        )
+    else:
+        background_tasks.add_task(
+            enviar_correo_activacion,
+            destinatario=user.email,
+            nombre_destinatario=user.nombre_completo or "",
+            enlace_activacion=enlace_activacion,
+        )
 
     return UsuarioInviteResponse(
         usuario=map_usuario_response(user),
         enlace_activacion=enlace_activacion,
         token_temporal=token_plano,
         expira_en=token_obj.expira_en,
+        mensaje="Enlace de acceso y restablecimiento de contraseña generado exitosamente.",
     )
 
 

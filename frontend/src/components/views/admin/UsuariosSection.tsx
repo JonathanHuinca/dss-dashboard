@@ -60,12 +60,17 @@ interface GlobalConfig {
 }
 
 const ROLES_PREDETERMINADOS: RoleItem[] = [
-  { id: 1, nombre: 'Admin_Sistema', descripcion: 'SuperAdmin técnico global con control total de la plataforma', rate_limit_quota: '1000/day', cooldown_segundos: 5 },
-  { id: 2, nombre: 'Director_Recinto', descripcion: 'Jefatura de espacio físico asignado (Biblioteca / Estacionamientos)', rate_limit_quota: '500/day', cooldown_segundos: 10 },
-  { id: 3, nombre: 'Analista_Consulta', descripcion: 'Decanos, directores de carrera y analistas institucionales', rate_limit_quota: '200/day', cooldown_segundos: 15 },
-  { id: 4, nombre: 'Guardia_Seguridad', descripcion: 'Operador en terreno para control de aforo y tránsito', rate_limit_quota: '50/day', cooldown_segundos: 30 },
-  { id: 5, nombre: 'Consultor_Reporte', descripcion: 'Solicitante institucional con acceso a sus reportes ejecutivos', rate_limit_quota: '50/day', cooldown_segundos: 30 },
+  { id: 1, nombre: 'Admin_Sistema', descripcion: 'SuperAdmin técnico global con control total de la plataforma', rate_limit_quota: '1000/día', cooldown_segundos: 5 },
+  { id: 2, nombre: 'Director_Recinto', descripcion: 'Jefatura de espacio físico asignado (Biblioteca / Estacionamientos)', rate_limit_quota: '500/día', cooldown_segundos: 10 },
+  { id: 3, nombre: 'Analista_Consulta', descripcion: 'Decanos, directores de carrera y analistas institucionales', rate_limit_quota: '200/día', cooldown_segundos: 15 },
+  { id: 4, nombre: 'Guardia_Seguridad', descripcion: 'Operador en terreno para control de aforo y tránsito', rate_limit_quota: '50/día', cooldown_segundos: 30 },
+  { id: 5, nombre: 'Consultor_Reporte', descripcion: 'Solicitante institucional con acceso a sus reportes ejecutivos', rate_limit_quota: '50/día', cooldown_segundos: 30 },
 ]
+
+const normalizarCuotaEspanol = (q?: string | null): string => {
+  if (!q) return '50/día'
+  return q.replace(/\/day/gi, '/día')
+}
 
 export const UsuariosSection: React.FC = () => {
   const { isSuperAdmin, isDirectivo } = useAuth()
@@ -147,7 +152,21 @@ export const UsuariosSection: React.FC = () => {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-roles'] })
-      setRoleActionMsg({ id: data.id, text: 'Configuración guardada exitosamente' })
+      queryClient.invalidateQueries({ queryKey: ['ia-quota'] })
+      queryClient.invalidateQueries({ queryKey: ['chat-cuota'] })
+      queryClient.setQueryData<RoleItem[]>(['admin-roles'], (old) => {
+        if (!old) return old
+        return old.map(r => r.id === data.id ? { ...r, ...data } : r)
+      })
+      const qNorm = normalizarCuotaEspanol(data.rate_limit_quota)
+      setRoleDrafts(prev => ({
+        ...prev,
+        [data.id]: {
+          quota: qNorm,
+          cooldown: data.cooldown_segundos,
+        }
+      }))
+      setRoleActionMsg({ id: data.id, text: 'Actualizado de inmediato' })
       setTimeout(() => setRoleActionMsg(null), 3500)
     },
     onError: (err: any, vars) => {
@@ -300,14 +319,9 @@ export const UsuariosSection: React.FC = () => {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
-      setInvitationSuccess({
-        email: data.usuario.email,
-        nombre: data.usuario.nombre_completo,
-        enlace: data.enlace_activacion,
-        temporal: data.token_temporal,
-      })
-      setUserActionMsg(`Enlace de acceso y credencial generado para ${data.usuario.email}.`)
-      setTimeout(() => setUserActionMsg(null), 5000)
+      setInvitationSuccess(null)
+      setUserActionMsg(`Correo institucional de restablecimiento de contraseña enviado exitosamente a ${data.usuario.email}.`)
+      setTimeout(() => setUserActionMsg(null), 6000)
     },
     onError: (err: any) => {
       setUserActionMsg(err?.response?.data?.detail || 'Error al generar enlace de restablecimiento / invitación.')
@@ -421,9 +435,10 @@ export const UsuariosSection: React.FC = () => {
               <tbody className="divide-y divide-slate-100 font-medium">
                 {(rolesList.length > 0 ? rolesList : ROLES_PREDETERMINADOS).map((rol) => {
                   const draft = roleDrafts[rol.id] || {
-                    quota: rol.rate_limit_quota || '50/day',
+                    quota: normalizarCuotaEspanol(rol.rate_limit_quota),
                     cooldown: rol.cooldown_segundos ?? 10,
                   }
+                  const draftQuota = normalizarCuotaEspanol(draft.quota)
                   const isPending = updateRoleQuotaMutation.isPending && (updateRoleQuotaMutation.variables as any)?.roleId === rol.id
                   const msg = roleActionMsg?.id === rol.id ? roleActionMsg : null
 
@@ -441,35 +456,41 @@ export const UsuariosSection: React.FC = () => {
                         <div className="flex items-center gap-1.5">
                           <input
                             type="text"
-                            value={draft.quota}
+                            value={draftQuota}
                             onChange={(e) =>
                               setRoleDrafts((prev) => ({
                                 ...prev,
                                 [rol.id]: { ...draft, quota: e.target.value },
                               }))
                             }
-                            placeholder="ej. 50/day o ilimitado"
+                            placeholder="ej. 50/día o ilimitado"
                             className="w-28 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-slate-800 text-xs font-mono focus:bg-white focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                           />
                           <select
-                            value={draft.quota}
-                            onChange={(e) =>
+                            value={draftQuota}
+                            onChange={(e) => {
+                              const newQuota = e.target.value
                               setRoleDrafts((prev) => ({
                                 ...prev,
-                                [rol.id]: { ...draft, quota: e.target.value },
+                                [rol.id]: { ...draft, quota: newQuota },
                               }))
-                            }
-                            className="bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-[11px] text-slate-700 cursor-pointer"
+                              updateRoleQuotaMutation.mutate({
+                                roleId: rol.id,
+                                rate_limit_quota: newQuota,
+                                cooldown_segundos: draft.cooldown,
+                              })
+                            }}
+                            className="bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-[11px] text-slate-700 cursor-pointer font-medium"
                           >
                             <option value="ilimitado">Ilimitado</option>
-                            <option value="1000/day">1000/día</option>
-                            <option value="500/day">500/día</option>
-                            <option value="200/day">200/día</option>
-                            <option value="100/day">100/día</option>
-                            <option value="50/day">50/día</option>
-                            <option value="25/day">25/día</option>
-                            <option value="10/day">10/día</option>
-                            <option value="5/day">5/día</option>
+                            <option value="1000/día">1000/día</option>
+                            <option value="500/día">500/día</option>
+                            <option value="200/día">200/día</option>
+                            <option value="100/día">100/día</option>
+                            <option value="50/día">50/día</option>
+                            <option value="25/día">25/día</option>
+                            <option value="10/día">10/día</option>
+                            <option value="5/día">5/día</option>
                           </select>
                         </div>
                       </td>
@@ -477,12 +498,18 @@ export const UsuariosSection: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <select
                             value={draft.cooldown}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const newCooldown = Number(e.target.value)
                               setRoleDrafts((prev) => ({
                                 ...prev,
-                                [rol.id]: { ...draft, cooldown: Number(e.target.value) },
+                                [rol.id]: { ...draft, cooldown: newCooldown },
                               }))
-                            }
+                              updateRoleQuotaMutation.mutate({
+                                roleId: rol.id,
+                                rate_limit_quota: draft.quota,
+                                cooldown_segundos: newCooldown,
+                              })
+                            }}
                             className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 text-xs font-mono cursor-pointer focus:bg-white focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                           >
                             <option value={0}>Sin espera (0 seg)</option>

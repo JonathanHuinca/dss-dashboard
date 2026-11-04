@@ -102,7 +102,7 @@ class UsuarioInviteResponse(BaseModel):
     enlace_activacion: str
     token_temporal: Optional[str] = None
     expira_en: datetime
-    mensaje: str
+    mensaje: str = "Enlace de activación / restablecimiento generado correctamente."
 
 
 class TokenVerifyResponse(BaseModel):

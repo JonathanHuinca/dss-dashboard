@@ -165,9 +165,11 @@ const SECCIONES_MODULO_BIBLIOTECA: SeccionModuloItem[] = [
 interface Props {
   dateRange?: DateRange
   onRangeChange?: (range: DateRange) => void
+  filters?: DataFilters
+  onFiltersChange?: (filters: DataFilters) => void
 }
 
-export function BibliotecaView({ dateRange, onRangeChange }: Props) {
+export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilters, onFiltersChange }: Props) {
   const { ejecutarDescarga } = useDownloadProgress()
   const [modalCompartirAbierto, setModalCompartirAbierto] = useState(false)
   const [loadStage, setLoadStage] = useState(2)
@@ -191,7 +193,7 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
   const esSeccionVisible = (idSeccion: string): boolean => {
     return seccionActivaBiblioteca === 'todas' || seccionActivaBiblioteca === idSeccion
   }
-  const [filters, setFilters] = useState<DataFilters>({
+  const [internalFilters, setInternalFilters] = useState<DataFilters>({
     alcance: 'conformes',
     regimen_horario: 'todos',
     direccion: 'todos',
@@ -202,6 +204,16 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
     incluir_pausas_bano: true,
     desduplicar_rafagas: true,
   })
+
+  const filters = externalFilters ?? internalFilters
+  const setFilters: React.Dispatch<React.SetStateAction<DataFilters>> = (valOrFn) => {
+    const nextVal = typeof valOrFn === 'function' ? (valOrFn as any)(filters) : valOrFn
+    if (onFiltersChange) {
+      onFiltersChange(nextVal)
+    } else {
+      setInternalFilters(nextVal)
+    }
+  }
 
   // Estado para visibilidad personalizada de gráficos
   const [visibleCharts, setVisibleCharts] = useState<Record<string, boolean>>(() => {
@@ -398,24 +410,33 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
     }
   }, [dateRange?.inicio, dateRange?.fin, campana24hSeleccionada])
 
-  const esModoPersonalizado = campana24hSeleccionada === -1
-  const esCampanaFija = campana24hSeleccionada !== undefined && campana24hSeleccionada >= 0
+  // Campaña 24 Horas (Sección 8): Por defecto se focaliza en las campañas oficiales 24h
+  const campanaEfectivaId = useMemo(() => {
+    if (campana24hSeleccionada !== undefined) {
+      return campana24hSeleccionada
+    }
+    const rIni = dateRange?.inicio?.slice(0, 10) || ''
+    const rFin = dateRange?.fin?.slice(0, 10) || ''
+    if (rIni >= '2026-11-01' && rFin <= '2026-11-30') return 9
+    return 11
+  }, [campana24hSeleccionada, dateRange?.inicio, dateRange?.fin])
+
+  const esModoPersonalizado = campanaEfectivaId === -1
+  const esCampanaFija = campanaEfectivaId >= 0
 
   const analisis24h = useQuery({
     queryKey: [
       'analisis24h',
-      campana24hSeleccionada,
+      campanaEfectivaId,
       bloqueHorario24h,
       esModoPersonalizado ? fechaInicio24h : null,
       esModoPersonalizado ? fechaFin24h : null,
-      !esCampanaFija && !esModoPersonalizado ? dateRange?.inicio : null,
-      !esCampanaFija && !esModoPersonalizado ? dateRange?.fin : null,
     ],
     queryFn: () =>
       fetchAnalisis24h({
-        campanaId: esCampanaFija ? campana24hSeleccionada : undefined,
-        fechaInicio: esModoPersonalizado ? fechaInicio24h : (esCampanaFija ? undefined : dateRange?.inicio),
-        fechaFin: esModoPersonalizado ? fechaFin24h : (esCampanaFija ? undefined : dateRange?.fin),
+        campanaId: esCampanaFija ? campanaEfectivaId : undefined,
+        fechaInicio: esModoPersonalizado ? fechaInicio24h : undefined,
+        fechaFin: esModoPersonalizado ? fechaFin24h : undefined,
         bloqueHorario: bloqueHorario24h,
       }),
   })
@@ -504,6 +525,7 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
           etiquetaPeriodoInicial={dateRange?.label}
           filtrosIniciales={filters}
           totalRegistrosInicial={kpis.data?.total_registros}
+          tieneCampana24hActiva={tieneCampana24hActiva}
         />
       )}
       <ModalReporte24Horas
@@ -511,7 +533,7 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
         onClose={() => setModalReporte24hAbierto(false)}
         data={analisis24h.data ?? null}
         loading={analisis24h.isLoading}
-        selectedCampanaId={campana24hSeleccionada}
+        selectedCampanaId={campanaEfectivaId}
         onSelectCampana={(id) => setCampana24hSeleccionada(id)}
       />
       {/* Barra de Alcance Analítico y Filtros Multidimensionales FIJOS */}
@@ -724,7 +746,7 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
         <KpiCard
           title="Aforo Máximo Registrado"
           value={kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} personas`}
-          subtitle={`Pico vs ${capacidadActiva} asientos ${salaLabel ? `(${salaLabel})` : '(Global)'}`}
+          subtitle={`Máximo vs ${capacidadActiva} asientos ${salaLabel ? `(${salaLabel})` : '(Global)'}`}
           icon={Activity}
           iconColor="#C59B27"
         />
@@ -991,7 +1013,7 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
             {visibleCharts.promedio_dias_semana !== false && (
               <ChartCard
                 contextoGrafico="promedio_dias_semana"
-                layout="full"
+                layout="half"
                 title={`Promedio Diario de Ingresos por Día de la Semana (Sala 1 vs Sala 2) — ${dateRange?.label ?? 'Período'}`}
               >
                 <Suspense fallback={<ChartSkeleton />}>
@@ -1004,8 +1026,20 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
               </ChartCard>
             )}
 
+            {visibleCharts.hitos_academicos !== false && (
+              <ChartCard contextoGrafico="hitos_academicos" layout="half" title="Comparativa por Hito Académico">
+                <Suspense fallback={<ChartSkeleton />}>
+                  {milestones.data && milestones.data.length > 0 ? (
+                    <AcademicMilestonesPlotlyChart data={milestones.data} />
+                  ) : (
+                    <EmptyState label="Sin datos de calendario" />
+                  )}
+                </Suspense>
+              </ChartCard>
+            )}
+
             {visibleCharts.volumen_mensual !== false && (
-              <ChartCard contextoGrafico="volumen_mensual" layout="third" title="Volumen Mensual de Asistencia">
+              <ChartCard contextoGrafico="volumen_mensual" layout="half" title="Volumen Mensual de Asistencia">
                 <Suspense fallback={<ChartSkeleton />}>
                   {monthly.data && monthly.data.length > 0 ? (
                     <MonthlyVolumePlotlyChart data={monthly.data} />
@@ -1017,24 +1051,12 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
             )}
 
             {visibleCharts.evolucion_semanal !== false && (
-              <ChartCard contextoGrafico="evolucion_semanal" layout="third" title="Evolución Semanal de Usuarios">
+              <ChartCard contextoGrafico="evolucion_semanal" layout="half" title="Evolución Semanal de Usuarios">
                 <Suspense fallback={<ChartSkeleton />}>
                   {weekly.data && weekly.data.length > 0 ? (
                     <WeeklyEvolutionPlotlyChart data={weekly.data} />
                   ) : (
                     <EmptyState label="Sin datos semanales" />
-                  )}
-                </Suspense>
-              </ChartCard>
-            )}
-
-            {visibleCharts.hitos_academicos !== false && (
-              <ChartCard contextoGrafico="hitos_academicos" layout="third" title="Comparativa por Hito Académico">
-                <Suspense fallback={<ChartSkeleton />}>
-                  {milestones.data && milestones.data.length > 0 ? (
-                    <AcademicMilestonesPlotlyChart data={milestones.data} />
-                  ) : (
-                    <EmptyState label="Sin datos de calendario" />
                   )}
                 </Suspense>
               </ChartCard>
@@ -1133,7 +1155,7 @@ export function BibliotecaView({ dateRange, onRangeChange }: Props) {
           <SeccionCampana24Horas
             data={analisis24h.data ?? null}
             isLoading={analisis24h.isLoading}
-            selectedCampanaId={campana24hSeleccionada}
+            selectedCampanaId={campanaEfectivaId}
             onSelectCampana={(id) => {
               setCampana24hSeleccionada(id)
               if (id === -1 && dateRange?.inicio && dateRange?.fin) {
