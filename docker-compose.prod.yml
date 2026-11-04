@@ -1,0 +1,41 @@
+services:
+  db:
+    restart: always
+
+  api:
+    restart: always
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      ENVIRONMENT: production
+      PLANIFICADOR_ACTIVO: "true"
+      SEMILLA_DEMO: "false"
+      HOME: /tmp
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+
+  frontend:
+    restart: always
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certificados:/etc/nginx/certs:ro
