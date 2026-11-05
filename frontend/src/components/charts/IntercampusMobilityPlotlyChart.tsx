@@ -1,14 +1,15 @@
+import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { IntercampusMobilityResponse } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data } from 'plotly.js-dist-min'
 import { formatDayMonthSpanish } from '../../types/dateRange'
 
 interface Props {
   data: IntercampusMobilityResponse
 }
 
-export function IntercampusMobilityPlotlyChart({ data }: Props) {
-  const chartData: Data[] = [
+function IntercampusMobilityPlotlyChartComponent({ data }: Props) {
+  const chartData = useMemo<Data[]>(() => [
     {
       x: data.flujo_por_fecha.map(d => formatDayMonthSpanish(d.fecha)),
       y: data.flujo_por_fecha.map(d => d.chs_a_csf),
@@ -31,9 +32,9 @@ export function IntercampusMobilityPlotlyChart({ data }: Props) {
       textfont: { size: 10, color: '#ffffff' },
       hovertemplate: '<b>%{x}</b><br>CSF → CHS: %{y} viajes<extra></extra>',
     },
-  ]
+  ], [data])
 
-  const layout = {
+  const layout = useMemo(() => ({
     title: { text: 'Migración Vehicular Diaria Inter-Campus (CSF ↔ CHS)' },
     margin: { t: 40, r: 25, b: 75, l: 55 },
     xaxis: {
@@ -48,7 +49,7 @@ export function IntercampusMobilityPlotlyChart({ data }: Props) {
     },
     barmode: 'stack' as const,
     legend: { orientation: 'h' as const, y: 1.15, x: 0.5, xanchor: 'center' as const },
-  }
+  }), [])
 
   return (
     <InteractiveChart
@@ -59,3 +60,6 @@ export function IntercampusMobilityPlotlyChart({ data }: Props) {
     />
   )
 }
+
+export const IntercampusMobilityPlotlyChart = memo(IntercampusMobilityPlotlyChartComponent)
+export default IntercampusMobilityPlotlyChart

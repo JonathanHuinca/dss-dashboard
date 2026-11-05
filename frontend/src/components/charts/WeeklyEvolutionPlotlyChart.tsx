@@ -1,8 +1,8 @@
-import React, { useState, useMemo } from 'react'
+import React, {  useState, useMemo , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { WeeklyEvolutionPoint, obtenerResumenAnualCalendario, DiaCalendarioResumen } from '../../api/client'
 import { useQuery } from '@tanstack/react-query'
-import { Data } from 'plotly.js-dist-min'
+import type { Data  } from 'plotly.js-dist-min'
 import { Flag, AlertOctagon, Calendar, BookOpen } from 'lucide-react'
 import { formatDayMonthSpanish } from '../../types/dateRange'
 
@@ -29,7 +29,7 @@ function calcularSemanaIso(fechaIso: string): string {
   }
 }
 
-export function WeeklyEvolutionPlotlyChart({ data, anio = 2026 }: Props) {
+function WeeklyEvolutionPlotlyChartComponent({ data, anio = 2026 }: Props) {
   // Filtros de capas visuales en el gráfico
   const [mostrarCierres, setMostrarCierres] = useState(true)
   const [mostrarSuspensiones, setMostrarSuspensiones] = useState(true)
@@ -294,3 +294,5 @@ export function WeeklyEvolutionPlotlyChart({ data, anio = 2026 }: Props) {
   )
 }
 
+export const WeeklyEvolutionPlotlyChart = memo(WeeklyEvolutionPlotlyChartComponent)
+export default WeeklyEvolutionPlotlyChart

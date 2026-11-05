@@ -1,13 +1,14 @@
+import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { CheckinDistributionPoint } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data } from 'plotly.js-dist-min'
 
 interface Props {
   data: CheckinDistributionPoint[]
 }
 
-export function CheckinDistributionPlotlyChart({ data }: Props) {
-  const chartData: Data[] = [
+function CheckinDistributionPlotlyChartComponent({ data }: Props) {
+  const chartData = useMemo<Data[]>(() => [
     {
       x: data.map(d => `${d.marcajes} marcajes`),
       y: data.map(d => d.total_registros),
@@ -21,9 +22,9 @@ export function CheckinDistributionPlotlyChart({ data }: Props) {
       customdata: data.map(d => d.porcentaje),
       hovertemplate: '<b>%{x}</b><br>Usuarios: %{y:,}<br>Proporción: %{customdata}%<extra></extra>',
     },
-  ]
+  ], [data])
 
-  const layout = {
+  const layout = useMemo(() => ({
     title: { text: 'Frecuencia de Marcajes Diarios por Registro' },
     margin: { t: 35, r: 25, b: 60, l: 55 },
     xaxis: {
@@ -35,7 +36,7 @@ export function CheckinDistributionPlotlyChart({ data }: Props) {
       title: { text: 'Cantidad de Registros' },
       automargin: true,
     },
-  }
+  }), [])
 
   return (
     <InteractiveChart
@@ -46,3 +47,6 @@ export function CheckinDistributionPlotlyChart({ data }: Props) {
     />
   )
 }
+
+export const CheckinDistributionPlotlyChart = memo(CheckinDistributionPlotlyChartComponent)
+export default CheckinDistributionPlotlyChart

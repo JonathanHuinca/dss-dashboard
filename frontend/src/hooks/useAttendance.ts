@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import {
   fetchAttendanceKpis,
   fetchOccupancyRealtime,
@@ -22,14 +22,15 @@ import {
   fetchVisitProfilesDonut,
   DataFilters,
 } from '../api/client'
+import { opcionesConsultaAnalitica } from './opcionesConsulta'
 
 const LIVE_INTERVAL = 30_000
 
 export function useAttendanceKpis(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) {
   return useQuery({
     queryKey: ['attendance-kpis', fechaInicio, fechaFin, filters],
-    queryFn: () => fetchAttendanceKpis(fechaInicio, fechaFin, filters),
-    staleTime: 60_000,
+    queryFn: ({ signal }) => fetchAttendanceKpis(fechaInicio, fechaFin, filters, signal),
+    ...opcionesConsultaAnalitica(),
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   })
@@ -38,18 +39,19 @@ export function useAttendanceKpis(fechaInicio?: string, fechaFin?: string, filte
 export function useOccupancyRealtime() {
   return useQuery({
     queryKey: ['occupancy-realtime'],
-    queryFn: fetchOccupancyRealtime,
+    queryFn: ({ signal }) => fetchOccupancyRealtime(signal),
     refetchInterval: LIVE_INTERVAL,
     refetchIntervalInBackground: false,
     staleTime: LIVE_INTERVAL - 5000,
+    placeholderData: keepPreviousData,
   })
 }
 
 export function useAttendanceHourlyFlow(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) {
   return useQuery({
     queryKey: ['attendance-hourly-flow', fechaInicio, fechaFin, filters],
-    queryFn: () => fetchAttendanceHourlyFlow(fechaInicio, fechaFin, filters),
-    staleTime: 60_000,
+    queryFn: ({ signal }) => fetchAttendanceHourlyFlow(fechaInicio, fechaFin, filters, signal),
+    ...opcionesConsultaAnalitica(),
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   })
@@ -65,8 +67,8 @@ export function useHeatmap(
 ) {
   return useQuery({
     queryKey: ['heatmap', espacioId, fechaInicio, fechaFin, filters],
-    queryFn: () => fetchHeatmap(fechaInicio, fechaFin, espacioId, filters),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchHeatmap(fechaInicio, fechaFin, espacioId, filters, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -74,20 +76,24 @@ export function useHeatmap(
 export function useForecastAttendance(sala: string = 'todas') {
   return useQuery({
     queryKey: ['forecast-attendance', sala],
-    queryFn: () => fetchForecastAttendance(sala),
-    staleTime: 60 * 60_000,
+    queryFn: ({ signal }) => fetchForecastAttendance(sala, signal),
+    ...opcionesConsultaAnalitica(60 * 60_000),
   })
 }
 
 export function useAlerts() {
-  return useQuery({ queryKey: ['predictive-alerts'], queryFn: fetchAlerts, refetchInterval: 60_000 })
+  return useQuery({
+    queryKey: ['predictive-alerts'],
+    queryFn: ({ signal }) => fetchAlerts(signal),
+    refetchInterval: 60_000,
+  })
 }
 
 export function usePeakValley(fechaInicio?: string, fechaFin?: string, opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['peak-valley', fechaInicio, fechaFin],
-    queryFn: () => fetchPeakValley(fechaInicio, fechaFin),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchPeakValley(fechaInicio, fechaFin, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -101,8 +107,8 @@ export function useWeeklyEvolution(
 ) {
   return useQuery({
     queryKey: ['weekly-evolution', espacioId, fechaInicio, fechaFin, filters],
-    queryFn: () => fetchWeeklyEvolution(fechaInicio, fechaFin, espacioId, filters),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchWeeklyEvolution(fechaInicio, fechaFin, espacioId, filters, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -116,8 +122,8 @@ export function useMonthlyVolume(
 ) {
   return useQuery({
     queryKey: ['monthly-volume', espacioId, fechaInicio, fechaFin, filters],
-    queryFn: () => fetchMonthlyVolume(fechaInicio, fechaFin, espacioId, filters),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchMonthlyVolume(fechaInicio, fechaFin, espacioId, filters, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -131,8 +137,8 @@ export function useAcademicMilestones(
 ) {
   return useQuery({
     queryKey: ['academic-milestones', espacioId, fechaInicio, fechaFin, filters],
-    queryFn: () => fetchAcademicMilestones(fechaInicio, fechaFin, espacioId, filters),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchAcademicMilestones(fechaInicio, fechaFin, espacioId, filters, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -140,8 +146,8 @@ export function useAcademicMilestones(
 export function useDoorsUsage(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['doors-usage', fechaInicio, fechaFin, filters],
-    queryFn: () => fetchDoorsUsage(fechaInicio, fechaFin, filters),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchDoorsUsage(fechaInicio, fechaFin, filters, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -149,8 +155,8 @@ export function useDoorsUsage(fechaInicio?: string, fechaFin?: string, filters?:
 export function useCheckinsDistribution(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['checkins-distribution', fechaInicio, fechaFin, filters],
-    queryFn: () => fetchCheckinsDistribution(fechaInicio, fechaFin, filters),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchCheckinsDistribution(fechaInicio, fechaFin, filters, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -158,8 +164,8 @@ export function useCheckinsDistribution(fechaInicio?: string, fechaFin?: string,
 export function useForecast14Days(espacioId: number = 1, opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['forecast-14days', espacioId],
-    queryFn: () => fetchForecast14Days(espacioId),
-    staleTime: 30 * 60_000,
+    queryFn: ({ signal }) => fetchForecast14Days(espacioId, signal),
+    ...opcionesConsultaAnalitica(30 * 60_000),
     ...opts,
   })
 }
@@ -167,8 +173,8 @@ export function useForecast14Days(espacioId: number = 1, opts?: { enabled?: bool
 export function useVisitProfiles(espacioId: number = 1, opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['visit-profiles', espacioId],
-    queryFn: () => fetchVisitProfiles(espacioId),
-    staleTime: 30 * 60_000,
+    queryFn: ({ signal }) => fetchVisitProfiles(espacioId, signal),
+    ...opcionesConsultaAnalitica(30 * 60_000),
     ...opts,
   })
 }
@@ -176,8 +182,8 @@ export function useVisitProfiles(espacioId: number = 1, opts?: { enabled?: boole
 export function useSalasBiblioteca(espacioId: number = 1) {
   return useQuery({
     queryKey: ['salas-biblioteca', espacioId],
-    queryFn: () => fetchSalasBiblioteca(espacioId),
-    staleTime: 60 * 60_000,
+    queryFn: ({ signal }) => fetchSalasBiblioteca(espacioId, signal),
+    ...opcionesConsultaAnalitica(60 * 60_000),
   })
 }
 
@@ -190,8 +196,8 @@ export function useRoomsComparison(
 ) {
   return useQuery({
     queryKey: ['rooms-comparison', fechaInicio, fechaFin, filters, espacioId],
-    queryFn: () => fetchRoomsComparison(fechaInicio, fechaFin, filters, espacioId),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchRoomsComparison(fechaInicio, fechaFin, filters, espacioId, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -205,8 +211,8 @@ export function useDailyAverageAttendance(
 ) {
   return useQuery({
     queryKey: ['daily-average-attendance', fechaInicio, fechaFin, filters, espacioId],
-    queryFn: () => fetchDailyAverageAttendance(fechaInicio, fechaFin, filters, espacioId),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchDailyAverageAttendance(fechaInicio, fechaFin, filters, espacioId, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
@@ -220,8 +226,8 @@ export function useCurricularDistribution(
 ) {
   return useQuery({
     queryKey: ['curricular-distribution', fechaInicio, fechaFin, filters, espacioId],
-    queryFn: () => fetchCurricularDistribution(fechaInicio, fechaFin, filters, espacioId),
-    staleTime: 30 * 60_000,
+    queryFn: ({ signal }) => fetchCurricularDistribution(fechaInicio, fechaFin, filters, espacioId, signal),
+    ...opcionesConsultaAnalitica(30 * 60_000),
     ...opts,
   })
 }
@@ -229,8 +235,8 @@ export function useCurricularDistribution(
 export function useAvailableFilters(espacioId: number = 1) {
   return useQuery({
     queryKey: ['available-filters', espacioId],
-    queryFn: () => fetchAvailableFilters(espacioId),
-    staleTime: 30 * 60_000,
+    queryFn: ({ signal }) => fetchAvailableFilters(espacioId, signal),
+    ...opcionesConsultaAnalitica(30 * 60_000),
   })
 }
 
@@ -243,11 +249,8 @@ export function useVisitProfilesDonut(
 ) {
   return useQuery({
     queryKey: ['visit-profiles-donut', fechaInicio, fechaFin, filters, espacioId],
-    queryFn: () => fetchVisitProfilesDonut(fechaInicio, fechaFin, filters, espacioId),
-    staleTime: 10 * 60_000,
+    queryFn: ({ signal }) => fetchVisitProfilesDonut(fechaInicio, fechaFin, filters, espacioId, signal),
+    ...opcionesConsultaAnalitica(),
     ...opts,
   })
 }
-
-
-

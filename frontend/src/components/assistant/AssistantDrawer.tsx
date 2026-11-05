@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { ErrorBoundary } from '../ui/ErrorBoundary'
 import {
   Sparkles,
@@ -50,8 +50,9 @@ interface Props {
   onClose: () => void
   contexto_grafico?: string
   onClearContexto?: () => void
-  dateRange?: { startDate?: string; endDate?: string; label?: string }
+  dateRange?: { startDate?: string; endDate?: string; inicio?: string; fin?: string; label?: string }
   dataset_tipo?: DatasetType
+  filtros?: Record<string, any>
 }
 
 type DatasetType = 'biblioteca' | 'estacionamiento'
@@ -95,6 +96,7 @@ export function AssistantDrawer({
   onClearContexto,
   dateRange,
   dataset_tipo: initialDatasetTipo,
+  filtros: propFiltros,
 }: Props) {
   const assistantContext = useAssistant()
   const { ejecutarDescarga } = useDownloadProgress()
@@ -104,7 +106,23 @@ export function AssistantDrawer({
 
   const activeContexto = contexto_grafico || assistantContext.contextoGrafico
   const activePeriodo = dateRange || assistantContext.periodo
-  const activeFiltros = assistantContext.filtros
+  const activeFiltros = propFiltros || assistantContext.filtros
+
+  const payloadFiltros = useMemo(() => {
+    const f = activeFiltros || {}
+    return {
+      alcance: f.alcance || f.calidad || 'conformes',
+      sala: f.sala || f.room || undefined,
+      carrera: f.carrera || f.programa || undefined,
+      facultad: f.facultad || undefined,
+      cohorte: f.cohorte || f.ano_ingreso || undefined,
+      regimen_horario: f.regimen_horario || f.rango_horario || 'todos',
+      dias_semana: f.dias_semana || f.tipo_dia || undefined,
+      torniquetes: f.door || f.torniquetes || f.puerta || undefined,
+      perfil_visita: f.perfil_visita || f.perfil || 'todos',
+      ...f,
+    }
+  }, [activeFiltros])
 
   const handleClearContext = () => {
     if (onClearContexto) onClearContexto()
@@ -134,9 +152,12 @@ export function AssistantDrawer({
   // Espacio ID según dataset seleccionado
   const espacioIdActual = datasetTipo === 'estacionamiento' ? 2 : 1
 
-  const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash-lite')
+  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash-lite')
   const [availableModels, setAvailableModels] = useState<ModelItem[]>([
-    { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (Recomendado)', description: 'Máxima inferencia y velocidad DSS' },
+    { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite (Recomendado)', description: 'Inferencia ultrarrápida y alta cuota' },
+    { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', description: 'Modelo balanceado oficial de alta disponibilidad' },
+    { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', description: 'Equilibrio analítico multidimensional' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'Alta capacidad analítica para consultas complejas' },
   ])
 
   // Estados de persistencia y gestión de conversaciones
@@ -161,7 +182,7 @@ export function AssistantDrawer({
       content:
         'Hola. Soy tu Asistente Analítico Inteligente DSS. Puedo generar gráficos interactivos, tablas estructuradas o informes técnicos sobre aforos y el calendario académico.',
       tipo: 'text',
-      modelUsed: 'gemini-2.5-flash-lite',
+      modelUsed: 'gemini-3.5-flash-lite',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ])
@@ -380,6 +401,9 @@ export function AssistantDrawer({
     // Usar ID de conversación activa si existe, o generar un session_id temporal
     const currentSessionId = conversacionActivaId || `uct-sess-${Date.now()}`
 
+    const fechaIni = activePeriodo?.startDate || (activePeriodo as any)?.inicio
+    const fechaFin = activePeriodo?.endDate || (activePeriodo as any)?.fin
+
     try {
       await sendInteractiveChatStream(
         {
@@ -390,10 +414,10 @@ export function AssistantDrawer({
           model: selectedModel,
           grafico_contexto: activeContexto,
           espacio_id: espacioIdActual,
-          fecha_inicio: activePeriodo?.startDate,
-          fecha_fin: activePeriodo?.endDate,
+          fecha_inicio: fechaIni,
+          fecha_fin: fechaFin,
           periodo_label: activePeriodo?.label,
-          filtros: activeFiltros,
+          filtros: payloadFiltros,
         },
         {
           onMeta: (meta) => {
@@ -405,7 +429,7 @@ export function AssistantDrawer({
                 m.id === assistantId
                   ? {
                       ...m,
-                      tipo: 'component',
+                      tipo: (meta.tipo as any) || (meta.component ? 'component' : 'text'),
                       component: meta.component,
                       payload: meta.payload,
                     }
@@ -450,10 +474,10 @@ export function AssistantDrawer({
                 model: selectedModel,
                 grafico_contexto: activeContexto,
                 espacio_id: espacioIdActual,
-                fecha_inicio: activePeriodo?.startDate,
-                fecha_fin: activePeriodo?.endDate,
+                fecha_inicio: fechaIni,
+                fecha_fin: fechaFin,
                 periodo_label: activePeriodo?.label,
-                filtros: activeFiltros,
+                filtros: payloadFiltros,
               })
               if (res.conversacion_id && !conversacionActivaId) {
                 setConversacionActivaId(res.conversacion_id)
@@ -464,7 +488,7 @@ export function AssistantDrawer({
                     ? {
                         ...m,
                         content: res?.explicacion || (res?.component || res?.fig_data ? 'Visualización y métricas generadas para el contexto actual.' : 'Consulta analítica procesada.'),
-                        tipo: res?.tipo || 'component',
+                        tipo: res?.tipo || (res?.component ? 'component' : 'text'),
                         component: res?.component,
                         payload: res?.payload,
                         fig_data: res?.fig_data,

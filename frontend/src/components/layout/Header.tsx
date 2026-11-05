@@ -1,8 +1,11 @@
 import { BookOpen, Car, MapPin, Sparkles, ShieldCheck, LogOut, FileSpreadsheet } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { DateRange } from '../../types/dateRange'
 import { PeriodSelector } from './PeriodSelector'
 import { useAuth } from '../../context/AuthContext'
 import { useAssistant } from '../../context/AssistantContext'
+import { fetchAttendanceKpis } from '../../api/asistencia'
+import { fetchVehicleKpis } from '../../api/vehiculos'
 
 export type Tab = 'biblioteca' | 'estacionamiento' | 'admin' | 'reportes'
 
@@ -14,10 +17,40 @@ interface Props {
   onOpenAssistant?: () => void
 }
 export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant }: Props) {
+  const queryClient = useQueryClient()
   const { logout, userRole, roles, isSuperAdmin, canAccessAdmin, hasDatasetAccess } = useAuth()
   const { isAiEnabled } = useAssistant()
   const espacioId = active === 'biblioteca' ? 1 : active === 'estacionamiento' ? 2 : undefined
   const tieneRolConsultor = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
+
+  // Prefetching predictivo de KPIs para un rango específico
+  const precargarKpisRango = (range: DateRange) => {
+    if (!range.inicio || !range.fin) return
+    const stale = 1000 * 60 * 5
+    if (active === 'biblioteca') {
+      queryClient.prefetchQuery({
+        queryKey: ['attendance-kpis', range.inicio, range.fin, undefined],
+        queryFn: ({ signal }) => fetchAttendanceKpis(range.inicio, range.fin, undefined, signal),
+        staleTime: stale,
+      })
+    } else if (active === 'estacionamiento') {
+      queryClient.prefetchQuery({
+        queryKey: ['vehicle-kpis', range.inicio, range.fin, undefined, 'todos'],
+        queryFn: ({ signal }) => fetchVehicleKpis(range.inicio, range.fin, undefined, 'todos', signal),
+        staleTime: stale,
+      })
+    }
+  }
+
+  // Al desplegar el selector de fechas, precargar en segundo plano los KPIs del preset seleccionado
+  const handleOpenSelector = () => {
+    precargarKpisRango(selectedRange)
+  }
+
+  // Al pasar el cursor sobre un preset, precargarlo anticipadamente
+  const handleHoverPreset = (preset: DateRange) => {
+    precargarKpisRango(preset)
+  }
 
   return (
     <header className="bg-uct-blue-primary text-white shadow-xl sticky top-0 z-50">
@@ -37,6 +70,8 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
             selectedRange={selectedRange}
             onRangeChange={onRangeChange}
             espacioId={espacioId}
+            onOpenSelector={handleOpenSelector}
+            onHoverPreset={handleHoverPreset}
           />
 
           <div className="hidden md:flex items-center gap-1.5 text-xs text-white/70 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10 shrink-0">

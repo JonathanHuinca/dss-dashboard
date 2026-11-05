@@ -1,14 +1,15 @@
+import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { MonthlyVolumePoint } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data } from 'plotly.js-dist-min'
 import { formatMonthYearSpanish } from '../../types/dateRange'
 
 interface Props {
   data: MonthlyVolumePoint[]
 }
 
-export function MonthlyVolumePlotlyChart({ data }: Props) {
-  const chartData: Data[] = [
+function MonthlyVolumePlotlyChartComponent({ data }: Props) {
+  const chartData = useMemo<Data[]>(() => [
     {
       x: data.map(d => formatMonthYearSpanish(d.mes)),
       y: data.map(d => d.total_asistencias),
@@ -32,9 +33,9 @@ export function MonthlyVolumePlotlyChart({ data }: Props) {
       yaxis: 'y2',
       hovertemplate: '<b>%{x}</b><br>Media/Día: %{y:.1f} personas<extra></extra>',
     },
-  ]
+  ], [data])
 
-  const layout = {
+  const layout = useMemo(() => ({
     title: { text: 'Afluencia Mensual y Promedio por Jornada' },
     xaxis: {
       title: { text: 'Mes' },
@@ -58,18 +59,21 @@ export function MonthlyVolumePlotlyChart({ data }: Props) {
       orientation: 'h' as const,
       x: 0.5,
       xanchor: 'center' as const,
-      y: -0.30,
+      y: -0.22,
       yanchor: 'top' as const,
       font: { size: 10.5, color: '#334155' },
     },
-  }
+  }), [])
 
   return (
     <InteractiveChart
       data={chartData}
       layout={layout}
-      filename="volumen_mensual_biblioteca"
+      filename="volumen_mensual_asistencia"
       height={340}
     />
   )
 }
+
+export const MonthlyVolumePlotlyChart = memo(MonthlyVolumePlotlyChartComponent)
+export default MonthlyVolumePlotlyChart

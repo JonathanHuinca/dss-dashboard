@@ -21,6 +21,11 @@ interface Props {
   className?: string
   minHeight?: number | string
   maxHeight?: number | string
+  isFetching?: boolean
+  periodo?: { startDate?: string; endDate?: string; inicio?: string; fin?: string; label?: string }
+  dateRange?: { startDate?: string; endDate?: string; inicio?: string; fin?: string; label?: string }
+  filtros?: Record<string, any>
+  filters?: Record<string, any>
 }
 
 export function ChartCard({
@@ -35,6 +40,11 @@ export function ChartCard({
   className = '',
   minHeight,
   maxHeight,
+  isFetching = false,
+  periodo,
+  dateRange,
+  filtros,
+  filters,
 }: Props) {
   const { openAssistant, isAiEnabled } = useAssistant()
   const { ejecutarDescarga } = useDownloadProgress()
@@ -116,7 +126,15 @@ export function ChartCard({
     if (onAskIA) {
       onAskIA(resolvedContext)
     }
-    openAssistant(resolvedContext)
+    const periodoEfectivo = periodo || (dateRange ? {
+      startDate: dateRange.startDate || dateRange.inicio,
+      endDate: dateRange.endDate || dateRange.fin,
+      inicio: dateRange.inicio || dateRange.startDate,
+      fin: dateRange.fin || dateRange.endDate,
+      label: dateRange.label,
+    } : undefined)
+    const filtrosEfectivos = filtros || filters
+    openAssistant(resolvedContext, periodoEfectivo, filtrosEfectivos)
   }
 
 
@@ -630,8 +648,25 @@ export function ChartCard({
           width: isFullWidth ? '100%' : undefined,
         }}
       >
+        {/* Barra de pulso indeterminada en el borde superior ante revalidación en segundo plano */}
+        {isFetching && (
+          <div className="absolute top-0 left-0 right-0 h-1 overflow-hidden z-20 bg-blue-100/70">
+            <div className="h-full bg-gradient-to-r from-uct-blue-primary via-blue-400 to-uct-blue-primary animate-pulse w-full" />
+          </div>
+        )}
         <div className="flex flex-wrap items-center justify-between mb-3 gap-2 shrink-0">
-          <h3 className="text-sm font-semibold text-uct-text-primary">{title}</h3>
+          <div className="flex items-center gap-2 min-w-0">
+            <h3 className="text-sm font-semibold text-uct-text-primary">{title}</h3>
+            {isFetching && (
+              <span
+                title="Actualizando datos en segundo plano..."
+                className="inline-flex items-center gap-1 text-[10.5px] font-medium text-uct-blue-primary bg-blue-50/90 border border-blue-200/80 px-2 py-0.5 rounded-full animate-pulse select-none"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-uct-blue-primary animate-ping inline-block" />
+                Actualizando...
+              </span>
+            )}
+          </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             {action}
@@ -756,7 +791,9 @@ export function ChartCard({
           <div
             ref={chartRef}
             id={`chart-container-${resolvedContext}`}
-            className="w-full h-full min-w-0 flex-1 flex flex-col overflow-y-auto overflow-x-hidden"
+            className={`w-full h-full min-w-0 flex-1 flex flex-col overflow-y-auto overflow-x-hidden transition-opacity duration-200 ${
+              isFetching ? 'opacity-80 pointer-events-auto' : 'opacity-100'
+            }`}
             style={{
               scrollbarWidth: 'thin',
               scrollbarColor: '#CBD5E1 transparent',
@@ -865,9 +902,16 @@ export function ChartCard({
             </div>
 
             {/* Contenedor del Gráfico en Gran Tamaño con Desplazamiento Vertical Fluido */}
+            {isFetching && (
+              <div className="absolute top-0 left-0 right-0 h-1 overflow-hidden z-30 bg-blue-100/70">
+                <div className="h-full bg-gradient-to-r from-uct-blue-primary via-blue-400 to-uct-blue-primary animate-pulse w-full" />
+              </div>
+            )}
             <div
               id={`maximized-chart-${resolvedContext}`}
-              className="flex-1 w-full p-4 sm:p-6 pb-16 overflow-y-auto overflow-x-hidden bg-white min-h-0 uct-maximized-chart-wrapper"
+              className={`flex-1 w-full p-4 sm:p-6 pb-16 overflow-y-auto overflow-x-hidden bg-white min-h-0 uct-maximized-chart-wrapper transition-opacity duration-200 ${
+                isFetching ? 'opacity-80 pointer-events-auto' : 'opacity-100'
+              }`}
               style={{
                 scrollbarWidth: 'thin',
                 scrollbarColor: '#94A3B8 #F1F5F9',

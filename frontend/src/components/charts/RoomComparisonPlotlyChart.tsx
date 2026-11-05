@@ -1,51 +1,55 @@
-import React, { useState } from 'react'
+import React, { useState, memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { RoomComparisonResponse } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
-import { Layers, Users, Clock, CheckCircle2, Moon } from 'lucide-react'
+import type { Data } from 'plotly.js-dist-min'
+import { Layers } from 'lucide-react'
 
 interface Props {
   data?: RoomComparisonResponse
 }
 
-export function RoomComparisonPlotlyChart({ data }: Props) {
+function RoomComparisonPlotlyChartComponent({ data }: Props) {
   const [rebanadaSeleccionada, setRebanadaSeleccionada] = useState<string | null>(null)
 
-  const resumen_salas = (data?.resumen_salas && data.resumen_salas.length > 0)
-    ? data.resumen_salas
-    : [
-      {
-        sala: 'Sala 1 (CSF02)',
-        total_marcajes: 0,
-        usuarios_unicos: 0,
-        entradas: 0,
-        salidas: 0,
-        porcentaje_afluencia: 0,
-        capacidad_asientos: 124,
-        edificio: 'CSF02',
-        permite_24h_examenes: false,
-      },
-      {
-        sala: 'Sala 2 (CSF04 Pecera)',
-        total_marcajes: 0,
-        usuarios_unicos: 0,
-        entradas: 0,
-        salidas: 0,
-        porcentaje_afluencia: 0,
-        capacidad_asientos: 226,
-        edificio: 'CSF04',
-        permite_24h_examenes: true,
-      },
-    ]
+  const resumen_salas = useMemo(() => {
+    return (data?.resumen_salas && data.resumen_salas.length > 0)
+      ? data.resumen_salas
+      : [
+        {
+          sala: 'Sala 1 (CSF02)',
+          total_marcajes: 0,
+          usuarios_unicos: 0,
+          entradas: 0,
+          salidas: 0,
+          porcentaje_afluencia: 0,
+          capacidad_asientos: 124,
+          edificio: 'CSF02',
+          permite_24h_examenes: false,
+        },
+        {
+          sala: 'Sala 2 (CSF04 Pecera)',
+          total_marcajes: 0,
+          usuarios_unicos: 0,
+          entradas: 0,
+          salidas: 0,
+          porcentaje_afluencia: 0,
+          capacidad_asientos: 226,
+          edificio: 'CSF04',
+          permite_24h_examenes: true,
+        },
+      ]
+  }, [data?.resumen_salas])
 
-  const flujo_horario_comparado = (data?.flujo_horario_comparado && data.flujo_horario_comparado.length > 0)
-    ? data.flujo_horario_comparado
-    : Array.from({ length: 24 }, (_, h) => ({
-      hora: `${h.toString().padStart(2, '0')}:00`,
-      hora_num: h,
-      entradas_sala1: 0,
-      entradas_sala2: 0,
-    }))
+  const flujo_horario_comparado = useMemo(() => {
+    return (data?.flujo_horario_comparado && data.flujo_horario_comparado.length > 0)
+      ? data.flujo_horario_comparado
+      : Array.from({ length: 24 }, (_, h) => ({
+        hora: `${h.toString().padStart(2, '0')}:00`,
+        hora_num: h,
+        entradas_sala1: 0,
+        entradas_sala2: 0,
+      }))
+  }, [data?.flujo_horario_comparado])
 
   const getOrderWeight = (salaName: string) => {
     const s = salaName.toLowerCase()
@@ -54,11 +58,12 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
     return 3
   }
 
-
-  const salasOrdenadas = [...resumen_salas].sort((a, b) => getOrderWeight(a.sala) - getOrderWeight(b.sala))
+  const salasOrdenadas = useMemo(() => {
+    return [...resumen_salas].sort((a, b) => getOrderWeight(a.sala) - getOrderWeight(b.sala))
+  }, [resumen_salas])
 
   // Datos para curva horaria comparada
-  const chartHourlyData: Data[] = [
+  const chartHourlyData = useMemo<Data[]>(() => [
     {
       x: flujo_horario_comparado.map(d => d.hora),
       y: flujo_horario_comparado.map(d => d.entradas_sala1),
@@ -79,9 +84,9 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
       marker: { size: 5, color: '#C59B27' },
       hovertemplate: '<b>Sala 2 (CSF04 Pecera)</b><br>Hora: %{x}<br>Entradas: <b>%{y:,}</b><extra></extra>',
     },
-  ]
+  ], [flujo_horario_comparado])
 
-  const layoutHourly = {
+  const layoutHourly = useMemo(() => ({
     title: {
       text: 'Afluencia Horaria Comparada por Sala (Ciclo 00:00 a 23:00)',
       font: { size: 12, color: '#1E293B' },
@@ -110,39 +115,44 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
       yanchor: 'bottom' as const,
       font: { size: 10.5, color: '#334155' },
     },
-  }
+  }), [])
 
   // Datos para Donut de distribución de afluencia
-  const labelsDonut = salasOrdenadas.map(s => s.sala.includes('Sala 1') ? 'Sala 1 (CSF02)' : 'Sala 2 (CSF04)')
-  const pullArray = labelsDonut.map(l => (l === rebanadaSeleccionada ? 0.14 : 0))
-  const baseColors = salasOrdenadas.map(s => s.sala.includes('Sala 1') ? '#002B49' : '#C59B27')
+  const { labelsDonut, baseColors } = useMemo(() => {
+    const lbls = salasOrdenadas.map(s => s.sala.includes('Sala 1') ? 'Sala 1 (CSF02)' : 'Sala 2 (CSF04)')
+    const colors = salasOrdenadas.map(s => s.sala.includes('Sala 1') ? '#002B49' : '#C59B27')
+    return { labelsDonut: lbls, baseColors: colors }
+  }, [salasOrdenadas])
 
-  const chartDonutData: Data[] = [
-    {
-      values: salasOrdenadas.map(s => s.total_marcajes),
-      labels: labelsDonut,
-      type: 'pie',
-      hole: 0.55,
-      pull: pullArray,
-      marker: {
-        colors: rebanadaSeleccionada
-          ? labelsDonut.map((l, idx) => (l === rebanadaSeleccionada ? baseColors[idx] : '#E2E8F0'))
-          : baseColors,
-        line: {
-          color: rebanadaSeleccionada
-            ? labelsDonut.map(l => (l === rebanadaSeleccionada ? '#002B49' : '#FFFFFF'))
-            : '#FFFFFF',
-          width: rebanadaSeleccionada ? labelsDonut.map(l => (l === rebanadaSeleccionada ? 2.5 : 1)) : 2,
+  const chartDonutData = useMemo<Data[]>(() => {
+    const pullArray = labelsDonut.map(l => (l === rebanadaSeleccionada ? 0.14 : 0))
+    return [
+      {
+        values: salasOrdenadas.map(s => s.total_marcajes),
+        labels: labelsDonut,
+        type: 'pie',
+        hole: 0.55,
+        pull: pullArray,
+        marker: {
+          colors: rebanadaSeleccionada
+            ? labelsDonut.map((l, idx) => (l === rebanadaSeleccionada ? baseColors[idx] : '#E2E8F0'))
+            : baseColors,
+          line: {
+            color: rebanadaSeleccionada
+              ? labelsDonut.map(l => (l === rebanadaSeleccionada ? '#002B49' : '#FFFFFF'))
+              : '#FFFFFF',
+            width: rebanadaSeleccionada ? labelsDonut.map(l => (l === rebanadaSeleccionada ? 2.5 : 1)) : 2,
+          },
         },
+        textinfo: 'percent',
+        textposition: 'inside',
+        insidetextfont: { color: '#FFFFFF', size: 12, family: 'Inter, sans-serif' },
+        hoverinfo: 'label+value+percent',
       },
-      textinfo: 'percent',
-      textposition: 'inside',
-      insidetextfont: { color: '#FFFFFF', size: 12, family: 'Inter, sans-serif' },
-      hoverinfo: 'label+value+percent',
-    },
-  ]
+    ]
+  }, [salasOrdenadas, labelsDonut, baseColors, rebanadaSeleccionada])
 
-  const layoutDonut = {
+  const layoutDonut = useMemo(() => ({
     title: {
       text: 'Participación por Sala',
       font: { size: 11.5, color: '#1E293B' },
@@ -161,7 +171,7 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
       itemclick: false as const,
       itemdoubleclick: false as const,
     },
-  }
+  }), [])
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
     if (event.points && event.points.length > 0) {
@@ -198,55 +208,11 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
                     </h4>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    {isSala1
-                      ? 'Edificio 2, 2do Piso — Sala de Estudio y Biblioteca con Locker'
-                      : 'Edificio 4, 1er Piso — Sala Pecera de Estudio'}
+                    Edificio {s.edificio} • Capacidad física: {s.capacidad_asientos} asientos
                   </p>
                 </div>
-                <span
-                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isSala1
-                      ? 'bg-blue-100/80 text-uct-blue-primary'
-                      : 'bg-amber-100 text-amber-800'
-                    }`}
-                >
-                  {s.edificio}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 py-2 border-y border-slate-200/60 text-center">
-                <div className="p-1.5 bg-white rounded-lg border border-slate-100 shadow-2xs">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">Capacidad</span>
-                  <span className="text-sm font-extrabold text-slate-800">
-                    {s.capacidad_asientos}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">asientos</span>
-                </div>
-                <div className="p-1.5 bg-white rounded-lg border border-slate-100 shadow-2xs">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">Afluencia Total</span>
-                  <span className="text-sm font-extrabold text-slate-800">
-                    {s.total_marcajes.toLocaleString('es-CL')}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">
-                    {s.porcentaje_afluencia}% del total
-                  </span>
-                </div>
-                <div className="p-1.5 bg-white rounded-lg border border-slate-100 shadow-2xs">
-                  <span className="text-[10px] uppercase font-semibold text-slate-400 block">Visitantes Únicos</span>
-                  <span className="text-sm font-extrabold text-slate-800">
-                    {s.usuarios_unicos.toLocaleString('es-CL')}
-                  </span>
-                  <span className="text-[9px] text-slate-500 block">personas</span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between text-[11px] pt-2 text-slate-600">
-                <span className="flex items-center gap-1">
-                  <CheckCircle2 size={12} className="text-emerald-600" />
-                  Accesos: 1 Torniquete + 1 Universal
-                </span>
                 {s.permite_24h_examenes && (
-                  <span className="flex items-center gap-1 font-semibold text-amber-700 bg-amber-100/60 px-2 py-0.5 rounded-md">
-                    <Moon size={11} />
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-bold">
                     Horario Extendido Exámenes
                   </span>
                 )}
@@ -299,3 +265,6 @@ export function RoomComparisonPlotlyChart({ data }: Props) {
     </div>
   )
 }
+
+export const RoomComparisonPlotlyChart = memo(RoomComparisonPlotlyChartComponent)
+export default RoomComparisonPlotlyChart

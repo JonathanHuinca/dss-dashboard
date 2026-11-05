@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import {  useMemo, useState , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { HeatmapPoint } from '../../api/client'
-import { Data, Layout } from 'plotly.js-dist-min'
+import type { Data, Layout  } from 'plotly.js-dist-min'
 import { Clock, Moon } from 'lucide-react'
 
 interface Props {
@@ -15,27 +15,27 @@ const HORAS_24 = Array.from({ length: 24 }, (_, i) => i) // 00-23
 const HORAS_DIURNO = Array.from({ length: 16 }, (_, i) => i + 6) // 06-21
 const HORAS_NOCTURNO = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7] // 22:00 a 07:00 (Ventana 24 Horas)
 
-export function HeatmapChart({ data, modoInicial = '24h', permitirModoNocturno = false }: Props) {
+function HeatmapChartComponent({ data, modoInicial = '24h', permitirModoNocturno = false }: Props) {
   const [modo, setModo] = useState<'24h' | 'diurno' | 'nocturno'>(modoInicial)
 
   const horasActivas =
     modo === 'nocturno' ? HORAS_NOCTURNO : modo === 'diurno' ? HORAS_DIURNO : HORAS_24
 
-  const lookup = new Map(
-    data.map(d => [`${d.dia_semana}-${d.hora}`, { avg: d.ingresos_promedio, esNocturno: d.es_nocturno }])
-  )
-
-  const zMatrix: number[][] = DIAS.map((_, di) =>
-    horasActivas.map(h => {
-      const item = lookup.get(`${di}-${h}`)
-      if (!item) return 0
-      // En modo nocturno exclusivo: si se especifica es_nocturno y no lo es, mostrar 0 (fuera de régimen)
-      if (modo === 'nocturno' && item.esNocturno === false) return 0
-      return item.avg
-    })
-  )
-
-  const xLabels = horasActivas.map(h => `${String(h).padStart(2, '0')}:00`)
+  const { zMatrix, xLabels } = useMemo(() => {
+    const lookup = new Map(
+      data.map(d => [`${d.dia_semana}-${d.hora}`, { avg: d.ingresos_promedio, esNocturno: d.es_nocturno }])
+    )
+    const z: number[][] = DIAS.map((_, di) =>
+      horasActivas.map(h => {
+        const item = lookup.get(`${di}-${h}`)
+        if (!item) return 0
+        // En modo nocturno exclusivo: si se especifica es_nocturno y no lo es, mostrar 0 (fuera de régimen)
+        if (modo === 'nocturno' && item.esNocturno === false) return 0
+        return item.avg
+      })
+    )
+    return { zMatrix: z, xLabels: horasActivas.map(h => `${String(h).padStart(2, '0')}:00`) }
+  }, [data, modo, horasActivas])
 
   const colorscaleDiurno24: [number, string][] = [
     [0.0, '#f0fdf4'],
@@ -52,7 +52,7 @@ export function HeatmapChart({ data, modoInicial = '24h', permitirModoNocturno =
     [1.0, '#b91c1c'],
   ]
 
-  const chartData: Data[] = [
+  const chartData: Data[] = useMemo(() => [
     {
       z: zMatrix,
       x: xLabels,
@@ -71,9 +71,9 @@ export function HeatmapChart({ data, modoInicial = '24h', permitirModoNocturno =
         tickfont: { size: 9, color: '#64748B' },
       },
     },
-  ]
+  ], [zMatrix, xLabels, modo])
 
-  const layout: Partial<Layout> = {
+  const layout: Partial<Layout> = useMemo(() => ({
     height: 280,
     margin: { t: 15, r: 20, b: modo === '24h' ? 42 : 35, l: 75 },
     yaxis: {
@@ -86,7 +86,7 @@ export function HeatmapChart({ data, modoInicial = '24h', permitirModoNocturno =
       tickangle: modo === '24h' ? -45 : 0,
       showgrid: false,
     },
-  }
+  }), [modo])
 
   return (
     <div className="w-full space-y-2">
@@ -153,4 +153,5 @@ export function HeatmapChart({ data, modoInicial = '24h', permitirModoNocturno =
   )
 }
 
+export const HeatmapChart = memo(HeatmapChartComponent)
 export default HeatmapChart

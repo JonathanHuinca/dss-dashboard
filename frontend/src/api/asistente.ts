@@ -175,7 +175,7 @@ export const sendInteractiveChatMessage = (payload: InteractiveChatRequest) =>
 export async function sendInteractiveChatStream(
   payload: InteractiveChatRequest,
   callbacks: {
-    onMeta: (meta: { intent: string; component?: string; payload?: any; conversacion_id?: string }) => void
+    onMeta: (meta: { intent: string; tipo?: string; component?: string; payload?: any; conversacion_id?: string }) => void
     onChunk: (chunk: string) => void
     onDone: () => void
     onError: (err: any) => void

@@ -139,11 +139,12 @@ export const fetchVehicleKpis = (
   fechaFin?: string,
   filters?: DataFilters | string,
   sector?: string,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
   const sectorParam = sector && sector !== 'todos' ? sector : f.sector && f.sector !== 'todos' ? f.sector : undefined
   const tipoVehiculoParam = (f as any).tipo_vehiculo && (f as any).tipo_vehiculo !== 'todos' ? (f as any).tipo_vehiculo : undefined
-  return api.get<VehicleKpis>('/vehicles/kpis', {
+  return api.get<VehicleKpis>('/vehicles/kpis', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -158,8 +159,8 @@ export const fetchVehicleKpis = (
   }).then(r => r.data)
 }
 
-export const fetchParkingOccupancy = (sector?: string) =>
-  api.get<ParkingOccupancy>('/vehicles/parking-occupancy', {
+export const fetchParkingOccupancy = (sector?: string, signal?: AbortSignal) =>
+  api.get<ParkingOccupancy>('/vehicles/parking-occupancy', { signal,
     params: {
       sector: sector && sector !== 'todos' ? sector : undefined,
     },
@@ -170,11 +171,12 @@ export const fetchVehicleHourlyFlow = (
   fechaFin?: string,
   filters?: DataFilters | string,
   sector?: string,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
   const sectorParam = sector && sector !== 'todos' ? sector : f.sector && f.sector !== 'todos' ? f.sector : undefined
   const tipoVehiculoParam = (f as any).tipo_vehiculo && (f as any).tipo_vehiculo !== 'todos' ? (f as any).tipo_vehiculo : undefined
-  return api.get<HourlyFlowPoint[]>('/vehicles/hourly-flow', {
+  return api.get<HourlyFlowPoint[]>('/vehicles/hourly-flow', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -189,8 +191,8 @@ export const fetchVehicleHourlyFlow = (
   }).then(r => r.data)
 }
 
-export const fetchFleetComposition = (fechaInicio?: string, fechaFin?: string, sector?: string) =>
-  api.get<FleetComposition>('/vehicles/fleet-composition', {
+export const fetchFleetComposition = (fechaInicio?: string, fechaFin?: string, sector?: string, signal?: AbortSignal) =>
+  api.get<FleetComposition>('/vehicles/fleet-composition', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -198,11 +200,11 @@ export const fetchFleetComposition = (fechaInicio?: string, fechaFin?: string, s
     },
   }).then(r => r.data)
 
-export const fetchCameraStats = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, sector?: string) => {
+export const fetchCameraStats = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, sector?: string, signal?: AbortSignal) => {
   const f = parseFilters(filters)
   const sectorParam = sector && sector !== 'todos' ? sector : f.sector && f.sector !== 'todos' ? f.sector : undefined
   const tipoVehiculoParam = (f as any).tipo_vehiculo && (f as any).tipo_vehiculo !== 'todos' ? (f as any).tipo_vehiculo : undefined
-  return api.get<CameraStatPoint[]>('/vehicles/camera-stats', {
+  return api.get<CameraStatPoint[]>('/vehicles/camera-stats', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -217,8 +219,8 @@ export const fetchCameraStats = (fechaInicio?: string, fechaFin?: string, filter
   }).then(r => r.data)
 }
 
-export const fetchVehicleDailyEvolution = (fechaInicio?: string, fechaFin?: string, sector?: string) =>
-  api.get<VehicleDailyPoint[]>('/vehicles/daily-evolution', {
+export const fetchVehicleDailyEvolution = (fechaInicio?: string, fechaFin?: string, sector?: string, signal?: AbortSignal) =>
+  api.get<VehicleDailyPoint[]>('/vehicles/daily-evolution', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -226,14 +228,14 @@ export const fetchVehicleDailyEvolution = (fechaInicio?: string, fechaFin?: stri
     },
   }).then(r => r.data)
 
-export const fetchVehicleAcademicMilestones = () =>
-  api.get<any[]>('/vehicles/academic-milestones-comparison').then(r => r.data)
+export const fetchVehicleAcademicMilestones = (signal?: AbortSignal) =>
+  api.get<any[]>('/vehicles/academic-milestones-comparison', { signal }).then(r => r.data)
 
-export const fetchIntercampusMobility = () =>
-  api.get<IntercampusMobilityResponse>('/vehicles/intercampus-mobility').then(r => r.data)
+export const fetchIntercampusMobility = (signal?: AbortSignal) =>
+  api.get<IntercampusMobilityResponse>('/vehicles/intercampus-mobility', { signal }).then(r => r.data)
 
-export const fetchBehavioralClusters = () =>
-  api.get<BehavioralClustersResponse>('/vehicles/behavioral-clusters').then(r => r.data)
+export const fetchBehavioralClusters = (signal?: AbortSignal) =>
+  api.get<BehavioralClustersResponse>('/vehicles/behavioral-clusters', { signal }).then(r => r.data)
 
 export const fetchRawVehicles = (params: {
   page?: number

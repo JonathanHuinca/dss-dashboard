@@ -35,7 +35,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
   const activePeriodLabel = selectedRange?.label || data?.periodo_label || 'Historial Semestre Completo'
 
   return (
-    <section className="px-6 pt-5 pb-3">
+    <section className="w-full">
       <div className="bg-white/90 backdrop-blur-md rounded-2xl p-4.5 border border-slate-200/80 shadow-xs mb-1">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5 pb-2.5 border-b border-slate-100">
           <div className="flex items-center gap-2.5">

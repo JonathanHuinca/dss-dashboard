@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, {  useState, useMemo, useEffect , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
-import { Data, Layout } from 'plotly.js-dist-min'
+import type { Data, Layout  } from 'plotly.js-dist-min'
 import { useQuery } from '@tanstack/react-query'
 import { obtenerResumenAnualCalendario, DiaCalendarioResumen, fetchHorarios, HorarioOperacion } from '../../api/client'
 import { Calendar } from 'lucide-react'
@@ -29,7 +29,7 @@ interface Props {
   comparativaSalas?: { hora: string; entradas_sala1: number; entradas_sala2: number }[]
 }
 
-export function OccupancyAreaChart({
+function OccupancyAreaChartComponent({
   data,
   capacidad,
   unit = 'ocupantes',
@@ -1025,4 +1025,5 @@ export function OccupancyAreaChart({
   )
 }
 
+export const OccupancyAreaChart = memo(OccupancyAreaChartComponent)
 export default OccupancyAreaChart

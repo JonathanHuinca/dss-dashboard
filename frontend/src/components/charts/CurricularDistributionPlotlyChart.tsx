@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, {  useState, useMemo, useEffect , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { CurricularDistributionResponse } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data  } from 'plotly.js-dist-min'
 import {
   ShieldCheck,
   BookOpen,
@@ -36,7 +36,7 @@ const PALETA_COLORES = [
   '#64748B',
 ]
 
-export function CurricularDistributionPlotlyChart({ data }: Props) {
+function CurricularDistributionPlotlyChartComponent({ data }: Props) {
   const [agrupacion, setAgrupacion] = useState<'carreras' | 'facultades' | 'cohortes'>('carreras')
   const [metrica, setMetrica] = useState<'visitas' | 'alumnos'>('visitas')
   const [topN, setTopN] = useState<number | 'todas'>(10)
@@ -461,3 +461,6 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
     </div>
   )
 }
+
+export const CurricularDistributionPlotlyChart = memo(CurricularDistributionPlotlyChartComponent)
+export default CurricularDistributionPlotlyChart

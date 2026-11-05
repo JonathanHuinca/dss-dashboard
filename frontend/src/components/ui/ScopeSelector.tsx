@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, { useState, useMemo, useEffect, useRef } from 'react'
 import {
   ShieldCheck,
   Database,
@@ -238,6 +238,28 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
       onChangeFilters(nextFilters)
     }
   }
+
+  // Debounce de 250 ms para dropdowns de alta frecuencia: evita ráfagas de peticiones al cambiar rápido
+  const [pendientes, setPendientes] = useState<Partial<Record<'facultad' | 'carrera' | 'cohorte', string>>>({})
+  const temporizadoresRef = useRef<Record<string, number>>({})
+  const updateFilterRef = useRef(updateFilter)
+  updateFilterRef.current = updateFilter
+
+  const updateFilterDebounced = (key: 'facultad' | 'carrera' | 'cohorte', val: string) => {
+    setPendientes(prev => ({ ...prev, [key]: val }))
+    window.clearTimeout(temporizadoresRef.current[key])
+    temporizadoresRef.current[key] = window.setTimeout(() => {
+      setPendientes(prev => {
+        const { [key]: _omitido, ...resto } = prev
+        return resto
+      })
+      updateFilterRef.current(key, val)
+    }, 250)
+  }
+
+  useEffect(() => () => {
+    Object.values(temporizadoresRef.current).forEach(id => window.clearTimeout(id))
+  }, [])
 
   // Sincronizar automáticamente el régimen conforme si el rango de fechas cambia mientras se está en Datos Conformes
   useEffect(() => {
@@ -1080,8 +1102,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
               <div className="flex-1 min-w-0">
                 <label className="block text-[9.5px] text-slate-400 font-medium">Filtrar por Facultad</label>
                 <select
-                  value={filters.facultad || ''}
-                  onChange={(e) => updateFilter('facultad', e.target.value)}
+                  value={pendientes.facultad ?? (filters.facultad || '')}
+                  onChange={(e) => updateFilterDebounced('facultad', e.target.value)}
                   className="w-full text-xs font-semibold text-slate-800 bg-transparent border-none focus:outline-none focus:ring-0 p-0 cursor-pointer"
                 >
                   <option value="">Todas las Facultades</option>
@@ -1108,8 +1130,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
               <div className="flex-1 min-w-0">
                 <label className="block text-[9.5px] text-slate-400 font-medium">Filtrar por Carrera</label>
                 <select
-                  value={filters.carrera || ''}
-                  onChange={(e) => updateFilter('carrera', e.target.value)}
+                  value={pendientes.carrera ?? (filters.carrera || '')}
+                  onChange={(e) => updateFilterDebounced('carrera', e.target.value)}
                   className="w-full text-xs font-semibold text-slate-800 bg-transparent border-none focus:outline-none focus:ring-0 p-0 cursor-pointer"
                 >
                   <option value="">Todas las Carreras</option>
@@ -1136,8 +1158,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
               <div className="flex-1 min-w-0">
                 <label className="block text-[9.5px] text-slate-400 font-medium">Cohorte / Año Ingreso</label>
                 <select
-                  value={filters.cohorte || ''}
-                  onChange={(e) => updateFilter('cohorte', e.target.value)}
+                  value={pendientes.cohorte ?? (filters.cohorte || '')}
+                  onChange={(e) => updateFilterDebounced('cohorte', e.target.value)}
                   className="w-full text-xs font-semibold text-slate-800 bg-transparent border-none focus:outline-none focus:ring-0 p-0 cursor-pointer"
                 >
                   <option value="">Todas las Cohortes</option>

@@ -1,7 +1,7 @@
-import { memo, useState } from 'react'
+import { memo, useState, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { VisitProfilesDonutResponse } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data  } from 'plotly.js-dist-min'
 import { Info, AlertCircle, CheckCircle2, Clock } from 'lucide-react'
 
 interface Props {
@@ -43,42 +43,46 @@ export const VisitProfilesPlotlyChart = memo(function VisitProfilesPlotlyChart({
   const totalAnalizadas = data.total_visitas_analizadas || 1
   const tasaRebote = data.tasa_rebote_pct ?? 0
 
-  const labels = items.map(d => d.perfil)
-  const pullArray = labels.map(l => (l === rebanadaSeleccionada ? 0.14 : 0))
-  const baseColors = items.map(d => d.color || '#003865')
+  const { labels, baseColors } = useMemo(() => ({
+    labels: items.map(d => d.perfil),
+    baseColors: items.map(d => d.color || '#003865'),
+  }), [items])
 
-  // Configuración del Donut Plotly con colores normativos UCT
-  const chartData: Data[] = [
-    {
-      labels,
-      values: items.map(d => d.total),
-      type: 'pie',
-      hole: 0.58,
-      sort: false,
-      pull: pullArray,
-      marker: {
-        colors: rebanadaSeleccionada
-          ? labels.map((l, idx) => (l === rebanadaSeleccionada ? baseColors[idx] : '#E2E8F0'))
-          : baseColors,
-        line: {
-          color: rebanadaSeleccionada
-            ? labels.map(l => (l === rebanadaSeleccionada ? '#002B49' : '#FFFFFF'))
-            : '#FFFFFF',
-          width: rebanadaSeleccionada ? labels.map(l => (l === rebanadaSeleccionada ? 2.5 : 1)) : 2.5,
+  // Configuración del Donut Plotly con colores normativos UCT memoizada
+  const chartData = useMemo<Data[]>(() => {
+    const pullArray = labels.map(l => (l === rebanadaSeleccionada ? 0.14 : 0))
+    return [
+      {
+        labels,
+        values: items.map(d => d.total),
+        type: 'pie',
+        hole: 0.58,
+        sort: false,
+        pull: pullArray,
+        marker: {
+          colors: rebanadaSeleccionada
+            ? labels.map((l, idx) => (l === rebanadaSeleccionada ? baseColors[idx] : '#E2E8F0'))
+            : baseColors,
+          line: {
+            color: rebanadaSeleccionada
+              ? labels.map(l => (l === rebanadaSeleccionada ? '#002B49' : '#FFFFFF'))
+              : '#FFFFFF',
+            width: rebanadaSeleccionada ? labels.map(l => (l === rebanadaSeleccionada ? 2.5 : 1)) : 2.5,
+          },
         },
+        textinfo: 'percent',
+        textposition: 'inside',
+        insidetextfont: { color: '#FFFFFF', size: 12, family: 'Inter, sans-serif' },
+        hovertemplate:
+          '<b>%{label}</b><br>' +
+          'Visitas: <b>%{value:,}</b><br>' +
+          'Proporción: <b>%{percent}</b><br>' +
+          '<extra></extra>',
       },
-      textinfo: 'percent',
-      textposition: 'inside',
-      insidetextfont: { color: '#FFFFFF', size: 12, family: 'Inter, sans-serif' },
-      hovertemplate:
-        '<b>%{label}</b><br>' +
-        'Visitas: <b>%{value:,}</b><br>' +
-        'Proporción: <b>%{percent}</b><br>' +
-        '<extra></extra>',
-    },
-  ]
+    ]
+  }, [items, labels, baseColors, rebanadaSeleccionada])
 
-  const layout = {
+  const layout = useMemo(() => ({
     showlegend: true,
     legend: {
       orientation: 'h' as const,
@@ -106,7 +110,7 @@ export const VisitProfilesPlotlyChart = memo(function VisitProfilesPlotlyChart({
         y: 0.44,
       },
     ],
-  }
+  }), [tasaRebote])
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
     if (event.points && event.points.length > 0) {

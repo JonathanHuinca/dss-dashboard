@@ -24,9 +24,11 @@ interface Props {
   selectedRange: DateRange
   onRangeChange: (r: DateRange) => void
   espacioId?: number
+  onOpenSelector?: () => void
+  onHoverPreset?: (preset: DateRange) => void
 }
 
-export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, espacioId }) => {
+export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, espacioId, onOpenSelector, onHoverPreset }) => {
   const [isOpen, setIsOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'operativo' | 'meses' | 'personalizado'>('operativo')
 
@@ -86,6 +88,10 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
   }, [selectedRange, dateBounds, minDate, maxDate])
 
   const handleSelectPreset = (preset: DateRange) => {
+    if (typeof window !== 'undefined') {
+      ;(window as any).__uct_transition_start = window.performance.now()
+      ;(window as any).__uct_transition_type = `preset: ${preset.label}`
+    }
     onRangeChange(preset)
     setIsOpen(false)
   }
@@ -93,6 +99,11 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
   const handleApplyCustom = () => {
     if (!customInicio || !customFin) return
     if (customInicio > customFin) return
+
+    if (typeof window !== 'undefined') {
+      ;(window as any).__uct_transition_start = window.performance.now()
+      ;(window as any).__uct_transition_type = 'rango_personalizado'
+    }
 
     const clampedInicio = customInicio < minDate ? minDate : customInicio
     const clampedFin = customFin > maxDate ? maxDate : customFin
@@ -189,7 +200,13 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
       {/* Botón Disparador Principal */}
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => {
+          const next = !isOpen
+          setIsOpen(next)
+          if (next && onOpenSelector) {
+            onOpenSelector()
+          }
+        }}
         className={`flex items-center gap-2.5 px-3 py-1.5 rounded-lg border transition-all text-xs font-medium cursor-pointer ${isOpen
             ? 'bg-white/20 border-uct-gold text-white shadow-xs'
             : 'bg-white/10 hover:bg-white/15 border-white/15 text-white/90 hover:text-white'
@@ -294,6 +311,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
                       <button
                         key={p.label}
                         type="button"
+                        onMouseEnter={() => onHoverPreset?.(p)}
                         onClick={() => handleSelectPreset(p)}
                         className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-all text-left cursor-pointer border ${isSelected
                             ? 'bg-uct-blue-primary border-uct-gold text-white font-bold ring-1 ring-uct-gold/50'
@@ -325,6 +343,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
                       <button
                         key={m.label}
                         type="button"
+                        onMouseEnter={() => onHoverPreset?.(m)}
                         onClick={() => handleSelectPreset(m)}
                         className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs transition-all text-left cursor-pointer border ${isSelected
                             ? 'bg-uct-blue-primary border-uct-gold text-white font-bold ring-1 ring-uct-gold/50'

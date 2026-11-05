@@ -67,8 +67,8 @@ export interface DateBoundsResponse {
   meses_disponibles: MonthInfo[]
 }
 
-export const fetchDateBounds = (espacioId?: number) =>
-  api.get<DateBoundsResponse>('/metrics/date-bounds', {
+export const fetchDateBounds = (espacioId?: number, signal?: AbortSignal) =>
+  api.get<DateBoundsResponse>('/metrics/date-bounds', { signal,
     params: { espacio_id: espacioId || undefined },
   }).then(r => r.data)
 

@@ -388,7 +388,14 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
     return null
   }
 
-  const componenteGrafico = renderComponent()
+  // Discriminación rigurosa de intención de visualización
+  const tieneSolicitudGrafico = Boolean(
+    (msg.component || msg.fig_data) && msg.tipo !== 'text'
+  )
+  const textoHaIniciado = Boolean(msg.content && msg.content.trim().length > 0)
+  const componenteGrafico = (tieneSolicitudGrafico && (textoHaIniciado || Boolean(msg.payload || msg.fig_data)))
+    ? renderComponent()
+    : null
 
   return (
     <div className={`flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -405,19 +412,21 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
             : 'bg-white text-slate-800 border border-slate-200/80 rounded-bl-xs shadow-xs space-y-2.5'
         }`}
       >
+        {/* 1. Bloque de narrativa y análisis de texto: se muestra siempre en primer lugar */}
         {!msg.content ? (
           <div className="flex items-center gap-1.5 py-1 text-slate-500 font-medium">
             <div className="w-1.5 h-1.5 rounded-full bg-uct-gold animate-bounce" />
             <div className="w-1.5 h-1.5 rounded-full bg-uct-gold animate-bounce [animation-delay:0.2s]" />
             <div className="w-1.5 h-1.5 rounded-full bg-uct-gold animate-bounce [animation-delay:0.4s]" />
-            <span className="text-[11px] text-slate-400 ml-1">Procesando consulta analítica...</span>
+            <span className="text-[11px] text-slate-400 ml-1">Procesando respuesta analítica...</span>
           </div>
         ) : (
-          <div className="whitespace-pre-wrap">{msg.content}</div>
+          <div className={`whitespace-pre-wrap leading-relaxed ${isUser ? 'text-white font-medium' : 'text-slate-800'}`}>{msg.content}</div>
         )}
 
-        {componenteGrafico && (
-          <div id={`chart-box-${msg.id}`} className="w-full">
+        {/* 2. Componente gráfico interactivo: exclusivamente debajo del texto analítico */}
+        {tieneSolicitudGrafico && componenteGrafico && (
+          <div id={`chart-box-${msg.id}`} className="w-full pt-1">
             {componenteGrafico}
           </div>
         )}
@@ -462,21 +471,23 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
               onClick={handleExportarPdf}
               disabled={exportandoPdf}
               className="flex items-center gap-1.5 text-[11px] font-medium text-slate-700 hover:text-uct-blue-primary bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-50"
-              title="Descargar esta consulta en PDF con el gráfico incrustado"
+              title="Descargar esta consulta en PDF"
             >
               <FileText size={12} className="text-red-600" />
-              <span>{exportandoPdf ? 'Generando PDF...' : 'PDF con Gráfico'}</span>
+              <span>{exportandoPdf ? 'Generando PDF...' : 'Descargar PDF'}</span>
             </button>
-            <button
-              type="button"
-              onClick={handleExportarExcel}
-              disabled={exportandoExcel}
-              className="flex items-center gap-1.5 text-[11px] font-medium text-slate-700 hover:text-emerald-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-50"
-              title="Descargar datos en Excel modificable (.xlsx) con fórmulas y gráfico"
-            >
-              <FileSpreadsheet size={12} className="text-emerald-600" />
-              <span>{exportandoExcel ? 'Generando Excel...' : 'Excel Editable'}</span>
-            </button>
+            {tieneSolicitudGrafico && componenteGrafico && (
+              <button
+                type="button"
+                onClick={handleExportarExcel}
+                disabled={exportandoExcel}
+                className="flex items-center gap-1.5 text-[11px] font-medium text-slate-700 hover:text-emerald-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-50"
+                title="Descargar datos en Excel modificable (.xlsx) con fórmulas y gráfico"
+              >
+                <FileSpreadsheet size={12} className="text-emerald-600" />
+                <span>{exportandoExcel ? 'Generando Excel...' : 'Descargar Excel'}</span>
+              </button>
+            )}
           </div>
         )}
 

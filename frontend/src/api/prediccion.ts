@@ -89,20 +89,20 @@ export interface ModeloEstadoItem {
 
 // ─── Funciones API Predicción y Modelos ML ─────────────────────────────────────
 
-export const fetchForecast14Days = (espacioId: number = 1) =>
-  api.get<Forecast14DaysResponse>('/predictions/forecast-14days', { params: { espacio_id: espacioId } }).then(r => r.data)
+export const fetchForecast14Days = (espacioId: number = 1, signal?: AbortSignal) =>
+  api.get<Forecast14DaysResponse>('/predictions/forecast-14days', { signal, params: { espacio_id: espacioId } }).then(r => r.data)
 
-export const fetchVisitProfiles = (espacioId: number = 1) =>
-  api.get<VisitProfilesResponse>('/predictions/visit-profiles', { params: { espacio_id: espacioId } }).then(r => r.data)
+export const fetchVisitProfiles = (espacioId: number = 1, signal?: AbortSignal) =>
+  api.get<VisitProfilesResponse>('/predictions/visit-profiles', { signal, params: { espacio_id: espacioId } }).then(r => r.data)
 
-export const fetchForecastAttendance = (sala: string = 'todas') =>
-  api.get<ForecastResponse>('/predictions/forecast-attendance', { params: { sala } }).then(r => r.data)
+export const fetchForecastAttendance = (sala: string = 'todas', signal?: AbortSignal) =>
+  api.get<ForecastResponse>('/predictions/forecast-attendance', { signal, params: { sala } }).then(r => r.data)
 
-export const fetchForecastParking = () =>
-  api.get<ForecastResponse>('/predictions/forecast-parking').then(r => r.data)
+export const fetchForecastParking = (signal?: AbortSignal) =>
+  api.get<ForecastResponse>('/predictions/forecast-parking', { signal }).then(r => r.data)
 
-export const fetchAlerts = () =>
-  api.get<AlertsResponse>('/predictions/alerts').then(r => r.data)
+export const fetchAlerts = (signal?: AbortSignal) =>
+  api.get<AlertsResponse>('/predictions/alerts', { signal }).then(r => r.data)
 
 export const dispararActualizacionModelos = () =>
   api.post<{ mensaje: string; tarea_id: string; estado: string }>('/admin/modelos/actualizar').then(r => r.data)

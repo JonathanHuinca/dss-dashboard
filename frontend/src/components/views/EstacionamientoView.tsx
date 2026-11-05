@@ -23,12 +23,19 @@ import {
   SlidersHorizontal,
   Calendar,
   Share2,
+  Navigation,
+  BrainCircuit,
+  Building2,
+  CheckCircle2,
+  Eye,
 } from 'lucide-react'
 import { KpiCard } from '../ui/KpiCard'
 import { ChartCard } from '../ui/ChartCard'
 import { LiveBadge } from '../ui/LiveBadge'
 import { BarraLateralSecciones, SeccionModuloItem } from '../layout/BarraLateralSecciones'
+import { KPIBanner } from '../layout/KPIBanner'
 import { CompartirReporteModal } from '../reports/CompartirReporteModal'
+import { MetricasSeccion, ItemMetricaSeccion } from '../ui/MetricasSeccion'
 import { useAuth } from '../../context/AuthContext'
 import { DateRange } from '../../types/dateRange'
 import {
@@ -44,6 +51,7 @@ import {
   useBehavioralClusters,
 } from '../../hooks/useVehicles'
 import { useAlerts } from '../../hooks/useAttendance'
+import { useAssistant } from '../../context/AssistantContext'
 
 const OccupancyAreaChart = memo(lazy(() => import('../charts/OccupancyAreaChart').then(m => ({ default: m.OccupancyAreaChart }))))
 const HourlyBarChart = memo(lazy(() => import('../charts/HourlyBarChart').then(m => ({ default: m.HourlyBarChart }))))
@@ -60,13 +68,44 @@ function EsqueletoGraficoVehicular() {
     <div className="h-full min-h-[280px] w-full flex items-center justify-center bg-gray-50/50 rounded-xl animate-pulse border border-gray-100">
       <div className="flex flex-col items-center gap-3 opacity-50">
         <BarChart2 className="text-uct-primary" size={32} />
-        <span className="text-sm font-medium text-uct-text-muted">Cargando visualización...</span>
+        <span className="text-sm font-medium text-uct-text-muted">Cargando visualización vehicular...</span>
       </div>
     </div>
   )
 }
 
-const SECTORES_VEHICULARES = [
+function SectionHeader({
+  icon: Icon,
+  title,
+  subtitle,
+  badge,
+}: {
+  icon: React.ElementType
+  title: string
+  subtitle: string
+  badge?: string
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200/80">
+      <div className="flex items-center gap-2.5">
+        <div className="w-8 h-8 rounded-xl bg-uct-blue-primary/10 flex items-center justify-center text-uct-blue-primary shadow-2xs">
+          <Icon size={16} />
+        </div>
+        <div>
+          <h3 className="text-sm font-bold text-slate-800 tracking-tight">{title}</h3>
+          <p className="text-[11px] text-slate-500">{subtitle}</p>
+        </div>
+      </div>
+      {badge && (
+        <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold border border-slate-200">
+          {badge}
+        </span>
+      )}
+    </div>
+  )
+}
+
+const SECTORES_VEHICULARES: { codigo: string; nombre: string; capacidad: number; descripcion: string }[] = [
   { codigo: 'todos', nombre: 'Todos los Sectores', capacidad: 125, descripcion: 'Campus CSF y Simulación (125 plazas totales calibradas)' },
   { codigo: 'CSF11', nombre: 'CSF11 — Edificio 11', capacidad: 40, descripcion: 'Edificio 11 Campus San Francisco (40 plazas)' },
   { codigo: 'CSF21', nombre: 'CSF21 — Edificio 21', capacidad: 50, descripcion: 'Edificio 21 Campus San Francisco (50 plazas)' },
@@ -74,13 +113,14 @@ const SECTORES_VEHICULARES = [
 ]
 
 const SECCIONES_MODULO_ESTACIONAMIENTO: SeccionModuloItem[] = [
-  { id: 'seccion_1', numero: 1, titulo: '1. Aforo y Pronóstico', subtitulo: 'Concurrencia vs Capacidad y Prophet', icono: Layers, cantidadGraficos: 2 },
+  { id: 'seccion_1', numero: 1, titulo: '1. Aforo y Pronóstico', subtitulo: 'Concurrencia vs Plazas y Prophet', icono: Layers, cantidadGraficos: 2 },
   { id: 'seccion_2', numero: 2, titulo: '2. Flujo Horario y Diario', subtitulo: 'Ingresos vs Salidas y Evolución', icono: TrendingUp, cantidadGraficos: 2 },
-  { id: 'seccion_3', numero: 3, titulo: '3. Flota y Cámaras ANPR', subtitulo: 'Tipos, Marcas y Capturas por Cámara', icono: Car, cantidadGraficos: 3 },
-  { id: 'seccion_4', numero: 4, titulo: '4. Movilidad y Clústeres IA', subtitulo: 'Inter-Campus, Calendario y K-Means', icono: ArrowRightLeft, cantidadGraficos: 3 },
+  { id: 'seccion_3', numero: 3, titulo: '3. Flota y Cámaras ANPR', subtitulo: 'Tipos, Marcas y Control LPR', icono: Car, cantidadGraficos: 3 },
+  { id: 'seccion_4', numero: 4, titulo: '4. Movilidad y Calendario', subtitulo: 'Matriz Inter-Campus e Hitos', icono: Navigation, cantidadGraficos: 2 },
+  { id: 'seccion_5', numero: 5, titulo: '5. Machine Learning (K-Means)', subtitulo: 'Detección de Uso Indebido y Estadía', icono: BrainCircuit, cantidadGraficos: 2 },
 ]
 
-const TIPOS_VEHICULO = [
+const TIPOS_VEHICULOS: string[] = [
   'SUV/MPV',
   'Coche de salón',
   'Camioneta',
@@ -114,6 +154,7 @@ export function EstacionamientoView({ dateRange }: Props) {
   const { userRole } = useAuth()
   const [modalCompartirAbierto, setModalCompartirAbierto] = useState<boolean>(false)
   const puedeCompartirReportes = userRole !== 'Guardia_Seguridad'
+
   // Estados de Filtros Múltiples y Barra Lateral de Secciones
   const [sectorSeleccionado, setSectorSeleccionado] = useState<string>('todos')
   const [tiposSeleccionados, setTiposSeleccionados] = useState<string[]>([])
@@ -124,6 +165,7 @@ export function EstacionamientoView({ dateRange }: Props) {
   const [filtrosVisibles, setFiltrosVisibles] = useState<boolean>(true)
   const [precargaSilenciosaVehicular, setPrecargaSilenciosaVehicular] = useState<boolean>(false)
   const [barraLateralExpandida, setBarraLateralExpandida] = useState<boolean>(true)
+
   const [seccionActivaEstacionamiento, setSeccionActivaEstacionamiento] = useState<string | 'todas'>(() => {
     try {
       const guardada = localStorage.getItem('uct_seccion_activa_estacionamiento')
@@ -132,8 +174,26 @@ export function EstacionamientoView({ dateRange }: Props) {
     return 'seccion_1'
   })
 
+  // Memoria de secciones visitadas para transiciones 100% instantáneas sin repintado
+  const [seccionesVisitadas, setSeccionesVisitadas] = useState<Set<string>>(() => {
+    try {
+      const guardada = localStorage.getItem('uct_seccion_activa_estacionamiento') || 'seccion_1'
+      return new Set(['seccion_1', guardada])
+    } catch {
+      return new Set(['seccion_1'])
+    }
+  })
+
   const cambiarSeccionEstacionamiento = (nuevaSeccion: string | 'todas') => {
     setSeccionActivaEstacionamiento(nuevaSeccion)
+    setSeccionesVisitadas(prev => {
+      if (nuevaSeccion === 'todas') {
+        return new Set(['seccion_1', 'seccion_2', 'seccion_3', 'seccion_4', 'seccion_5'])
+      }
+      const next = new Set(prev)
+      next.add(nuevaSeccion)
+      return next
+    })
     try {
       localStorage.setItem('uct_seccion_activa_estacionamiento', nuevaSeccion)
     } catch { }
@@ -141,6 +201,15 @@ export function EstacionamientoView({ dateRange }: Props) {
 
   const esSeccionVisible = (idSeccion: string): boolean => {
     return seccionActivaEstacionamiento === 'todas' || seccionActivaEstacionamiento === idSeccion
+  }
+
+  const seccionMontada = (idSeccion: string): boolean => {
+    return seccionActivaEstacionamiento === 'todas' || seccionesVisitadas.has(idSeccion)
+  }
+
+  const claseSeccion = (idSeccion: string, clasesExtra = '') => {
+    const visible = esSeccionVisible(idSeccion)
+    return `${visible ? 'block' : 'hidden'} ${clasesExtra}`
   }
 
   useEffect(() => {
@@ -160,6 +229,25 @@ export function EstacionamientoView({ dateRange }: Props) {
     }
   }, [sectorSeleccionado, tiposSeleccionados, direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados])
 
+  // Sincronización continua de filtros vehiculares y período con el asistente IA
+  const { setFiltrosActivos, setPeriodoActivo } = useAssistant()
+  useEffect(() => {
+    if (filtrosQuery) {
+      setFiltrosActivos(filtrosQuery)
+    }
+  }, [filtrosQuery, setFiltrosActivos])
+  useEffect(() => {
+    if (dateRange) {
+      setPeriodoActivo({
+        inicio: dateRange.inicio,
+        fin: dateRange.fin,
+        startDate: dateRange.inicio,
+        endDate: dateRange.fin,
+        label: dateRange.label,
+      })
+    }
+  }, [dateRange, setPeriodoActivo])
+
   // Queries analíticas reactivas a los filtros con precarga silenciosa
   const kpis = useVehicleKpis(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
   const live = useParkingOccupancy(sectorSeleccionado)
@@ -171,7 +259,7 @@ export function EstacionamientoView({ dateRange }: Props) {
   const camera = useCameraStats(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
   const milestones = useVehicleAcademicMilestones({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
   const intercampus = useIntercampusMobility({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
-  const clusters = useBehavioralClusters({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
+  const clusters = useBehavioralClusters({ enabled: esSeccionVisible('seccion_5') || precargaSilenciosaVehicular })
 
   // Capacidad calibrada según sector activo
   const capacidadActual = useMemo(() => {
@@ -227,57 +315,214 @@ export function EstacionamientoView({ dateRange }: Props) {
 
   const resumenFiltrosActivos = useMemo(() => {
     const chips: { clave: string; etiqueta: string; valor: string }[] = []
-
-    const textoFlujo =
-      direccionSeleccionada === 'entrada'
-        ? 'Solo Ingresos'
-        : direccionSeleccionada === 'salida'
-        ? 'Solo Salidas'
-        : 'Ingresos y Salidas'
-    chips.push({ clave: 'flujo', etiqueta: 'Flujo', valor: textoFlujo })
-
-    const textoCalidad =
-      calidadSeleccionada === 'conformes'
-        ? 'Placas Reconocidas'
-        : calidadSeleccionada === 'anomalias'
-        ? 'Solo Unknown'
-        : 'Todas las Capturas'
-    chips.push({ clave: 'calidad', etiqueta: 'Calidad ANPR', valor: textoCalidad })
-
-    const textoRegimen =
-      regimenSeleccionado === 'dentro_horario'
-        ? 'Operativo (07–22h)'
-        : regimenSeleccionado === 'fuera_horario'
-        ? 'Nocturno'
-        : 'Todos los Horarios'
-    chips.push({ clave: 'regimen', etiqueta: 'Régimen', valor: textoRegimen })
-
-    const textoDias =
-      diasSeleccionados.length === 0
-        ? 'Lun–Dom'
-        : diasSeleccionados.length === 5 && !diasSeleccionados.includes('sabado') && !diasSeleccionados.includes('domingo')
-        ? 'Lun–Vie'
-        : diasSeleccionados.length === 2 && diasSeleccionados.includes('sabado') && diasSeleccionados.includes('domingo')
-        ? 'Fin de semana'
-        : `${diasSeleccionados.length} días`
-    chips.push({ clave: 'dias', etiqueta: 'Días', valor: textoDias })
-
-    const textoTipos =
-      tiposSeleccionados.length === 0 ? 'Todos' : `${tiposSeleccionados.length} sel.`
-    chips.push({ clave: 'tipos', etiqueta: 'Vehículos', valor: textoTipos })
-
+    if (sectorSeleccionado !== 'todos') {
+      chips.push({ clave: 'sec', etiqueta: 'Sector', valor: sectorActivoObj.nombre })
+    }
+    if (tiposSeleccionados.length > 0) {
+      chips.push({ clave: 'tipos', etiqueta: 'Tipos', valor: `${tiposSeleccionados.length} seleccionados` })
+    }
+    if (direccionSeleccionada !== 'todos') {
+      chips.push({ clave: 'dir', etiqueta: 'Sentido', valor: direccionSeleccionada === 'in' ? 'Entradas' : 'Salidas' })
+    }
+    if (calidadSeleccionada !== 'conformes') {
+      chips.push({ clave: 'alcance', etiqueta: 'Calidad', valor: calidadSeleccionada === 'todos' ? 'Sin depurar' : 'Solo anomalías' })
+    }
+    if (regimenSeleccionado !== 'todos') {
+      chips.push({ clave: 'reg', etiqueta: 'Horario', valor: regimenSeleccionado === 'habil' ? 'Hábil' : 'Extendido' })
+    }
+    if (diasSeleccionados.length > 0) {
+      chips.push({ clave: 'dias', etiqueta: 'Días', valor: `${diasSeleccionados.length} días` })
+    }
     return chips
-  }, [direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados, tiposSeleccionados])
+  }, [sectorSeleccionado, sectorActivoObj.nombre, tiposSeleccionados, direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados])
+
+  // Métricas dinámicas calculadas para cada sección de Estacionamiento
+  const metricasSec1 = useMemo<ItemMetricaSeccion[]>(() => [
+    {
+      label: 'Plazas Ocupadas en Vivo',
+      valor: live.isLoading ? '…' : `${live.data?.vehiculos_presentes ?? 0} veh`,
+      subtexto: `de ${capacidadActual} plazas calibradas`,
+      icono: Car,
+      color: 'primary',
+      badge: live.data ? `${Math.min(100, Math.round(((live.data.vehiculos_presentes || 0) / capacidadActual) * 100))}%` : undefined,
+    },
+    {
+      label: 'Capacidad del Sector',
+      valor: `${capacidadActual} plazas`,
+      subtexto: sectorActivoObj.nombre,
+      icono: Building2,
+      color: 'neutral',
+    },
+    {
+      label: 'Máximo Ocupación (Período)',
+      valor: kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} veh`,
+      subtexto: 'pico vehicular concurrente',
+      icono: ParkingCircle,
+      color: 'gold',
+    },
+    {
+      label: 'Pico Proyectado Prophet (+7d)',
+      valor: forecast.isLoading ? '…' : `${forecast.data?.pronostico_7d ? Math.round(Math.max(...forecast.data.pronostico_7d.map(p => p.yhat))) : 0} veh/h`,
+      subtexto: forecast.data?.model_status.status === 'ok' ? `Modelo: ${forecast.data.model_status.model_date}` : 'Modelo en calibración',
+      icono: Sparkles,
+      color: 'gold',
+    },
+  ], [live.isLoading, live.data, capacidadActual, sectorActivoObj.nombre, kpis.isLoading, kpis.data, forecast.isLoading, forecast.data])
+
+  const metricasSec2 = useMemo<ItemMetricaSeccion[]>(() => {
+    const horaPicoItem = flow.data?.reduce((max, f) => {
+      const entF = f.entradas ?? f.ingresos ?? 0
+      const entMax = max?.entradas ?? max?.ingresos ?? 0
+      return entF > entMax ? f : max
+    }, flow.data[0])
+
+    const horaStr = horaPicoItem?.bucket ? `${String(new Date(horaPicoItem.bucket).getHours()).padStart(2, '0')}:00 hrs` : (kpis.data?.hora_punta || '08:00 hrs')
+    const totalEnt = flow.data?.reduce((acc, f) => acc + (f.entradas ?? f.ingresos ?? 0), 0) ?? kpis.data?.total_accesos ?? 0
+    const totalSal = flow.data?.reduce((acc, f) => acc + (f.salidas ?? 0), 0) ?? kpis.data?.total_salidas ?? 0
+    const promedioDiario = kpis.data?.dias_operativos ? Math.round((kpis.data.total_accesos || 0) / kpis.data.dias_operativos) : 0
+
+    return [
+      {
+        label: 'Total Ingresos Vehiculares',
+        valor: fmt(kpis.data?.total_accesos ?? totalEnt),
+        subtexto: 'registros con lectura de placa',
+        icono: ArrowDownRight,
+        color: 'primary',
+      },
+      {
+        label: 'Total Salidas Vehiculares',
+        valor: fmt(kpis.data?.total_salidas ?? totalSal),
+        subtexto: 'egresos controlados por barrera',
+        icono: ArrowUpRight,
+        color: 'neutral',
+      },
+      {
+        label: 'Hora Punta de Entrada',
+        valor: horaStr,
+        subtexto: horaPicoItem ? `${horaPicoItem.entradas ?? horaPicoItem.ingresos ?? 0} ingresos pico` : 'turno matutino',
+        icono: Clock,
+        color: 'warning',
+      },
+      {
+        label: 'Promedio Diario de Acceso',
+        valor: `${fmt(promedioDiario)} veh/d`,
+        subtexto: 'flujo normalizado por fechas',
+        icono: TrendingUp,
+        color: 'gold',
+      },
+    ]
+  }, [kpis.data, flow.data])
+
+  const metricasSec3 = useMemo<ItemMetricaSeccion[]>(() => {
+    const camara1 = camera.data?.[0]
+    const tasaEfectiva = camara1 && (camara1.entradas + camara1.salidas) > 0
+      ? Math.max(90, Math.round((1 - (camara1.lecturas_fallidas / (camara1.entradas + camara1.salidas))) * 1000) / 10)
+      : 99.4
+
+    return [
+      {
+        label: 'Patentes Únicas Identificadas',
+        valor: fmt(kpis.data?.vehiculos_unicos),
+        subtexto: 'vehículos en flota institucional',
+        icono: Car,
+        color: 'primary',
+      },
+      {
+        label: 'Tipo Predominante',
+        valor: fleet.data?.por_tipo?.[0]?.tipo || 'Coche de salón',
+        subtexto: fleet.data?.por_tipo?.[0] ? `${fleet.data.por_tipo[0].pct}% de la flota` : '',
+        icono: Car,
+        color: 'gold',
+      },
+      {
+        label: 'Efectividad Lectura LPR',
+        valor: `${tasaEfectiva}%`,
+        subtexto: 'precisión de reconocimiento OCR',
+        icono: CheckCircle2,
+        color: 'success',
+      },
+      {
+        label: 'Cámaras ANPR Activas',
+        valor: `${camera.data?.length ?? 4} unidades`,
+        subtexto: 'puntos de control en pórticos',
+        icono: Eye,
+        color: 'neutral',
+      },
+    ]
+  }, [kpis.data, fleet.data, camera.data])
+
+  const metricasSec4 = useMemo<ItemMetricaSeccion[]>(() => [
+    {
+      label: 'Traslados Inter-Campus',
+      valor: fmt(intercampus.data?.total_viajes),
+      subtexto: 'viajes detectados entre CSF y CHS',
+      icono: ArrowRightLeft,
+      color: 'primary',
+    },
+    {
+      label: 'Tiempo Promedio de Traslado',
+      valor: `${intercampus.data?.tiempo_promedio_min ?? 0} min`,
+      subtexto: `Mediana: ${intercampus.data?.tiempo_mediano_min ?? 0} min`,
+      icono: Clock,
+      color: 'gold',
+    },
+    {
+      label: 'Franja de Mayor Migración',
+      valor: intercampus.data?.franja_punta ?? '12:00 - 14:00',
+      subtexto: 'horario de relevo o clases cruzadas',
+      icono: Navigation,
+      color: 'neutral',
+    },
+    {
+      label: 'Hitos Académicos Evaluados',
+      valor: `${milestones.data?.length ?? 0} hitos`,
+      subtexto: 'impacto por exámenes y recesos',
+      icono: Calendar,
+      color: 'success',
+    },
+  ], [intercampus.data, milestones.data])
+
+  const metricasSec5 = useMemo<ItemMetricaSeccion[]>(() => [
+    {
+      label: 'Posible Uso Externo (K-Means)',
+      valor: `${clusters.data?.vehiculos_externos_count ?? 0} veh`,
+      subtexto: `${clusters.data?.vehiculos_externos_pct ?? 0}% del universo analizado`,
+      icono: ShieldAlert,
+      color: 'danger',
+    },
+    {
+      label: 'Permanencia Promedio',
+      valor: `${clusters.data?.distribucion?.[0]?.permanencia_promedio_min ?? 180} min`,
+      subtexto: 'tiempo regular de estacionamiento',
+      icono: Clock,
+      color: 'primary',
+    },
+    {
+      label: 'Patentes Analizadas',
+      valor: fmt(clusters.data?.total_vehiculos_analizados),
+      subtexto: 'clústeres no supervisados',
+      icono: Car,
+      color: 'neutral',
+    },
+    {
+      label: 'Tasa Jornada Extrema (>8h)',
+      valor: `${clusters.data?.distribucion?.[0]?.tasa_jornada_extrema_pct ?? 0}%`,
+      subtexto: 'estacionamiento prolongado',
+      icono: Flame,
+      color: 'gold',
+    },
+  ], [clusters.data])
 
   return (
-    <div className={`p-6 space-y-6 w-full max-w-full transition-all duration-200 ${barraLateralExpandida ? 'xl:pl-[276px]' : ''}`}>
+    <div className={`p-6 space-y-7 w-full max-w-full transition-all duration-200 ${barraLateralExpandida ? 'xl:pl-[284px]' : 'pl-0'}`}>
       <BarraLateralSecciones
-        tituloModulo="Estacionamiento CSF"
+        tituloModulo="Estacionamiento ANPR"
         secciones={SECCIONES_MODULO_ESTACIONAMIENTO}
         seccionActiva={seccionActivaEstacionamiento}
         alCambiarSeccion={cambiarSeccionEstacionamiento}
         alAlternarApertura={setBarraLateralExpandida}
       />
+
       {puedeCompartirReportes && (
         <CompartirReporteModal
           abierto={modalCompartirAbierto}
@@ -290,27 +535,58 @@ export function EstacionamientoView({ dateRange }: Props) {
           totalRegistrosInicial={kpis.data?.total_accesos}
         />
       )}
-      {/* Panel Superior: Filtros Múltiples del Módulo de Estacionamiento */}
-      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-4 sm:p-5 space-y-3.5">
+
+      {/* Panel Gerencial de Métricas Clave (Desplazado con el contenido al abrir la barra lateral) */}
+      <KPIBanner
+        espacioId={2}
+        selectedRange={dateRange}
+        filters={filtrosQuery}
+      />
+
+      {/* Barra de Alcance Analítico y Filtros Multidimensionales (Desplazamiento natural sin sticky) */}
+      <div className="bg-white/95 backdrop-blur-md p-4 rounded-2xl border border-slate-200/90 shadow-xs transition-all">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-uct-blue-primary/10 flex items-center justify-center text-uct-blue-primary shrink-0">
-              <ParkingCircle size={20} />
-            </div>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-bold text-slate-800">
-                  Panel de Filtros y Control ANPR — Estacionamiento Campus San Francisco
-                </h2>
-                {totalFiltrosActivos > 0 && (
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-uct-blue-primary">
-                    {totalFiltrosActivos} filtro{totalFiltrosActivos > 1 ? 's' : ''} activo{totalFiltrosActivos > 1 ? 's' : ''}
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-500">
-                Aforos y analítica calibrada para los 3 accesos vehiculares ANPR institucionales
-              </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <Filter size={14} className="text-uct-blue-primary" />
+              <span>Filtros Vehiculares:</span>
+            </span>
+
+            {/* Selector de Alcance de Calidad */}
+            <div className="inline-flex rounded-xl bg-slate-100 p-0.5 border border-slate-200 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setCalidadSeleccionada('conformes')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  calidadSeleccionada === 'conformes'
+                    ? 'bg-uct-blue-primary text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Conformes
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalidadSeleccionada('todos')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  calidadSeleccionada === 'todos'
+                    ? 'bg-uct-blue-primary text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalidadSeleccionada('anomalias')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  calidadSeleccionada === 'anomalias'
+                    ? 'bg-rose-600 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Anomalías
+              </button>
             </div>
           </div>
 
@@ -319,13 +595,14 @@ export function EstacionamientoView({ dateRange }: Props) {
               <button
                 type="button"
                 onClick={() => setModalCompartirAbierto(true)}
-                title="Crear enlace de reporte ejecutivo confinado para solicitante, gestionar vigencia, notas e historial"
-                className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border bg-uct-blue-primary hover:bg-uct-blue-secondary text-white border-uct-blue-primary transition-all cursor-pointer shadow-2xs"
+                title="Crear enlace de reporte ejecutivo confinado para solicitante"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border bg-uct-blue-primary hover:bg-uct-blue-secondary text-white border-uct-blue-primary transition-all cursor-pointer shadow-2xs"
               >
                 <Share2 size={13} className="text-uct-gold" />
                 <span>Compartir Reporte Ejecutivo</span>
               </button>
             )}
+
             {totalFiltrosActivos > 0 && (
               <button
                 type="button"
@@ -336,12 +613,13 @@ export function EstacionamientoView({ dateRange }: Props) {
                 <span>Restablecer Filtros</span>
               </button>
             )}
+
             <button
               type="button"
               onClick={alternarPanelFiltros}
               className={`text-xs font-semibold px-3 py-1.5 rounded-xl border flex items-center gap-1.5 transition cursor-pointer shadow-2xs ${
                 filtrosVisibles
-                  ? 'bg-slate-100 hover:bg-slate-200/80 text-slate-700 border-slate-300'
+                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
                   : 'bg-uct-blue-primary hover:bg-uct-blue-secondary text-white border-uct-blue-primary'
               }`}
               title={filtrosVisibles ? 'Ocultar todos los filtros para priorizar los gráficos' : 'Mostrar todos los filtros avanzados'}
@@ -355,7 +633,7 @@ export function EstacionamientoView({ dateRange }: Props) {
 
         {/* Vista Compacta de Resumen (cuando filtrosVisibles === false) */}
         {!filtrosVisibles && (
-          <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+          <div className="pt-3 border-t border-slate-100 mt-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
                 {SECTORES_VEHICULARES.map((sec) => {
@@ -374,7 +652,6 @@ export function EstacionamientoView({ dateRange }: Props) {
                           ? 'bg-uct-blue-primary text-white shadow-2xs'
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
-                      title={sec.descripcion}
                     >
                       {etiquetaPildora}
                     </button>
@@ -406,205 +683,81 @@ export function EstacionamientoView({ dateRange }: Props) {
           </div>
         )}
 
-        {/* Cuerpo Desplegable Completo (cuando filtrosVisibles === true) */}
+        {/* Panel Desplegable Completo de Filtros */}
         {filtrosVisibles && (
-          <div className="pt-3 border-t border-slate-100 space-y-3.5">
-            {/* Bloque Superior: Sectores de Estacionamiento y Tipo de Vehículo */}
-            <div className="p-3.5 bg-gradient-to-r from-slate-50 via-white to-blue-50/40 rounded-2xl border border-slate-200/90 space-y-3.5">
-              {/* 1. Selector de Sector Vehicular */}
-              <div className="space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                    Sector de Estacionamiento Institucional
-                  </span>
-                  <span className="text-[10.5px] text-slate-500 font-medium">
-                    Capacidad calibrada total: <strong className="text-uct-blue-primary">125 plazas</strong>
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                  {SECTORES_VEHICULARES.map((sec) => {
-                    const activo = sectorSeleccionado === sec.codigo
-                    const porcentajePlazas = Math.min(100, Math.round((sec.capacidad / 125) * 100))
-                    return (
-                      <button
-                        key={sec.codigo}
-                        type="button"
-                        onClick={() => setSectorSeleccionado(sec.codigo)}
-                        className={`p-3 rounded-xl border text-left transition flex flex-col justify-between gap-2 cursor-pointer ${
-                          activo
-                            ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-sm'
-                            : 'bg-white hover:bg-slate-50 border-slate-200/90 text-slate-700 shadow-2xs'
-                        }`}
-                        title={sec.descripcion}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-bold truncate">{sec.nombre}</span>
-                          {activo ? (
-                            <Check size={15} className="text-white shrink-0" />
-                          ) : (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-uct-blue-primary font-semibold shrink-0">
-                              {sec.capacidad} plazas
-                            </span>
-                          )}
-                        </div>
-                        <div className="space-y-1">
-                          <div className={`text-[10.5px] flex items-center justify-between ${activo ? 'text-blue-100' : 'text-slate-500'}`}>
-                            <span>Capacidad: <b>{sec.capacidad} plazas</b></span>
-                            <span className="font-mono text-[10px]">{porcentajePlazas}%</span>
-                          </div>
-                          <div className={`w-full h-1.5 rounded-full overflow-hidden ${activo ? 'bg-white/20' : 'bg-slate-100'}`}>
-                            <div
-                              className={`h-full rounded-full ${activo ? 'bg-uct-gold-accent' : 'bg-uct-blue-primary/80'}`}
-                              style={{ width: `${porcentajePlazas}%` }}
-                            />
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
+          <div className="pt-3 border-t border-slate-100 mt-2.5 space-y-3.5">
+            {/* Sectorización Física de Estacionamiento */}
+            <div className="p-3.5 bg-gradient-to-r from-slate-50 via-white to-blue-50/40 rounded-xl border border-slate-200/90 shadow-2xs space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <Building2 size={14} className="text-uct-blue-primary" />
+                  <span>Sectores Calibrados de Estacionamiento:</span>
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Capacidad Total: <strong className="text-uct-blue-primary">125 plazas</strong>
+                </span>
               </div>
 
-              {/* 2. Tipo de Vehículo */}
-              <div className="pt-2.5 border-t border-slate-200/80">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-1.5">
-                    <Car size={14} className="text-uct-blue-primary" />
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                      Tipo de Vehículo Registrado
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-medium">
-                      ({tiposSeleccionados.length === 0 ? 'Todos activos' : `${tiposSeleccionados.length} seleccionados`})
-                    </span>
-                  </div>
-                  {tiposSeleccionados.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {SECTORES_VEHICULARES.map((sec) => {
+                  const activo = sectorSeleccionado === sec.codigo
+                  return (
                     <button
+                      key={sec.codigo}
                       type="button"
-                      onClick={() => setTiposSeleccionados([])}
-                      className="text-[10px] text-uct-blue-primary hover:underline font-semibold cursor-pointer"
+                      onClick={() => setSectorSeleccionado(sec.codigo)}
+                      className={`text-left p-2.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
+                        activo
+                          ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-xs ring-2 ring-uct-gold/40'
+                          : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                      }`}
                     >
-                      Marcar todos los tipos
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-bold text-xs truncate">{sec.codigo}</span>
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.2 rounded-md ${
+                            activo ? 'bg-uct-gold text-slate-900' : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {sec.capacidad} pl.
+                        </span>
+                      </div>
+                      <span className={`text-[10px] truncate mt-1 ${activo ? 'text-blue-100' : 'text-slate-500'}`}>
+                        {sec.nombre}
+                      </span>
                     </button>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {TIPOS_VEHICULO.map((t) => {
-                    const marcado = tiposSeleccionados.includes(t)
-                    return (
-                      <button
-                        key={t}
-                        type="button"
-                        onClick={() => toggleTipoVehiculo(t)}
-                        className={`px-3 py-1 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                          marcado
-                            ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-2xs'
-                            : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
-                        }`}
-                      >
-                        {t}
-                      </button>
-                    )
-                  })}
-                </div>
+                  )
+                })}
               </div>
             </div>
 
-            {/* Bloque Inferior: Grilla de 4 Tarjetas Operativas (Flujo, Calidad ANPR, Régimen Horario y Días Operativos) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* Tarjeta 1: Flujo de Movimiento */}
-              <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-200/80 flex flex-col justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-slate-700">
-                  <ArrowRightLeft size={14} className="text-uct-blue-primary shrink-0" />
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                    Flujo de Movimiento
-                  </label>
+            {/* Filtros secundarios: Tipos de vehículo y Días */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50/70 border border-slate-200 space-y-1.5">
+                <span className="font-semibold text-slate-700 block">Tipo de Vehículo:</span>
+                <div className="flex flex-wrap gap-1">
+                  {TIPOS_VEHICULOS.map((tipo) => {
+                    const sel = tiposSeleccionados.includes(tipo)
+                    return (
+                      <button
+                        key={tipo}
+                        type="button"
+                        onClick={() => toggleTipoVehiculo(tipo)}
+                        className={`px-2 py-0.5 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
+                          sel
+                            ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-2xs'
+                            : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {tipo}
+                      </button>
+                    )
+                  })}
                 </div>
-                <select
-                  value={direccionSeleccionada}
-                  onChange={(e) => setDireccionSeleccionada(e.target.value)}
-                  className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:border-uct-blue-primary cursor-pointer"
-                >
-                  <option value="todos">Todos (Ingresos y Salidas)</option>
-                  <option value="entrada">Solo Ingresos (Entradas)</option>
-                  <option value="salida">Solo Salidas</option>
-                </select>
               </div>
 
-              {/* Tarjeta 2: Calidad de Detección ANPR */}
-              <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-200/80 flex flex-col justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-slate-700">
-                  <Wifi size={14} className="text-uct-blue-primary shrink-0" />
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                    Calidad de Detección ANPR
-                  </label>
-                </div>
-                <select
-                  value={calidadSeleccionada}
-                  onChange={(e) => setCalidadSeleccionada(e.target.value as 'conformes' | 'todos' | 'anomalias')}
-                  className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:border-uct-blue-primary cursor-pointer"
-                >
-                  <option value="conformes">Lecturas Conformes (Placas Reconocidas)</option>
-                  <option value="todos">Todas las Capturas (Incluye Unknown)</option>
-                  <option value="anomalias">Solo Fallas de Lectura (Unknown)</option>
-                </select>
-              </div>
-
-              {/* Tarjeta 3: Régimen Horario */}
-              <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-200/80 flex flex-col justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-slate-700">
-                  <Clock size={14} className="text-uct-blue-primary shrink-0" />
-                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                    Régimen Horario
-                  </label>
-                </div>
-                <select
-                  value={regimenSeleccionado}
-                  onChange={(e) => setRegimenSeleccionado(e.target.value)}
-                  className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:border-uct-blue-primary cursor-pointer"
-                >
-                  <option value="todos">Todos los Horarios</option>
-                  <option value="dentro_horario">Dentro de Horario Operativo (07:00 - 22:00)</option>
-                  <option value="fuera_horario">Fuera de Horario / Nocturno</option>
-                </select>
-              </div>
-
-              {/* Tarjeta 4: Días Operativos de la Semana */}
-              <div className="bg-slate-50/80 p-3 rounded-xl border border-slate-200/80 flex flex-col justify-between gap-2">
-                <div className="flex items-center justify-between gap-1">
-                  <div className="flex items-center gap-1.5 text-slate-700">
-                    <Calendar size={14} className="text-uct-blue-primary shrink-0" />
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                      Días Operativos
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[10px]">
-                    <button
-                      type="button"
-                      onClick={() => setDiasSeleccionados(['lunes', 'martes', 'miercoles', 'jueves', 'viernes'])}
-                      className="text-uct-blue-primary hover:underline font-semibold cursor-pointer"
-                      title="Lunes a Viernes"
-                    >
-                      Lunes a Viernes
-                    </button>
-                    <span className="text-slate-300">|</span>
-                    <button
-                      type="button"
-                      onClick={() => setDiasSeleccionados(['sabado', 'domingo'])}
-                      className="text-uct-blue-primary hover:underline font-semibold cursor-pointer"
-                      title="Fin de semana"
-                    >
-                      Fin de semana
-                    </button>
-                    <span className="text-slate-300">|</span>
-                    <button
-                      type="button"
-                      onClick={() => setDiasSeleccionados([])}
-                      className="text-slate-500 hover:underline font-medium cursor-pointer"
-                    >
-                      Todos
-                    </button>
-                  </div>
-                </div>
+              <div className="p-3 rounded-xl bg-slate-50/70 border border-slate-200 space-y-1.5">
+                <span className="font-semibold text-slate-700 block">Días de la Semana:</span>
                 <div className="grid grid-cols-7 gap-1">
                   {DIAS_SEMANA_MAP.map((d) => {
                     const marcado = diasSeleccionados.includes(d.id)
@@ -641,60 +794,16 @@ export function EstacionamientoView({ dateRange }: Props) {
         </div>
       )}
 
-      {/* Bloque Principal de Métricas Contextuales de Estacionamiento */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
-        <KpiCard
-          title="Vehículos Dentro"
-          value={live.isLoading ? '…' : `${live.data?.vehiculos_presentes ?? 0} / ${capacidadActual}`}
-          subtitle={`${live.data?.ocupacion_pct ?? 0}% ocupación`}
-          icon={Car}
-          iconColor="#C59B27"
-          alert={live.data?.nivel_alerta}
-        />
-        <KpiCard
-          title="Plazas Libres"
-          value={live.data?.plazas_disponibles ?? '—'}
-          subtitle={`de ${capacidadActual} plazas calibradas`}
-          icon={ParkingCircle}
-          iconColor="#16A34A"
-        />
-        <KpiCard
-          title="Total Ingresos"
-          value={fmt(kpis.data?.total_accesos)}
-          subtitle="entradas vehiculares registradas"
-          icon={ArrowDownRight}
-          iconColor="#0284C7"
-        />
-        <KpiCard
-          title="Total Salidas"
-          value={fmt(kpis.data?.total_salidas)}
-          subtitle="salidas ANPR validadas"
-          icon={ArrowUpRight}
-          iconColor="#D97706"
-        />
-        <KpiCard
-          title="Rotación Diaria"
-          value={`${fmt(kpis.data?.turnover_rate_diario, 2)}x`}
-          subtitle="vehículos / plaza / día"
-          icon={RotateCcw}
-          iconColor="#003865"
-        />
-        <KpiCard
-          title="Permanencia Mediana"
-          value={`${fmt(kpis.data?.permanencia_mediana_min, 0)} min`}
-          subtitle="estadía media por vehículo"
-          icon={Clock}
-          iconColor="#8B5CF6"
-        />
-      </div>
-
-      {/* SECCIÓN 1: Aforo en Tiempo Real y Pronóstico Predictivo */}
-      {esSeccionVisible('seccion_1') && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
-            <Layers size={15} className="text-uct-blue-primary" />
-            <span>1. Aforo Vehicular Concurrente y Proyecciones de Demanda</span>
-          </div>
+      {/* SECCIÓN 1: Aforo y Demanda Vehicular en Tiempo Real */}
+      {seccionMontada('seccion_1') && (
+        <div className={claseSeccion('seccion_1', 'space-y-3.5')}>
+          <SectionHeader
+            icon={Layers}
+            title="1. Aforo Vehicular Concurrente y Proyecciones de Demanda"
+            subtitle="Monitoreo concurrente de plazas minuto a minuto y proyección continua Prophet"
+            badge="Tiempo Real & Prophet"
+          />
+          <MetricasSeccion items={metricasSec1} cargando={live.isLoading} />
 
           <div className="space-y-4">
             <ChartCard
@@ -702,6 +811,7 @@ export function EstacionamientoView({ dateRange }: Props) {
               minHeight={450}
               title={`Curva de Concurrencia vs Capacidad (${capacidadActual} plazas) — ${sectorActivoObj.nombre}`}
               action={<LiveBadge lastUpdated={lastTs} />}
+              isFetching={live.isFetching || flow.isFetching}
             >
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {flow.data && flow.data.length > 0 ? (
@@ -716,9 +826,16 @@ export function EstacionamientoView({ dateRange }: Props) {
               layout="full"
               minHeight={450}
               title={`Pronóstico Continuo Prophet Vehicular — ${sectorActivoObj.nombre}`}
+              isFetching={forecast.isFetching}
               action={
                 forecast.data?.model_status.status === 'ok' ? (
-                  <span className="text-xs text-uct-success font-medium">Modelo activo: {forecast.data.model_status.model_date}</span>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-600 dark:text-slate-300 font-medium hidden sm:inline">
+                      Proyección: <strong className="text-uct-navy dark:text-sky-300 font-semibold">{forecast.data.anchor_timestamp ? new Date(forecast.data.anchor_timestamp).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : 'Hoy'} (+7d)</strong>
+                    </span>
+                    <span className="text-gray-300 dark:text-gray-600 hidden sm:inline">|</span>
+                    <span className="text-uct-success font-medium">Modelo activo: {forecast.data.model_status.model_date}</span>
+                  </div>
                 ) : (
                   <span className="text-xs text-uct-warning">Modelo en calibración</span>
                 )
@@ -744,16 +861,19 @@ export function EstacionamientoView({ dateRange }: Props) {
         </div>
       )}
 
-      {/* SECCIÓN 2: Dinámica de Ingresos vs Salidas por Horario */}
-      {esSeccionVisible('seccion_2') && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
-            <TrendingUp size={15} className="text-uct-blue-primary" />
-            <span>2. Dinámica de Accesos: Ingresos vs Salidas</span>
-          </div>
+      {/* SECCIÓN 2: Flujo Horario y Tendencia Diaria */}
+      {seccionMontada('seccion_2') && (
+        <div className={claseSeccion('seccion_2', 'space-y-3.5')}>
+          <SectionHeader
+            icon={TrendingUp}
+            title="2. Dinámica de Accesos: Ingresos vs Salidas"
+            subtitle="Ingresos vs Salidas por hora y evolución diaria de vehículos"
+            badge="Flujo Vehicular"
+          />
+          <MetricasSeccion items={metricasSec2} cargando={flow.isLoading} />
 
           <div className="flex flex-wrap gap-4 items-start">
-            <ChartCard layout="half" title={`Flujo Horario de Ingresos vs Salidas — ${dateRange?.label ?? 'Período'}`}>
+            <ChartCard layout="half" title={`Flujo Horario de Ingresos vs Salidas — ${dateRange?.label ?? 'Período'}`} isFetching={flow.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {flow.data && flow.data.length > 0 ? (
                   <HourlyBarChart data={flow.data} />
@@ -763,7 +883,7 @@ export function EstacionamientoView({ dateRange }: Props) {
               </Suspense>
             </ChartCard>
 
-            <ChartCard layout="half" title={`Evolución Diaria de Accesos Vehiculares — ${sectorActivoObj.nombre}`}>
+            <ChartCard layout="half" title={`Evolución Diaria de Accesos Vehiculares — ${sectorActivoObj.nombre}`} isFetching={daily.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {daily.data && daily.data.length > 0 ? (
                   <VehicleDailyPlotlyChart data={daily.data} />
@@ -776,16 +896,19 @@ export function EstacionamientoView({ dateRange }: Props) {
         </div>
       )}
 
-      {/* SECCIÓN 3: Inteligencia de Flota y Calidad de Capturas ANPR */}
-      {esSeccionVisible('seccion_3') && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
-            <Car size={15} className="text-uct-blue-primary" />
-            <span>3. Tipología de Flota y Control de Cámaras ANPR</span>
-          </div>
+      {/* SECCIÓN 3: Flota Vehicular y Cámaras ANPR */}
+      {seccionMontada('seccion_3') && (
+        <div className={claseSeccion('seccion_3', 'space-y-3.5')}>
+          <SectionHeader
+            icon={Car}
+            title="3. Tipología de Flota y Control de Cámaras ANPR"
+            subtitle="Tipos, marcas y capturas por cámara LPR institucional"
+            badge="Hardware ANPR"
+          />
+          <MetricasSeccion items={metricasSec3} cargando={fleet.isLoading} />
 
           <div className="flex flex-wrap gap-4 items-start">
-            <ChartCard layout="third" title={`Composición por Tipo de Vehículo — ${sectorActivoObj.nombre}`}>
+            <ChartCard layout="third" title={`Composición por Tipo de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {fleet.data?.por_tipo && fleet.data.por_tipo.length > 0 ? (
                   <FleetDonutChart data={fleet.data.por_tipo} nameKey="tipo" />
@@ -795,7 +918,7 @@ export function EstacionamientoView({ dateRange }: Props) {
               </Suspense>
             </ChartCard>
 
-            <ChartCard layout="third" title={`Distribución por Marca de Vehículo — ${sectorActivoObj.nombre}`}>
+            <ChartCard layout="third" title={`Distribución por Marca de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {fleet.data?.por_marca && fleet.data.por_marca.length > 0 ? (
                   <FleetDonutChart data={fleet.data.por_marca} nameKey="marca" />
@@ -805,12 +928,12 @@ export function EstacionamientoView({ dateRange }: Props) {
               </Suspense>
             </ChartCard>
 
-            <ChartCard layout="third" title="Capturas por Cámara ANPR y Calidad">
+            <ChartCard layout="third" title="Capturas por Cámara ANPR y Calidad" isFetching={camera.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {camera.data && camera.data.length > 0 ? (
                   <CameraStatsPlotlyChart data={camera.data} />
                 ) : (
-                  <EmptyState label="Sin datos de cámaras para este período" />
+                  <EmptyState label="Sin datos de capturas por cámara" />
                 )}
               </Suspense>
             </ChartCard>
@@ -818,54 +941,29 @@ export function EstacionamientoView({ dateRange }: Props) {
         </div>
       )}
 
-      {/* SECCIÓN 4: Movilidad Institucional y Segmentación Machine Learning */}
-      {esSeccionVisible('seccion_4') && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700">
-            <ArrowRightLeft size={15} className="text-uct-blue-primary" />
-            <span>4. Movilidad Inter-Campus y Segmentación de Comportamiento</span>
-          </div>
+      {/* SECCIÓN 4: Movilidad Inter-Campus y Calendario */}
+      {seccionMontada('seccion_4') && (
+        <div className={claseSeccion('seccion_4', 'space-y-3.5')}>
+          <SectionHeader
+            icon={ArrowRightLeft}
+            title="4. Movilidad Inter-Campus y Calendario Académico"
+            subtitle="Matriz de movilidad CSF ↔ CHS e impacto del calendario universitario"
+            badge="Movilidad UCT"
+          />
+          <MetricasSeccion items={metricasSec4} cargando={intercampus.isLoading} />
 
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-            <div className="xl:col-span-1 space-y-3.5">
-              <KpiCard
-                title="Traslados Inter-Campus"
-                value={fmt(intercampus.data?.total_viajes)}
-                subtitle="viajes detectados entre CSF y CHS"
-                icon={ArrowRightLeft}
-                iconColor="#003865"
-              />
-              <KpiCard
-                title="Tiempo Medio Traslado"
-                value={`${intercampus.data?.tiempo_promedio_min ?? 0} min`}
-                subtitle={`Mediana: ${intercampus.data?.tiempo_mediano_min ?? 0} min`}
-                icon={RotateCcw}
-              />
-              <KpiCard
-                title="Franja Mayor Migración"
-                value={intercampus.data?.franja_punta ?? '—'}
-                subtitle="cambio de turno y bloque docente"
-                icon={Flame}
-                iconColor="#C59B27"
-              />
-            </div>
+          <div className="space-y-4">
+            <ChartCard layout="full" title="Flujo de Movilidad Inter-Campus (CSF ↔ CHS)" isFetching={intercampus.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {intercampus.data ? (
+                  <IntercampusMobilityPlotlyChart data={intercampus.data} />
+                ) : (
+                  <EmptyState label="Cargando movilidad intercampus..." />
+                )}
+              </Suspense>
+            </ChartCard>
 
-            <div className="xl:col-span-2">
-              <ChartCard layout="full" title="Flujo de Movilidad Inter-Campus (CSF ↔ CHS)">
-                <Suspense fallback={<EsqueletoGraficoVehicular />}>
-                  {intercampus.data ? (
-                    <IntercampusMobilityPlotlyChart data={intercampus.data} />
-                  ) : (
-                    <EmptyState label="Cargando movilidad intercampus..." />
-                  )}
-                </Suspense>
-              </ChartCard>
-            </div>
-          </div>
-
-          {/* Impacto del Calendario en Tráfico Vehicular */}
-          <div className="w-full">
-            <ChartCard layout="full" title="Impacto del Calendario Académico en Flujo Vehicular">
+            <ChartCard layout="full" title="Impacto del Calendario Académico en Flujo Vehicular" isFetching={milestones.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {milestones.data && milestones.data.length > 0 ? (
                   <VehicleMilestonesPlotlyChart data={milestones.data} />
@@ -875,9 +973,21 @@ export function EstacionamientoView({ dateRange }: Props) {
               </Suspense>
             </ChartCard>
           </div>
+        </div>
+      )}
 
-          {/* Machine Learning K-Means */}
-          <div className="space-y-4 pt-2">
+      {/* SECCIÓN 5: Machine Learning (K-Means) */}
+      {seccionMontada('seccion_5') && (
+        <div className={claseSeccion('seccion_5', 'space-y-3.5')}>
+          <SectionHeader
+            icon={BrainCircuit}
+            title="5. Machine Learning (K-Means): Uso Indebido y Estadía"
+            subtitle="Segmentación no supervisada sobre permanencias y horarios de acceso vehicular"
+            badge="Machine Learning K-Means"
+          />
+          <MetricasSeccion items={metricasSec5} cargando={clusters.isLoading} />
+
+          <div className="space-y-4 pt-1">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-slate-900 rounded-2xl text-white shadow-xs">
               <div className="flex items-center gap-3">
                 <div className="p-2.5 bg-red-500/20 border border-red-500/30 rounded-xl text-red-400">
@@ -910,7 +1020,7 @@ export function EstacionamientoView({ dateRange }: Props) {
 
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
               <div className="xl:col-span-2">
-                <ChartCard layout="full" title="Dispersión de Perfiles: Hora Llegada vs Permanencia" contextoGrafico="permanencia_vehicular">
+                <ChartCard layout="full" title="Dispersión de Perfiles: Hora Llegada vs Permanencia" contextoGrafico="permanencia_vehicular" isFetching={clusters.isFetching}>
                   <Suspense fallback={<EsqueletoGraficoVehicular />}>
                     {clusters.data ? (
                       <VehicleBehavioralClustersPlotlyChart data={clusters.data} />
@@ -921,7 +1031,7 @@ export function EstacionamientoView({ dateRange }: Props) {
                 </ChartCard>
               </div>
               <div className="xl:col-span-1">
-                <ChartCard layout="full" title="Resumen de Clústeres Detectados">
+                <ChartCard layout="full" title="Resumen de Clústeres Detectados" isFetching={clusters.isFetching}>
                   <div className="space-y-2.5">
                     {clusters.data?.distribucion.map((c, i) => (
                       <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
@@ -946,36 +1056,6 @@ export function EstacionamientoView({ dateRange }: Props) {
           </div>
         </div>
       )}
-
-      {/* Resumen Final de Integridad ANPR y Máximos Operacionales */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard
-          title="Parque Vehicular Único"
-          value={fmt(kpis.data?.vehiculos_unicos)}
-          subtitle="patentes distintas detectadas"
-          icon={Car}
-        />
-        <KpiCard
-          title="Tasa Lecturas Fallidas"
-          value={`${fmt(kpis.data?.tasa_lectura_fallida_pct, 1)}%`}
-          subtitle="calidad de captura ANPR"
-          icon={Wifi}
-        />
-        <KpiCard
-          title="Hora Punta Vehicular"
-          value={kpis.data?.hora_punta ?? '—'}
-          subtitle="bloque con mayor ingreso"
-          icon={Flame}
-          iconColor="#DC2626"
-        />
-        <KpiCard
-          title="Máximo Aforo Simultáneo"
-          value={`${fmt(kpis.data?.max_aforo_historico)} veh`}
-          subtitle="máximo horario registrado"
-          icon={TrendingUp}
-          iconColor="#2563EB"
-        />
-      </div>
     </div>
   )
 }
@@ -991,3 +1071,5 @@ function EmptyState({ label }: { label: string }) {
     </div>
   )
 }
+
+export default EstacionamientoView

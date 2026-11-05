@@ -234,9 +234,9 @@ export interface RawAttendanceResponse {
 
 // ─── Funciones API Asistencia ──────────────────────────────────────────────────
 
-export const fetchAttendanceKpis = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) => {
+export const fetchAttendanceKpis = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, signal?: AbortSignal) => {
   const f = parseFilters(filters)
-  return api.get<AttendanceKpis>('/attendance/kpis', {
+  return api.get<AttendanceKpis>('/attendance/kpis', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -257,12 +257,12 @@ export const fetchAttendanceKpis = (fechaInicio?: string, fechaFin?: string, fil
   }).then(r => r.data)
 }
 
-export const fetchOccupancyRealtime = () =>
-  api.get<OccupancyRealtime>('/attendance/occupancy-realtime').then(r => r.data)
+export const fetchOccupancyRealtime = (signal?: AbortSignal) =>
+  api.get<OccupancyRealtime>('/attendance/occupancy-realtime', { signal }).then(r => r.data)
 
-export const fetchAttendanceHourlyFlow = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) => {
+export const fetchAttendanceHourlyFlow = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, signal?: AbortSignal) => {
   const f = parseFilters(filters)
-  return api.get<HourlyFlowPoint[]>('/attendance/hourly-flow', {
+  return api.get<HourlyFlowPoint[]>('/attendance/hourly-flow', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -288,9 +288,10 @@ export const fetchHeatmap = (
   fechaFin?: string,
   espacioId: number = 1,
   filters?: DataFilters | string,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<HeatmapPoint[]>('/attendance/heatmap', {
+  return api.get<HeatmapPoint[]>('/attendance/heatmap', { signal,
     params: {
       espacio_id: espacioId,
       fecha_inicio: fechaInicio || undefined,
@@ -312,17 +313,18 @@ export const fetchHeatmap = (
   }).then(r => r.data)
 }
 
-export const fetchPeakValley = (fechaInicio?: string, fechaFin?: string) =>
-  api.get<PeakValleyPoint[]>('/attendance/peak-valley', { params: { fecha_inicio: fechaInicio, fecha_fin: fechaFin } }).then(r => r.data)
+export const fetchPeakValley = (fechaInicio?: string, fechaFin?: string, signal?: AbortSignal) =>
+  api.get<PeakValleyPoint[]>('/attendance/peak-valley', { signal, params: { fecha_inicio: fechaInicio, fecha_fin: fechaFin } }).then(r => r.data)
 
 export const fetchWeeklyEvolution = (
   fechaInicio?: string,
   fechaFin?: string,
   espacioId: number = 1,
   filters?: DataFilters | string,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<WeeklyEvolutionPoint[]>('/attendance/weekly-evolution', {
+  return api.get<WeeklyEvolutionPoint[]>('/attendance/weekly-evolution', { signal,
     params: {
       espacio_id: espacioId,
       fecha_inicio: fechaInicio,
@@ -349,9 +351,10 @@ export const fetchMonthlyVolume = (
   fechaFin?: string,
   espacioId: number = 1,
   filters?: DataFilters | string,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<MonthlyVolumePoint[]>('/attendance/monthly-volume', {
+  return api.get<MonthlyVolumePoint[]>('/attendance/monthly-volume', { signal,
     params: {
       espacio_id: espacioId,
       fecha_inicio: fechaInicio,
@@ -378,9 +381,10 @@ export const fetchAcademicMilestones = (
   fechaFin?: string,
   espacioId: number = 1,
   filters?: DataFilters | string,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<AcademicMilestonePoint[]>('/attendance/academic-milestones-comparison', {
+  return api.get<AcademicMilestonePoint[]>('/attendance/academic-milestones-comparison', { signal,
     params: {
       espacio_id: espacioId,
       fecha_inicio: fechaInicio,
@@ -402,9 +406,9 @@ export const fetchAcademicMilestones = (
   }).then(r => r.data)
 }
 
-export const fetchDoorsUsage = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) => {
+export const fetchDoorsUsage = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, signal?: AbortSignal) => {
   const f = parseFilters(filters)
-  return api.get<DoorUsagePoint[]>('/attendance/doors-usage', {
+  return api.get<DoorUsagePoint[]>('/attendance/doors-usage', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -424,8 +428,8 @@ export const fetchDoorsUsage = (fechaInicio?: string, fechaFin?: string, filters
   }).then(r => r.data)
 }
 
-export const fetchSalasBiblioteca = (espacioId: number = 1) =>
-  api.get<SalaBibliotecaItem[]>('/attendance/salas', { params: { espacio_id: espacioId } }).then(r => r.data)
+export const fetchSalasBiblioteca = (espacioId: number = 1, signal?: AbortSignal) =>
+  api.get<SalaBibliotecaItem[]>('/attendance/salas', { signal, params: { espacio_id: espacioId } }).then(r => r.data)
 
 export const createSalaBiblioteca = (payload: Partial<SalaBibliotecaItem>) =>
   api.post<SalaBibliotecaItem>('/attendance/salas', payload).then(r => r.data)
@@ -445,9 +449,10 @@ export const fetchRoomsComparison = (
   fechaFin?: string,
   filters?: DataFilters | string,
   espacioId: number = 1,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<RoomComparisonResponse>('/attendance/rooms-comparison', {
+  return api.get<RoomComparisonResponse>('/attendance/rooms-comparison', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -470,9 +475,10 @@ export const fetchDailyAverageAttendance = (
   fechaFin?: string,
   filters?: DataFilters | string,
   espacioId: number = 1,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<DailyAverageResponse>('/attendance/daily-average', {
+  return api.get<DailyAverageResponse>('/attendance/daily-average', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -495,9 +501,10 @@ export const fetchCurricularDistribution = (
   fechaFin?: string,
   filters?: DataFilters | string,
   espacioId: number = 1,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<CurricularDistributionResponse>('/attendance/curricular-distribution', {
+  return api.get<CurricularDistributionResponse>('/attendance/curricular-distribution', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -515,12 +522,12 @@ export const fetchCurricularDistribution = (
   }).then(r => r.data)
 }
 
-export const fetchAvailableFilters = (espacioId: number = 1) =>
-  api.get<AvailableFiltersResponse>('/attendance/available-filters', { params: { espacio_id: espacioId } }).then(r => r.data)
+export const fetchAvailableFilters = (espacioId: number = 1, signal?: AbortSignal) =>
+  api.get<AvailableFiltersResponse>('/attendance/available-filters', { signal, params: { espacio_id: espacioId } }).then(r => r.data)
 
-export const fetchCheckinsDistribution = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) => {
+export const fetchCheckinsDistribution = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, signal?: AbortSignal) => {
   const f = parseFilters(filters)
-  return api.get<CheckinDistributionPoint[]>('/attendance/checkins-distribution', {
+  return api.get<CheckinDistributionPoint[]>('/attendance/checkins-distribution', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,
@@ -546,9 +553,10 @@ export const fetchVisitProfilesDonut = (
   fechaFin?: string,
   filters?: DataFilters | string,
   espacioId: number = 1,
+  signal?: AbortSignal,
 ) => {
   const f = parseFilters(filters)
-  return api.get<VisitProfilesDonutResponse>('/attendance/visit-profiles-donut', {
+  return api.get<VisitProfilesDonutResponse>('/attendance/visit-profiles-donut', { signal,
     params: {
       fecha_inicio: fechaInicio,
       fecha_fin: fechaFin,

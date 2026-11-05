@@ -5,6 +5,8 @@ import { api } from '../api/clienteBase'
 export interface AssistantPeriodo {
   startDate?: string
   endDate?: string
+  inicio?: string
+  fin?: string
   label?: string
 }
 
@@ -15,6 +17,8 @@ interface AssistantContextType {
   periodo?: AssistantPeriodo
   filtros?: Record<string, any>
   openAssistant: (contexto?: string, periodo?: AssistantPeriodo, filtros?: Record<string, any>) => void
+  setFiltrosActivos: (filtros: Record<string, any>) => void
+  setPeriodoActivo: (periodo: AssistantPeriodo) => void
   closeAssistant: () => void
   clearContexto: () => void
 }
@@ -61,6 +65,14 @@ export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsOpen(true)
   }
 
+  const setFiltrosActivos = (nuevosFiltros: Record<string, any>) => {
+    setFiltros(nuevosFiltros)
+  }
+
+  const setPeriodoActivo = (nuevoPeriodo: AssistantPeriodo) => {
+    setPeriodo(nuevoPeriodo)
+  }
+
   const closeAssistant = () => {
     setIsOpen(false)
   }
@@ -80,6 +92,8 @@ export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         periodo,
         filtros,
         openAssistant,
+        setFiltrosActivos,
+        setPeriodoActivo,
         closeAssistant,
         clearContexto,
       }}
@@ -99,6 +113,8 @@ export const useAssistant = (): AssistantContextType => {
       periodo: undefined,
       filtros: undefined,
       openAssistant: () => {},
+      setFiltrosActivos: () => {},
+      setPeriodoActivo: () => {},
       closeAssistant: () => {},
       clearContexto: () => {},
     }
