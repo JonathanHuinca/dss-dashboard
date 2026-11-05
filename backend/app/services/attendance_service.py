@@ -154,18 +154,18 @@ class AttendanceService:
         )"""
 
         regular_open_sql = """(
-            (DATEPART(WEEKDAY, time) BETWEEN 2 AND 5 AND CAST(time AS TIME) >= '08:30:00' AND CAST(time AS TIME) <= '20:30:00')
-            OR (DATEPART(WEEKDAY, time) = 6 AND CAST(time AS TIME) >= '08:30:00' AND CAST(time AS TIME) <= '19:30:00')
-            OR (DATEPART(WEEKDAY, time) = 7 AND CAST(time AS TIME) >= '10:30:00' AND CAST(time AS TIME) <= '13:30:00')
+            (dia_semana_iso BETWEEN 1 AND 4 AND CAST(time AS TIME) >= '08:30:00' AND CAST(time AS TIME) <= '20:30:00')
+            OR (dia_semana_iso = 5 AND CAST(time AS TIME) >= '08:30:00' AND CAST(time AS TIME) <= '19:30:00')
+            OR (dia_semana_iso = 6 AND CAST(time AS TIME) >= '10:30:00' AND CAST(time AS TIME) <= '13:30:00')
         )"""
 
         f_oficial_sql = f"({regular_open_sql} AND NOT ({holiday_sql}))"
 
         regular_closed_sql = """(
-            DATEPART(WEEKDAY, time) = 1
-            OR (DATEPART(WEEKDAY, time) BETWEEN 2 AND 5 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '20:30:00'))
-            OR (DATEPART(WEEKDAY, time) = 6 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '19:30:00'))
-            OR (DATEPART(WEEKDAY, time) = 7 AND (CAST(time AS TIME) < '10:30:00' OR CAST(time AS TIME) > '13:30:00'))
+            dia_semana_iso = 7
+            OR (dia_semana_iso BETWEEN 1 AND 4 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '20:30:00'))
+            OR (dia_semana_iso = 5 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '19:30:00'))
+            OR (dia_semana_iso = 6 AND (CAST(time AS TIME) < '10:30:00' OR CAST(time AS TIME) > '13:30:00'))
         )"""
 
         # 1. Alcance / Calidad
@@ -275,20 +275,20 @@ class AttendanceService:
         # 4. Días de la semana
         if dias_semana:
             dias_map = {
-                "domingo": 1,
-                "lunes": 2,
-                "martes": 3,
-                "miercoles": 4,
-                "miércoles": 4,
-                "jueves": 5,
-                "viernes": 6,
-                "sabado": 7,
-                "sábado": 7,
+                "domingo": 7,
+                "lunes": 1,
+                "martes": 2,
+                "miercoles": 3,
+                "miércoles": 3,
+                "jueves": 4,
+                "viernes": 5,
+                "sabado": 6,
+                "sábado": 6,
             }
             dias_solicitados = [d.strip().lower() for d in dias_semana.split(",") if d.strip().lower() in dias_map]
             if dias_solicitados:
                 weekday_ints = [str(dias_map[d]) for d in dias_solicitados]
-                conditions.append(f"DATEPART(WEEKDAY, time) IN ({','.join(weekday_ints)})")
+                conditions.append(f"dia_semana_iso IN ({','.join(weekday_ints)})")
 
         # 5. Filtro Dinámico por Sala (CSF02 124 asientos vs CSF04 Pecera 226 asientos)
         if sala and sala.lower() not in ("todos", "todas", ""):
@@ -458,10 +458,10 @@ class AttendanceService:
         unicos = row.usuarios_unicos or 0 if row else 0
 
         sql_peak = text(f"""
-            SELECT TOP 1 DATEPART(HOUR, time) AS hora, COUNT(DISTINCT person_id_hash) AS total
+            SELECT TOP 1 hora_dia AS hora, COUNT(DISTINCT person_id_hash) AS total
             FROM eventos_asistencia
             WHERE {where_sql}
-            GROUP BY DATEPART(HOUR, time)
+            GROUP BY hora_dia
             ORDER BY total DESC
         """)
         row_peak = (await session.execute(sql_peak, params)).first()
@@ -706,21 +706,21 @@ class AttendanceService:
             sql = text(f"""
                 WITH conteo_diario AS (
                     SELECT
-                        DATEPART(WEEKDAY, time) AS dia_semana,
-                        DATEPART(HOUR, time) AS hora,
+                        dia_semana_iso,
+                        hora_dia AS hora,
                         CAST(time AS DATE) AS dia_fecha,
                         COUNT(*) AS eventos
                     FROM eventos_asistencia
                     WHERE {where_sql}
-                    GROUP BY DATEPART(WEEKDAY, time), DATEPART(HOUR, time), CAST(time AS DATE)
+                    GROUP BY dia_semana_iso, hora_dia, CAST(time AS DATE)
                 )
                 SELECT
-                    dia_semana,
+                    dia_semana_iso,
                     hora,
                     ROUND(CAST(AVG(CAST(eventos AS FLOAT)) AS DECIMAL(10,2)), 2) AS ingresos_promedio
                 FROM conteo_diario
-                GROUP BY dia_semana, hora
-                ORDER BY dia_semana, hora
+                GROUP BY dia_semana_iso, hora
+                ORDER BY dia_semana_iso, hora
             """)
             rows = (await session.execute(sql, params)).fetchall()
 
@@ -730,8 +730,8 @@ class AttendanceService:
 
         return [
             {
-                "dia_semana":        DOW_MAP[r.dia_semana],
-                "dia_nombre":        DIAS[DOW_MAP[r.dia_semana]],
+                "dia_semana":        (int(getattr(r, "dia_semana_iso", 0)) - 1) if getattr(r, "dia_semana_iso", None) is not None else DOW_MAP[r.dia_semana],
+                "dia_nombre":        DIAS[(int(getattr(r, "dia_semana_iso", 0)) - 1) if getattr(r, "dia_semana_iso", None) is not None else DOW_MAP[r.dia_semana]],
                 "hora":              r.hora,
                 "ingresos_promedio": float(r.ingresos_promedio or 0),
             }
@@ -953,11 +953,11 @@ class AttendanceService:
             WITH hourly AS (
                 SELECT 
                     CAST(time AS DATE) AS dia,
-                    DATEPART(hour, time) AS hora,
+                    hora_dia AS hora,
                     COUNT(DISTINCT person_id_hash) AS aforo_hora
                 FROM eventos_asistencia
                 WHERE {where_sql}
-                GROUP BY CAST(time AS DATE), DATEPART(hour, time)
+                GROUP BY CAST(time AS DATE), hora_dia
             ),
             daily_peak AS (
                 SELECT 
@@ -1294,12 +1294,12 @@ class AttendanceService:
 
         sql_hourly = text(f"""
             SELECT 
-                DATEPART(HOUR, time) AS hora,
+                hora_dia AS hora,
                 SUM(CASE WHEN (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%') AND door_entrada IS NOT NULL THEN 1 ELSE 0 END) AS entradas_sala1,
                 SUM(CASE WHEN (door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%') AND door_entrada IS NOT NULL THEN 1 ELSE 0 END) AS entradas_sala2
             FROM eventos_asistencia
             WHERE {where_sql}
-            GROUP BY DATEPART(HOUR, time)
+            GROUP BY hora_dia
             ORDER BY hora
         """)
         rows_hourly = (await session.execute(sql_hourly, params)).fetchall()
@@ -1394,14 +1394,14 @@ class AttendanceService:
 
         sql = text(f"""
             SELECT 
-                ((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) AS dia_num,
+                dia_semana_iso AS dia_num,
                 COUNT(DISTINCT CAST(time AS DATE)) AS dias_ocurridos,
                 SUM(CASE WHEN door_entrada IS NOT NULL THEN 1 ELSE 0 END) AS entradas_totales,
                 SUM(CASE WHEN (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%') AND door_entrada IS NOT NULL THEN 1 ELSE 0 END) AS entradas_sala1,
                 SUM(CASE WHEN (door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%') AND door_entrada IS NOT NULL THEN 1 ELSE 0 END) AS entradas_sala2
             FROM eventos_asistencia
             WHERE {where_sql}
-            GROUP BY ((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1)
+            GROUP BY dia_semana_iso
         """)
         rows = (await session.execute(sql, params)).fetchall()
         map_dias = {int(r.dia_num): r for r in rows}
@@ -1949,10 +1949,10 @@ class AttendanceService:
             if cat_lower == "fuera_de_horario":
                 conditions.append("""(
                     DATEPART(MONTH, time) != 7 AND (
-                        DATEPART(WEEKDAY, time) = 1
-                        OR (DATEPART(WEEKDAY, time) BETWEEN 2 AND 5 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '20:30:00'))
-                        OR (DATEPART(WEEKDAY, time) = 6 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '19:30:00'))
-                        OR (DATEPART(WEEKDAY, time) = 7 AND (CAST(time AS TIME) < '10:30:00' OR CAST(time AS TIME) > '13:30:00'))
+                        dia_semana_iso = 7
+                        OR (dia_semana_iso BETWEEN 1 AND 4 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '20:30:00'))
+                        OR (dia_semana_iso = 5 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '19:30:00'))
+                        OR (dia_semana_iso = 6 AND (CAST(time AS TIME) < '10:30:00' OR CAST(time AS TIME) > '13:30:00'))
                     )
                 )""")
             elif cat_lower == "sin_salida":
@@ -2102,10 +2102,10 @@ class AttendanceService:
             if cat_lower == "fuera_de_horario":
                 conditions.append("""(
                     DATEPART(MONTH, time) != 7 AND (
-                        DATEPART(WEEKDAY, time) = 1
-                        OR (DATEPART(WEEKDAY, time) BETWEEN 2 AND 5 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '20:30:00'))
-                        OR (DATEPART(WEEKDAY, time) = 6 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '19:30:00'))
-                        OR (DATEPART(WEEKDAY, time) = 7 AND (CAST(time AS TIME) < '10:30:00' OR CAST(time AS TIME) > '13:30:00'))
+                        dia_semana_iso = 7
+                        OR (dia_semana_iso BETWEEN 1 AND 4 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '20:30:00'))
+                        OR (dia_semana_iso = 5 AND (CAST(time AS TIME) < '08:30:00' OR CAST(time AS TIME) > '19:30:00'))
+                        OR (dia_semana_iso = 6 AND (CAST(time AS TIME) < '10:30:00' OR CAST(time AS TIME) > '13:30:00'))
                     )
                 )""")
             elif cat_lower == "sin_salida":
@@ -2464,7 +2464,7 @@ class AttendanceService:
                     f_ini = date(2026, 6, 1)
                     f_fin = date(2026, 6, 30)
                 desc_campana = regla_24h.descripcion if regla_24h else f"Campaña #{campana_id}"
-                date_condition = "CAST(time AS DATE) >= :f_ini AND CAST(time AS DATE) <= :f_fin"
+                date_condition = "time >= :f_ini AND time < DATEADD(day, 1, CAST(:f_fin AS DATE))"
             else:
                 # campana_id == 0: Consolidado Histórico de todas las campañas 24 Horas
                 regla_24h = None
@@ -2472,13 +2472,13 @@ class AttendanceService:
                 f_fin = date(2026, 12, 31)
                 desc_campana = "Consolidado Histórico Anual 2026 (Todas las campañas)"
                 campana_ranges = [
-                    f"(CAST(time AS DATE) >= '{c.fecha_inicio.date().isoformat()}' AND CAST(time AS DATE) <= '{c.fecha_fin.date().isoformat()}')"
+                    f"(time >= '{c.fecha_inicio.date().isoformat()}' AND time < '{(c.fecha_fin.date() + timedelta(days=1)).isoformat()}')"
                     for c in todas_campanas if c.fecha_inicio and c.fecha_fin
                 ]
                 if campana_ranges:
                     date_condition = f"({' OR '.join(campana_ranges)})"
                 else:
-                    date_condition = "CAST(time AS DATE) >= :f_ini AND CAST(time AS DATE) <= :f_fin"
+                    date_condition = "time >= :f_ini AND time < DATEADD(day, 1, CAST(:f_fin AS DATE))"
         elif fecha_inicio and fecha_fin:
             # Período personalizado (campana_id == -1 o None con fechas específicas)
             regla_24h = None
@@ -2494,14 +2494,14 @@ class AttendanceService:
                 desc_campana = f"Período Personalizado ({f_ini.strftime('%d/%m/%Y')} al {f_fin.strftime('%d/%m/%Y')})"
             else:
                 desc_campana = f"Período Regular sin Régimen 24h ({f_ini.strftime('%d/%m/%Y')} al {f_fin.strftime('%d/%m/%Y')})"
-            date_condition = "CAST(time AS DATE) >= :f_ini AND CAST(time AS DATE) <= :f_fin"
+            date_condition = "time >= :f_ini AND time < DATEADD(day, 1, CAST(:f_fin AS DATE))"
         else:
             # Por defecto: seleccionar la campaña histórica que tiene datos consolidados (Junio 2026)
             regla_24h = next((c for c in todas_campanas if c.fecha_inicio and c.fecha_inicio.month == 6), todas_campanas[0] if todas_campanas else None)
             f_ini = regla_24h.fecha_inicio.date() if regla_24h and regla_24h.fecha_inicio else date(2026, 6, 1)
             f_fin = regla_24h.fecha_fin.date() if regla_24h and regla_24h.fecha_fin else date(2026, 6, 30)
             desc_campana = regla_24h.descripcion if regla_24h else "Campaña 24 Horas Exámenes"
-            date_condition = "CAST(time AS DATE) >= :f_ini AND CAST(time AS DATE) <= :f_fin"
+            date_condition = "time >= :f_ini AND time < DATEADD(day, 1, CAST(:f_fin AS DATE))"
 
         capacidad_asientos = 226
         subespacio = regla_24h.subespacio if regla_24h else "sala_2"
@@ -2509,8 +2509,8 @@ class AttendanceService:
         door_condition = "door_entrada LIKE '%CSF04%'"
 
         # Horarios exactos según normativa de Sala 2 Pecera (cierra a las 23:00 de Lun-Jue y a las 22:00 los Viernes)
-        cond_lj = "((DATEPART(dw, time) IN (2, 3, 4, 5) AND CAST(time AS TIME) >= '23:00:00') OR (DATEPART(dw, time) IN (3, 4, 5, 6) AND CAST(time AS TIME) < '07:00:00'))"
-        cond_vie = "((DATEPART(dw, time) = 6 AND CAST(time AS TIME) >= '22:00:00') OR (DATEPART(dw, time) = 7 AND CAST(time AS TIME) < '06:00:00'))"
+        cond_lj = "((dia_semana_iso IN (1, 2, 3, 4) AND CAST(time AS TIME) >= '23:00:00') OR (dia_semana_iso IN (2, 3, 4, 5) AND CAST(time AS TIME) < '07:00:00'))"
+        cond_vie = "((dia_semana_iso = 5 AND CAST(time AS TIME) >= '22:00:00') OR (dia_semana_iso = 6 AND CAST(time AS TIME) < '06:00:00'))"
 
         if bloque_horario == "lunes_jueves":
             nocturno_condition = cond_lj
@@ -2547,8 +2547,8 @@ class AttendanceService:
         row_kpis = (await session.execute(sql_kpis, params_base)).first()
 
         nombres_dias = {
-            1: "Domingo", 2: "Lunes", 3: "Martes", 4: "Miércoles",
-            5: "Jueves", 6: "Viernes", 7: "Sábado"
+            1: "Lunes", 2: "Martes", 3: "Miércoles", 4: "Jueves",
+            5: "Viernes", 6: "Sábado", 7: "Domingo"
         }
 
         if tiene_campana_activa:
@@ -2599,7 +2599,7 @@ class AttendanceService:
 
             sql_pico = text(f"""
                 SELECT TOP 1
-                    DATEPART(hour, time) AS hora,
+                    hora_dia AS hora,
                     COUNT(*) AS concurrencia
                 FROM eventos_asistencia
                 WHERE espacio_id = :espacio_id
@@ -2607,7 +2607,7 @@ class AttendanceService:
                   AND {door_condition}
                   AND {nocturno_condition}
                   AND alerta_coherencia_fechas = 0
-                GROUP BY DATEPART(hour, time)
+                GROUP BY hora_dia
                 ORDER BY COUNT(*) DESC
             """)
             row_pico = (await session.execute(sql_pico, params_base)).first()
@@ -2687,7 +2687,7 @@ class AttendanceService:
 
             sql_curva = text(f"""
                 SELECT 
-                    DATEPART(hour, time) AS hora,
+                    hora_dia AS hora,
                     COUNT(*) AS ingresos,
                     COUNT(DISTINCT CAST(time AS DATE)) AS dias_con_acceso
                 FROM eventos_asistencia
@@ -2696,11 +2696,11 @@ class AttendanceService:
                   AND {door_condition}
                   AND {nocturno_condition}
                   AND alerta_coherencia_fechas = 0
-                GROUP BY DATEPART(hour, time)
+                GROUP BY hora_dia
                 ORDER BY 
                     CASE 
-                        WHEN DATEPART(hour, time) >= 22 THEN DATEPART(hour, time) - 22
-                        ELSE DATEPART(hour, time) + 2
+                        WHEN hora_dia >= 22 THEN hora_dia - 22
+                        ELSE hora_dia + 2
                     END
             """)
             rows_curva = (await session.execute(sql_curva, params_base)).fetchall()
@@ -2717,7 +2717,7 @@ class AttendanceService:
 
             sql_dias = text(f"""
                 SELECT 
-                    DATEPART(dw, time) AS dia_num,
+                    dia_semana_iso AS dia_num,
                     COUNT(*) AS ingresos,
                     COUNT(DISTINCT person_id_hash) AS estudiantes
                 FROM eventos_asistencia
@@ -2726,13 +2726,13 @@ class AttendanceService:
                   AND {door_condition}
                   AND {nocturno_condition}
                   AND alerta_coherencia_fechas = 0
-                GROUP BY DATEPART(dw, time)
-                ORDER BY DATEPART(dw, time)
+                GROUP BY dia_semana_iso
+                ORDER BY dia_semana_iso
             """)
             rows_dias = (await session.execute(sql_dias, params_base)).fetchall()
             dict_dias = {int(r.dia_num): {"ingresos": int(r.ingresos), "estudiantes": int(r.estudiantes)} for r in rows_dias}
             dias_semana_list = []
-            for d_num in [2, 3, 4, 5, 6, 7, 1]:
+            for d_num in [1, 2, 3, 4, 5, 6, 7]:
                 info = dict_dias.get(d_num, {"ingresos": 0, "estudiantes": 0})
                 pct = round(100.0 * info["ingresos"] / (ing_nocturnos or 1), 1)
                 dias_semana_list.append({
@@ -2786,7 +2786,7 @@ class AttendanceService:
                     ROUND(SUM(CASE WHEN (({cond_lj}) OR ({cond_vie})) THEN COALESCE(permanencia_min, 120) ELSE 0 END) / 60.0, 1) AS horas_nocturnas
                 FROM eventos_asistencia
                 WHERE espacio_id = :espacio_id
-                  AND CAST(time AS DATE) >= :cf_ini AND CAST(time AS DATE) <= :cf_fin
+                  AND time >= :cf_ini AND time < DATEADD(day, 1, CAST(:cf_fin AS DATE))
                   AND {door_condition}
                   AND alerta_coherencia_fechas = 0
             """)
@@ -2814,20 +2814,20 @@ class AttendanceService:
                 DATEPART(week, time) as semana_num,
                 MIN(CAST(time AS DATE)) as min_fecha,
                 MAX(CAST(time AS DATE)) as max_fecha,
-                DATEPART(dw, time) as dia_dw,
-                DATEPART(hour, time) as hora,
+                dia_semana_iso as dia_dw,
+                hora_dia as hora,
                 COUNT(*) as ingresos
             FROM eventos_asistencia
             WHERE espacio_id = :espacio_id
               AND {date_condition}
               AND {door_condition}
               AND alerta_coherencia_fechas = 0
-            GROUP BY DATEPART(week, time), DATEPART(dw, time), DATEPART(hour, time)
+            GROUP BY DATEPART(week, time), dia_semana_iso, hora_dia
             ORDER BY semana_num, dia_dw, hora
         """)
         rows_heatmap = (await session.execute(sql_heatmap, params_base)).fetchall()
 
-        dw_to_idx = {2: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 1: 6}
+        dw_to_idx = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6}
         dias_nombres = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"}
 
         def es_franja_nocturna_24h(dia_idx: int, hora: int) -> bool:

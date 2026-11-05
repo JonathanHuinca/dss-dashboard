@@ -126,6 +126,14 @@ async def _handler_reentrenar_modelos_ml(disparador: str = "manual") -> Dict[str
             except Exception:
                 pass
 
+    # Invalidar caché de predicciones y analítica para reflejar inmediatamente los modelos y pronósticos actualizados
+    try:
+        from app.core.cache import limpiar_toda_la_cache
+        await limpiar_toda_la_cache()
+        logger.info("[planificador] Caché global invalidada exitosamente tras reentrenamiento matutino.")
+    except Exception as e_cache:
+        logger.warning(f"[planificador] Error invalidando caché tras reentrenamiento: {e_cache}")
+
     return {
         "resultado": "entrenamiento_completado",
         "salida_resumen": stdout_str[-800:] if len(stdout_str) > 800 else stdout_str,

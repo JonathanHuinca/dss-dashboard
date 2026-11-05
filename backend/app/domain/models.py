@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Date, DateTime,
+    BigInteger, Boolean, CheckConstraint, Computed, Date, DateTime,
     ForeignKey, Index, Integer, Numeric, SmallInteger,
     String, Text, func,
 )
@@ -57,6 +57,8 @@ class EventoAsistencia(Base):
     carrera: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     facultad: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     estamento: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    hora_dia: Mapped[Optional[int]] = mapped_column(SmallInteger, Computed("DATEPART(hour, time)"), nullable=True)
+    dia_semana_iso: Mapped[Optional[int]] = mapped_column(SmallInteger, Computed("((DATEDIFF(day, 0, time) % 7) + 1)"), nullable=True)
 
     __table_args__ = (
         Index("ix_ea_espacio_time", "espacio_id", "time"),
