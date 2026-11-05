@@ -7,7 +7,8 @@ from sqlalchemy import select
 
 from app.services.attendance_service import AttendanceService
 from app.services.vehicle_service import VehicleService
-from app.domain.models import CalendarioAcademico
+from app.domain.models import CalendarioAcademico, ContingenciaAcademica
+from app.domain.config_models import HorarioOperacion
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +134,9 @@ async def obtener_contexto_calendario_rango(
     db: AsyncSession,
     d_ini: Optional[date],
     d_fin: Optional[date],
+    espacio_id: Optional[int] = 1,
 ) -> List[str]:
-    """Recupera hitos académicos institucionales en el rango de fechas indicado."""
+    """Recupera hitos académicos e institucionales en el rango de fechas indicado."""
     if not d_ini or not d_fin:
         return []
     try:
@@ -146,24 +148,161 @@ async def obtener_contexto_calendario_rango(
         hitos = []
         for r in rows:
             etiquetas = []
-            if r.is_break:
-                etiquetas.append("SEMANA DE RECESO")
-            if r.is_holiday:
+            desc_lower = (r.descripcion or "").lower()
+
+            if r.is_holiday or "feriado" in desc_lower:
                 etiquetas.append("FERIADO OFICIAL")
-            if r.suspension_actividades:
-                etiquetas.append("SUSPENSIÓN DE ACTIVIDADES")
-            if r.is_exam_period:
-                etiquetas.append("PERÍODO DE EXÁMENES")
-            if r.is_strike_federado or r.is_strike_carrera:
-                etiquetas.append("PARO")
-            if getattr(r, "is_class_milestone", False):
+            if "vacacion" in desc_lower or (r.is_break and r.fecha.month in [1, 2, 7]):
+                etiquetas.append("VACACIONES")
+            elif r.is_break or "receso" in desc_lower:
+                etiquetas.append("SEMANA DE RECESO")
+            if r.is_exam_period or any(k in desc_lower for k in ["examen", "solemne", "certamen", "evaluaci"]):
+                etiquetas.append("EXÁMENES / SOLEMNES")
+            if getattr(r, "is_class_milestone", False) or any(k in desc_lower for k in ["inicio de clases", "fin de clases", "término lectivo", "cierre de actas", "matrícula"]):
                 etiquetas.append("HITO DE CLASES")
+            if r.suspension_actividades or "suspensi" in desc_lower:
+                etiquetas.append("SUSPENSIÓN DE ACTIVIDADES")
+            if r.is_strike_federado:
+                etiquetas.append("PARO FEDERADO (FEUCT)")
+            elif r.is_strike_carrera:
+                etiquetas.append("PARO DE CARRERA")
+            elif r.tipo_contingencia:
+                etiquetas.append(f"CONTINGENCIA ({r.tipo_contingencia.upper()})")
+            elif "paro" in desc_lower:
+                etiquetas.append("PARO ESTUDIANTIL")
+
             desc = r.descripcion.strip() if r.descripcion else ""
             etq_str = f" [{', '.join(etiquetas)}]" if etiquetas else ""
             if desc or etiquetas:
                 hitos.append(f"- {r.fecha.strftime('%d/%m/%Y (%A)')}: {desc}{etq_str}")
+
+        # Contingencias académicas activas en el rango (Paros, suspensiones de salas)
+        query_cont = select(ContingenciaAcademica).where(
+            ContingenciaAcademica.fecha_inicio <= d_fin,
+            ContingenciaAcademica.fecha_fin >= d_ini,
+        ).order_by(ContingenciaAcademica.fecha_inicio.asc())
+        contingencias = (await db.execute(query_cont)).scalars().all()
+        for c in contingencias:
+            cierre = " [CIERRE TOTAL]" if c.implica_cierre_total else ""
+            carreras = f" (Carreras: {c.carreras_afectadas})" if c.carreras_afectadas else ""
+            tipo_tag = "PARO ESTUDIANTIL" if "paro" in c.tipo.lower() else ("SUSPENSIÓN DE SALA" if "suspension" in c.tipo.lower() else "CONTINGENCIA OPERATIVA")
+            hitos.append(
+                f"- Contingencia {c.fecha_inicio.strftime('%d/%m')} al {c.fecha_fin.strftime('%d/%m/%Y')}: {c.titulo} [{tipo_tag}]{cierre}{carreras}"
+            )
+
+        # Horario 24 Horas
+        if espacio_id == 1:
+            query_h24 = select(HorarioOperacion).where(
+                HorarioOperacion.espacio_id == 1,
+                HorarioOperacion.es_continuo_24h == True,
+                HorarioOperacion.activo == True,
+            )
+            h24_rows = (await db.execute(query_h24)).scalars().all()
+            for h in h24_rows:
+                h_ini = h.fecha_inicio.date() if isinstance(h.fecha_inicio, datetime) else h.fecha_inicio
+                h_fin = h.fecha_fin.date() if isinstance(h.fecha_fin, datetime) else h.fecha_fin
+                aplica_rango = True
+                if h_ini and h_fin:
+                    aplica_rango = (h_ini <= d_fin and h_fin >= d_ini)
+                if aplica_rango:
+                    hitos.append(
+                        f"- HORARIO 24 HORAS: {h.descripcion} (Sala 2 Pecera CSF04 continua 24h, régimen nocturno 20:30–08:30 hrs, aforo calibrado 226 asientos)"
+                    )
+
         return hitos
     except Exception as e:
-        logger.warning(f"Error consultando calendario académico: {e}")
+        logger.warning(f"Error consultando calendario académico y hechos institucionales: {e}")
         return []
+
+
+async def obtener_resumen_hechos_institucionales(
+    db: AsyncSession,
+    d_ini: Optional[date],
+    d_fin: Optional[date],
+    espacio_id: int = 1,
+) -> str:
+    """Genera un consolidado de los 8 hechos institucionales clave para el contexto del LLM."""
+    if not d_ini or not d_fin:
+        return "- Hechos Institucionales: Sin rango temporal definido (régimen regular lectivo)."
+
+    try:
+        query_cal = select(CalendarioAcademico).where(
+            CalendarioAcademico.fecha >= d_ini,
+            CalendarioAcademico.fecha <= d_fin
+        ).order_by(CalendarioAcademico.fecha.asc())
+        cal_rows = (await db.execute(query_cal)).scalars().all()
+
+        query_cont = select(ContingenciaAcademica).where(
+            ContingenciaAcademica.fecha_inicio <= d_fin,
+            ContingenciaAcademica.fecha_fin >= d_ini,
+        ).order_by(ContingenciaAcademica.fecha_inicio.asc())
+        cont_rows = (await db.execute(query_cont)).scalars().all()
+
+        h24_items = []
+        if espacio_id == 1:
+            query_h24 = select(HorarioOperacion).where(
+                HorarioOperacion.espacio_id == 1,
+                HorarioOperacion.es_continuo_24h == True,
+                HorarioOperacion.activo == True,
+            )
+            for h in (await db.execute(query_h24)).scalars().all():
+                h_ini = h.fecha_inicio.date() if isinstance(h.fecha_inicio, datetime) else h.fecha_inicio
+                h_fin = h.fecha_fin.date() if isinstance(h.fecha_fin, datetime) else h.fecha_fin
+                if not h_ini or not h_fin or (h_ini <= d_fin and h_fin >= d_ini):
+                    h24_items.append(f"{h.descripcion} (Sala 2 Pecera CSF04 activa 24h / nocturno 20:30–08:30 hrs, aforo 226 as.)")
+
+        feriados = []
+        recesos = []
+        vacaciones = []
+        examenes = []
+        hitos_clases = []
+        suspensiones = []
+        paros_contingencias = []
+
+        for r in cal_rows:
+            f_str = r.fecha.strftime('%d/%m')
+            desc = r.descripcion.strip() if r.descripcion else ""
+            desc_l = desc.lower()
+
+            if r.is_holiday or "feriado" in desc_l:
+                feriados.append(f"{f_str}: {desc or 'Feriado oficial'}")
+            if "vacacion" in desc_l or (r.is_break and r.fecha.month in [1, 2, 7]):
+                vacaciones.append(f"{f_str}: {desc or 'Vacaciones'}")
+            elif r.is_break or "receso" in desc_l:
+                recesos.append(f"{f_str}: {desc or 'Semana de receso'}")
+            if r.is_exam_period or any(k in desc_l for k in ["examen", "solemne", "certamen", "evaluaci"]):
+                examenes.append(f"{f_str}: {desc or 'Período de exámenes / certámenes'}")
+            if getattr(r, "is_class_milestone", False) or any(k in desc_l for k in ["inicio de clases", "fin de clases", "término lectivo", "cierre de actas"]):
+                hitos_clases.append(f"{f_str}: {desc or 'Hito de clases'}")
+            if r.suspension_actividades or "suspensi" in desc_l:
+                suspensiones.append(f"{f_str}: {desc or 'Suspensión de actividades'}")
+            if r.is_strike_federado or r.is_strike_carrera or r.tipo_contingencia or "paro" in desc_l:
+                motivo = r.tipo_contingencia or ("Paro Federado" if r.is_strike_federado else "Paro de Carrera")
+                paros_contingencias.append(f"{f_str}: {desc or motivo}")
+
+        for c in cont_rows:
+            rango_c = f"{c.fecha_inicio.strftime('%d/%m')}–{c.fecha_fin.strftime('%d/%m')}"
+            cierre_txt = " (Cierre Total)" if c.implica_cierre_total else ""
+            paros_contingencias.append(f"{rango_c}: {c.titulo} [{c.tipo}]{cierre_txt}")
+            if "suspension" in c.tipo.lower():
+                suspensiones.append(f"{rango_c}: {c.titulo}")
+
+        if examenes and not h24_items and espacio_id == 1:
+            h24_items.append("Campaña 24 Horas Exámenes activa en Sala 2 Pecera CSF04 (226 as. calibrados)")
+
+        lineas = [
+            "HECHOS INSTITUCIONALES EN EL PERÍODO (UCT CSF):",
+            f"1. Feriados Oficiales: {'; '.join(feriados) if feriados else 'Sin feriados oficiales en el rango'}",
+            f"2. Semana de Receso: {'; '.join(recesos) if recesos else 'Sin semanas de receso en el rango'}",
+            f"3. Vacaciones: {'; '.join(vacaciones) if vacaciones else 'Sin período de vacaciones en el rango'}",
+            f"4. Exámenes / Solemnes: {'; '.join(examenes) if examenes else 'Régimen de clases regulares sin evaluaciones solemnes'}",
+            f"5. Hitos de Clases: {'; '.join(hitos_clases) if hitos_clases else 'Régimen lectivo continuo'}",
+            f"6. Suspensiones: {'; '.join(suspensiones) if suspensiones else 'Sin suspensiones de actividades reportadas'}",
+            f"7. Paros y Contingencias: {'; '.join(paros_contingencias) if paros_contingencias else 'Sin paros ni contingencias activas'}",
+            f"8. Horario 24 Horas: {'; '.join(h24_items) if h24_items else ('Horario regular 08:30–20:30 hrs (sin apertura 24h en este período)' if espacio_id == 1 else 'Horario regular vehicular 07:00–22:00 hrs')}",
+        ]
+        return "\n".join(lineas)
+    except Exception as e:
+        logger.warning(f"Error generando resumen de hechos institucionales: {e}")
+        return "- Hechos Institucionales: Régimen lectivo regular."
 

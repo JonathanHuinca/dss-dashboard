@@ -49,7 +49,7 @@ PLANTILLA_SISTEMA_ESTACIONAMIENTO: str = (
     "Si el usuario indica expresamente un año en su consulta (ej. 'en {anio_objetivo}'), respeta estrictamente el año solicitado. "
     "REGLAS DE ENRUTAMIENTO SEMÁNTICO: "
     "1. Para preguntas generales sobre asistencia, concurrencia, aforo, ocupación o volumen en fechas o rangos, selecciona obligatoriamente 'consultar_aforo_historico'. "
-    "2. Para preguntas sobre el calendario académico institucional, qué hubo en una semana determinada (ej. 'qué hubo en la semana 21'), feriados, semanas de receso, vacaciones, suspensiones, paros o exámenes, selecciona obligatoriamente 'consultar_calendario_academico'. "
+    "2. Para preguntas sobre hechos institucionales (feriados oficiales, semanas de receso, vacaciones, períodos de exámenes o solemnes, hitos de clases, suspensiones de actividades, paros y contingencias, o régimen horario), selecciona obligatoriamente 'consultar_calendario_academico'. "
     "3. Tu tarea es seleccionar la herramienta de consulta más precisa para responder al usuario usando Function Calling. "
     "Si la consulta es meramente conceptual o un saludo, responde textualmente sin llamar herramientas."
 )
@@ -65,7 +65,7 @@ PLANTILLA_SISTEMA_BIBLIOTECA: str = (
     "REGLAS DE ENRUTAMIENTO SEMÁNTICO: "
     "1. Para preguntas generales sobre asistencia, concurrencia, aforo, ocupación o volumen en fechas o rangos, selecciona obligatoriamente 'consultar_aforo_historico'. "
     "2. Selecciona 'consultar_comparativa_salas' ÚNICAMENTE si la pregunta menciona explícitamente salas, Sala 1, Sala 2, Pecera, CSF02 o CSF04. "
-    "3. Para preguntas sobre el calendario académico institucional, qué hubo en una semana determinada (ej. 'qué hubo en la semana 21'), feriados, semanas de receso, vacaciones, suspensiones, paros o exámenes, selecciona obligatoriamente 'consultar_calendario_academico'. "
+    "3. Para preguntas sobre hechos institucionales (feriados oficiales, semanas de receso, vacaciones, períodos de exámenes o solemnes, hitos de clases, suspensiones de actividades, paros y contingencias, o régimen de Horario 24 Horas), selecciona obligatoriamente 'consultar_calendario_academico' o 'consultar_campana_24h'. "
     "4. Tu tarea es seleccionar la herramienta de consulta más precisa para responder al usuario usando Function Calling. "
     "Si la consulta es meramente conceptual o un saludo, responde textualmente sin llamar herramientas."
 )
@@ -154,7 +154,7 @@ def get_gemini_tools(espacio_id: int = 1):
     herramientas_base = [
         types.FunctionDeclaration(
             name="consultar_calendario_academico",
-            description="Consulta eventos oficiales del Calendario Académico UCT (feriados, semanas de receso, vacaciones, suspensión de actividades, períodos de exámenes, paros o clases regulares) y su impacto en la afluencia institucional.",
+            description="Consulta hechos institucionales oficiales del Calendario Académico UCT: Feriados Oficiales, Semanas de Receso, Vacaciones, Exámenes / Solemnes, Hitos de Clases, Suspensiones de Actividades, Paros y Contingencias, y régimen de Horario 24 Horas, analizando su impacto en la concurrencia.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
@@ -362,6 +362,19 @@ def get_gemini_tools(espacio_id: int = 1):
                     required=["espacio_id"],
                 ),
             ),
+            types.FunctionDeclaration(
+                name="consultar_campana_24h",
+                description="Consulta el régimen de Horario 24 Horas y Campaña de Exámenes en Sala 2 Pecera CSF04, flujo nocturno 20:30 a 08:30 hrs y aforo delta.",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "espacio_id": types.Schema(type="INTEGER", description="ID del espacio (1: Biblioteca CSF)"),
+                        "fecha_inicio": types.Schema(type="STRING", description="Fecha de inicio YYYY-MM-DD (opcional)"),
+                        "fecha_fin": types.Schema(type="STRING", description="Fecha de fin YYYY-MM-DD (opcional)"),
+                    },
+                    required=["espacio_id"],
+                ),
+            ),
         ]
 
     tool_def = [types.Tool(function_declarations=herramientas_base + herramientas_especificas)]
@@ -455,7 +468,8 @@ class GeminiClient(LLMClientBase):
 
     def _resolve_model(self, model: Optional[str] = None) -> str:
         chosen_model = model or self.default_model
-        if chosen_model in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+        # Redirigir modelos deprecados o con cuota restringida al modelo por defecto de alta disponibilidad
+        if chosen_model in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.5-flash"]:
             chosen_model = settings.MODELO_GEMINI_POR_DEFECTO
         modelos_disponibles = listar_modelos_disponibles(self.client)
         if chosen_model in modelos_disponibles:
@@ -505,32 +519,35 @@ class GeminiClient(LLMClientBase):
             temperature=0.1,
         )
 
-        async def _llamar():
-            return await self.client.aio.models.generate_content(
-                model=effective_model,
-                contents=prompt,
-                config=config,
-            )
+        modelos_candidatos = list(dict.fromkeys([
+            effective_model,
+            settings.MODELO_GEMINI_POR_DEFECTO,
+            "gemini-3.5-flash-lite",
+            "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+        ]))
+
+        res = None
+        ultimo_error = None
+        for mod_cand in modelos_candidatos:
+            if not mod_cand:
+                continue
+            try:
+                async def _llamar():
+                    return await self.client.aio.models.generate_content(
+                        model=mod_cand,
+                        contents=prompt,
+                        config=config,
+                    )
+                res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
+                if res:
+                    break
+            except Exception as e_mod:
+                ultimo_error = e_mod
+                logger.warning(f"Error en analyze_query_with_tools con {mod_cand}: {e_mod}. Probando siguiente modelo...")
 
         try:
-            try:
-                res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
-            except Exception as model_err:
-                fallback_model = settings.MODELO_GEMINI_POR_DEFECTO
-                if effective_model != fallback_model:
-                    logger.warning(
-                        f"Reintentando consulta con {fallback_model} tras error en {effective_model}: {model_err}"
-                    )
-                    async def _llamar_fallback():
-                        return await self.client.aio.models.generate_content(
-                            model=fallback_model,
-                            contents=prompt,
-                            config=config,
-                        )
-                    res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar_fallback)
-                else:
-                    raise model_err
-
             if res and res.function_calls:
                 call = res.function_calls[0]
                 args = dict(call.args) if call.args else {}
@@ -550,16 +567,25 @@ class GeminiClient(LLMClientBase):
                     "args": args,
                 }
 
-            text_resp = res.text if res else "No se pudo obtener respuesta del modelo."
+            text_resp = res.text if res else None
+            if text_resp:
+                return {
+                    "type": "text",
+                    "text": text_resp,
+                }
+
+            # Si el modelo no devolvió texto o todos fallaron, usar respuesta offline institucional
+            from app.api.v1.endpoints.assistant import build_offline_response
             return {
                 "type": "text",
-                "text": text_resp,
+                "text": build_offline_response(prompt),
             }
         except Exception as e:
-            logger.error(f"Error en analyze_query_with_tools: {e}")
+            logger.error(f"Error procesando resultado en analyze_query_with_tools: {e}")
+            from app.api.v1.endpoints.assistant import build_offline_response
             return {
                 "type": "text",
-                "text": f"Error al procesar consulta con Gemini: {str(e)}",
+                "text": build_offline_response(prompt),
             }
 
     async def generate_narrative_stream(
@@ -575,35 +601,43 @@ class GeminiClient(LLMClientBase):
             system_instruction=system_instruction,
             temperature=0.2,
         )
-        try:
-            res = self.client.aio.models.generate_content_stream(
-                model=effective_model,
-                contents=prompt,
-                config=config,
-            )
-            stream = await res if inspect.iscoroutine(res) else res
-            async for chunk in stream:
-                if chunk and chunk.text:
-                    yield chunk.text
-        except Exception as e:
-            logger.warning(f"Error en generate_narrative_stream con {effective_model}: {e}")
-            fallback_model = settings.MODELO_GEMINI_POR_DEFECTO
-            if effective_model != fallback_model:
-                try:
-                    logger.info(f"Activando fallback de streaming con {fallback_model}...")
-                    res_fb = self.client.aio.models.generate_content_stream(
-                        model=fallback_model,
-                        contents=prompt,
-                        config=config,
-                    )
-                    stream_fb = await res_fb if inspect.iscoroutine(res_fb) else res_fb
-                    async for chunk in stream_fb:
-                        if chunk and chunk.text:
-                            yield chunk.text
+        candidatos_stream = list(dict.fromkeys([
+            effective_model,
+            settings.MODELO_GEMINI_POR_DEFECTO,
+            "gemini-3.5-flash-lite",
+            "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+        ]))
+
+        chunks_yielded = 0
+        stream_exitoso = False
+
+        for mod_stream in candidatos_stream:
+            if not mod_stream:
+                continue
+            try:
+                res = self.client.aio.models.generate_content_stream(
+                    model=mod_stream,
+                    contents=prompt,
+                    config=config,
+                )
+                stream = await res if inspect.iscoroutine(res) else res
+                async for chunk in stream:
+                    if chunk and chunk.text:
+                        chunks_yielded += 1
+                        yield chunk.text
+                stream_exitoso = True
+                break
+            except Exception as e:
+                logger.warning(f"Error en generate_narrative_stream con {mod_stream}: {e}")
+                if chunks_yielded > 0:
+                    yield " (Consulta completada de forma parcial por interrupción del servicio)."
                     return
-                except Exception as fb_err:
-                    logger.error(f"Fallback streaming falló: {fb_err}")
-            yield " El modelo experimenta alta demanda en este momento. Por favor, reintenta tu consulta en unos segundos."
+
+        if not stream_exitoso and chunks_yielded == 0:
+            from app.api.v1.endpoints.assistant import build_offline_response
+            yield build_offline_response(prompt)
 
     async def generate_response(
         self,
@@ -624,32 +658,33 @@ class GeminiClient(LLMClientBase):
         if response_mime_type:
             config.response_mime_type = response_mime_type
 
-        async def _llamar():
-            return await self.client.aio.models.generate_content(
-                model=effective_model,
-                contents=prompt,
-                config=config,
-            )
+        candidatos_resp = list(dict.fromkeys([
+            effective_model,
+            settings.MODELO_GEMINI_POR_DEFECTO,
+            "gemini-3.5-flash-lite",
+            "gemini-flash-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-lite-latest",
+        ]))
 
-        try:
-            res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
-            return res.text if res else None
-        except Exception as e:
-            logger.warning(f"Error en generate_response con {effective_model}: {e}")
-            fallback_model = settings.MODELO_GEMINI_POR_DEFECTO
-            if effective_model != fallback_model:
-                try:
-                    async def _llamar_fallback():
-                        return await self.client.aio.models.generate_content(
-                            model=fallback_model,
-                            contents=prompt,
-                            config=config,
-                        )
-                    res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar_fallback)
-                    return res.text if res else None
-                except Exception:
-                    pass
-            return None
+        for mod_resp in candidatos_resp:
+            if not mod_resp:
+                continue
+            try:
+                async def _llamar():
+                    return await self.client.aio.models.generate_content(
+                        model=mod_resp,
+                        contents=prompt,
+                        config=config,
+                    )
+                res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
+                if res and res.text:
+                    return res.text
+            except Exception as e:
+                logger.warning(f"Error en generate_response con {mod_resp}: {e}")
+
+        from app.api.v1.endpoints.assistant import build_offline_response
+        return build_offline_response(prompt)
 
     async def consult_intent(
         self,

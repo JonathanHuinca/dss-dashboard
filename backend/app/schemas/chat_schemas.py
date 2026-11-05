@@ -8,7 +8,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field(..., description="Identificador único de la sesión de interacción", examples=["session-001"])
     conversacion_id: Optional[str] = Field(None, description="Identificador único UUID de la conversación persistente")
     espacio_id: int = Field(1, description="ID del espacio (para configuración)")
-    model: str = Field("gemini-2.0-flash", description="Modelo LLM a invocar", examples=["gemini-2.0-flash"])
+    model: str = Field("gemini-3.5-flash-lite", description="Modelo LLM a invocar", examples=["gemini-3.5-flash-lite"])
     grafico_contexto: Optional[str] = Field(None, description="Contexto del gráfico específico desde donde se origina la consulta")
     stream: Optional[bool] = Field(False, description="Activar Server-Sent Events (SSE) streaming")
     fecha_inicio: Optional[str] = Field(None, description="Fecha de inicio del filtro actual YYYY-MM-DD")

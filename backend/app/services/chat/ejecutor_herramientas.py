@@ -16,6 +16,7 @@ from app.services.chat.fechas_chat import (
     extraer_o_normalizar_fechas,
     obtener_anio_activo_espacio,
     obtener_contexto_calendario_rango,
+    obtener_resumen_hechos_institucionales,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,59 @@ async def _resolver_datos_grafico_contexto_interno(
 
     slug = re.sub(r'[^a-z0-9_]', '_', (grafico_id or '').lower().strip()).strip('_')
     filtros = filtros or {}
-    alcance = filtros.get("alcance", "conformes")
+    alcance = filtros.get("alcance") or filtros.get("calidad") or "conformes"
     sala = filtros.get("sala")
+    facultad = filtros.get("facultad")
+    carrera = filtros.get("carrera")
+    cohorte = filtros.get("cohorte")
+    regimen_horario = filtros.get("regimen_horario") or filtros.get("rango_horario") or "todos"
+    direccion = filtros.get("direccion") or filtros.get("sentido") or "todos"
+    dias_semana = filtros.get("dias_semana") or filtros.get("tipo_dia")
+    door = filtros.get("torniquetes") or filtros.get("door") or filtros.get("puerta")
+    perfil_visita = filtros.get("perfil_visita") or filtros.get("perfil") or "todos"
+    marcajes = filtros.get("marcajes") or "todos"
+    sector = filtros.get("sector")
+    tipo_vehiculo = filtros.get("tipo_vehiculo")
     nombre_espacio = "Estacionamiento CSF" if espacio_id == 2 else "Biblioteca CSF"
+
+    # Capacidades físicas y calibradas oficiales Campus San Francisco
+    CAP_SALA_1 = 150  # CSF02 2° Piso (Estudio y Biblioteca con Locker)
+    CAP_SALA_2 = 126  # CSF04 1° Piso (Pecera de Estudio 24h régimen habitual)
+    CAP_SALA_2_NOCTURNA = 226  # CSF04 1° Piso durante régimen de exámenes nocturnos
+    CAP_CAMPUS_CALIBRADA = 276  # Suma calibrada 150 + 126
+    CAP_CAMPUS_REFERENCIA = 350  # Capacidad máxima histórica de referencia
+
+    if sala and ("1" in str(sala) or "csf02" in str(sala).lower()):
+        cap_activa = CAP_SALA_1
+        sala_desc = "Sala 1 — CSF02 (2° Piso, Estudio y Biblioteca con Locker: 150 asientos calibrados)"
+    elif sala and ("2" in str(sala) or "csf04" in str(sala).lower() or "pecera" in str(sala).lower()):
+        cap_activa = CAP_SALA_2_NOCTURNA if regimen_horario == "24h_delta" else CAP_SALA_2
+        sala_desc = f"Sala 2 — CSF04 Pecera (1° Piso, Estudio 24h: {cap_activa} asientos calibrados)"
+    else:
+        cap_activa = CAP_CAMPUS_CALIBRADA
+        sala_desc = "Campus San Francisco Completo (Sala 1: 150 as. + Sala 2: 126 as. = 276 asientos calibrados)"
+
+    regimen_desc = ""
+    if regimen_horario == "24h_delta":
+        regimen_desc = "Régimen Horario Activo: Turno Nocturno Delta 24h (L-J 23:00-07:00 h | Vie 22:00-06:00 h en Sala 2 Pecera, 226 asientos)."
+    elif regimen_horario == "examenes":
+        regimen_desc = "Régimen Horario Activo: Extensión Horaria Especial Exámenes."
+    elif regimen_horario == "diurno":
+        regimen_desc = "Régimen Horario Activo: Diurno Habitual (07:00 a 20:30 h)."
+    else:
+        regimen_desc = "Régimen Horario Activo: Ciclo Continuo 24 Horas."
+
+    detalle_hardware_torniquetes = (
+        "Puntos de Control Físico (4 canales activos CSF):\n"
+        "- CSF02 Torniquete Principal: Canal 2202/2184 (CSF02_320 CTRA IN 02 / OUT 02)\n"
+        "- CSF02 Acceso Universal Prioritario: Canal 2177/2170 (CSF02_320 CTRA IN 01 / OUT 01)\n"
+        "- CSF04 Torniquete Principal Pecera: Canal 2592/2587 (CSF04_110 IN 01 / OUT)\n"
+        "- CSF04 Acceso Universal Prioritario Pecera: Canal 3411/3416 (CSF04_110 IN 02_Door_1 / OUT 02_Door_1)"
+    )
+
+    hitos_calendario = await obtener_contexto_calendario_rango(db, d_ini, d_fin, espacio_id=espacio_id)
+    resumen_hechos = await obtener_resumen_hechos_institucionales(db, d_ini, d_fin, espacio_id=espacio_id)
+    contexto_hitos = resumen_hechos
 
     component = None
     payload = None
@@ -64,7 +115,8 @@ async def _resolver_datos_grafico_contexto_interno(
     SLUGS_EXCLUSIVOS_BIBLIOTECA = [
         "distribucion_curricular", "torniquetes", "comparativa_salas",
         "distribucion_marcajes", "checkins", "promedio_dias_semana", "volumen_mensual",
-        "evolucion_semanal", "impacto_examenes", "perfiles_visita", "pronostico_14d", "permanencia_salas"
+        "evolucion_semanal", "impacto_examenes", "perfiles_visita", "pronostico_14d", "permanencia_salas",
+        "campana_24h", "analisis_24h", "flujo_nocturno", "justificacion_24h"
     ]
     SLUGS_EXCLUSIVOS_ESTACIONAMIENTO = [
         "composicion_flota", "flota_vehicular", "camaras_anpr", "movilidad_intercampus", "kmeans_clusters"
@@ -78,7 +130,19 @@ async def _resolver_datos_grafico_contexto_interno(
         # 1. Curva de Aforo / Ocupación
         if any(k in slug for k in ["aforo_curva", "curva_ocupacion", "curva_de_aforo", "curva_de_ocupacion"]):
             if espacio_id == 2:
-                data = await VehicleService.get_hourly_flow(session=db, fecha_inicio=d_ini, fecha_fin=d_fin, espacio_id=2, alcance=alcance)
+                data = await VehicleService.get_hourly_flow(
+                    session=db,
+                    fecha_inicio=d_ini,
+                    fecha_fin=d_fin,
+                    espacio_id=2,
+                    alcance=alcance,
+                    regimen_horario=regimen_horario,
+                    direccion=direccion,
+                    dias_semana=dias_semana,
+                    door=door,
+                    sector=sector,
+                    tipo_vehiculo=tipo_vehiculo,
+                )
                 component = "OccupancyAreaChart"
                 payload = data
                 cap = 180
@@ -100,14 +164,31 @@ async def _resolver_datos_grafico_contexto_interno(
                     f"- Pico máximo de aforo/ocupación: {max_val} vehículos ({pct_cap:.1f}% de capacidad) en fecha/hora {max_time}.\n"
                     f"- Total de entradas acumuladas en el período: {tot_in:,} vehículos.\n"
                     f"- Total de salidas acumuladas en el período: {tot_out:,} vehículos.\n"
-                    f"- Cantidad de intervalos temporales evaluados: {len(data or [])} registros."
+                    f"- Cantidad de intervalos temporales evaluados: {len(data or [])} registros.\n"
+                    f"{contexto_hitos}"
                 )
                 table_data = data[:50] if isinstance(data, list) else None
             else:
-                data = await AttendanceService.get_hourly_flow(session=db, fecha_inicio=d_ini, fecha_fin=d_fin, espacio_id=1, alcance=alcance, sala=sala)
+                data = await AttendanceService.get_hourly_flow(
+                    session=db,
+                    fecha_inicio=d_ini,
+                    fecha_fin=d_fin,
+                    espacio_id=1,
+                    alcance=alcance,
+                    regimen_horario=regimen_horario,
+                    direccion=direccion,
+                    dias_semana=dias_semana,
+                    door=door,
+                    perfil_visita=perfil_visita,
+                    marcajes=marcajes,
+                    sala=sala,
+                    carrera=carrera,
+                    facultad=facultad,
+                    cohorte=cohorte,
+                )
                 component = "OccupancyAreaChart"
                 payload = data
-                cap = 350
+                cap = cap_activa
                 max_val = 0
                 max_time = "N/D"
                 tot_in = 0
@@ -122,11 +203,13 @@ async def _resolver_datos_grafico_contexto_interno(
                 pct_cap = (max_val / cap * 100) if cap else 0
                 resumen_metricas = (
                     f"Gráfico enfocado: Curva de Aforo Concurrente ({nombre_espacio}).\n"
-                    f"- Capacidad institucional de referencia: {cap} ocupantes concurrentes.\n"
-                    f"- Pico máximo registrado en el período: {max_val} personas ({pct_cap:.1f}% de capacidad) el {max_time}.\n"
-                    f"- Total de ingresos de personas acumulados: {tot_in:,}.\n"
+                    f"- Entorno y Capacidad Calibrada: {sala_desc}.\n"
+                    f"- {regimen_desc}\n"
+                    f"- Pico máximo registrado en el período: {max_val} personas ({pct_cap:.1f}% sobre capacidad calibrada de {cap} asientos) el {max_time}.\n"
+                    f"- Total de ingresos acumulados con filtros activos: {tot_in:,}.\n"
                     f"- Total de salidas registradas: {tot_out:,}.\n"
-                    f"- Intervalos horarios evaluados: {len(data or [])} registros."
+                    f"- Intervalos horarios evaluados: {len(data or [])} registros.\n"
+                    f"{contexto_hitos}"
                 )
                 table_data = data[:50] if isinstance(data, list) else None
 
@@ -150,18 +233,48 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Pronóstico Continuo Prophet ({nombre_espacio}).\n"
                 f"- Alcance: 7 días de serie histórica y 7 días de proyección futura continua.\n"
+                f"- Capacidad institucional calibrada de referencia: {cap_activa} asientos ({sala_desc}).\n"
                 f"- Pico proyectado más elevado: {max_p:.0f} ocupantes proyectados en fecha/hora {max_t}.\n"
                 f"- Demanda promedio estimada en el horizonte: {avg_p:.0f} ocupantes.\n"
-                f"- Estado del modelo: {m_stat.get('status', 'ok')} (Entrenado el {m_stat.get('model_date', 'reciente')})."
+                f"- Estado del modelo: {m_stat.get('status', 'ok')} (Entrenado el {m_stat.get('model_date', 'reciente')}).\n"
+                f"{contexto_hitos}"
             )
             table_data = pron[:40] if pron else None
 
         # 3. Flujo Horario
         elif any(k in slug for k in ["flujo_horario", "flujo_horario_de"]):
             if espacio_id == 2:
-                data = await VehicleService.get_hourly_flow(session=db, fecha_inicio=d_ini, fecha_fin=d_fin, espacio_id=2, alcance=alcance)
+                data = await VehicleService.get_hourly_flow(
+                    session=db,
+                    fecha_inicio=d_ini,
+                    fecha_fin=d_fin,
+                    espacio_id=2,
+                    alcance=alcance,
+                    regimen_horario=regimen_horario,
+                    direccion=direccion,
+                    dias_semana=dias_semana,
+                    door=door,
+                    sector=sector,
+                    tipo_vehiculo=tipo_vehiculo,
+                )
             else:
-                data = await AttendanceService.get_hourly_flow(session=db, fecha_inicio=d_ini, fecha_fin=d_fin, espacio_id=1, alcance=alcance, sala=sala)
+                data = await AttendanceService.get_hourly_flow(
+                    session=db,
+                    fecha_inicio=d_ini,
+                    fecha_fin=d_fin,
+                    espacio_id=1,
+                    alcance=alcance,
+                    regimen_horario=regimen_horario,
+                    direccion=direccion,
+                    dias_semana=dias_semana,
+                    door=door,
+                    perfil_visita=perfil_visita,
+                    marcajes=marcajes,
+                    sala=sala,
+                    carrera=carrera,
+                    facultad=facultad,
+                    cohorte=cohorte,
+                )
             component = "HourlyBarChart"
             payload = data
             max_h = 0
@@ -183,15 +296,34 @@ async def _resolver_datos_grafico_contexto_interno(
                     low_hour = r.get("hora", r.get("bucket", "N/D"))
             resumen_metricas = (
                 f"Gráfico enfocado: Flujo Horario de Accesos ({nombre_espacio}).\n"
+                f"- Contexto operativo: {sala_desc}.\n"
+                f"- {regimen_desc}\n"
                 f"- Franja horaria pico con mayor volumen: {top_hour} con {max_h:,} entradas/ingresos.\n"
                 f"- Franja valle con menor afluencia: {low_hour if min_h != 999999 else 'N/D'} con {min_h if min_h != 999999 else 0:,} accesos.\n"
-                f"- Total acumulado: {tot_in:,} entradas y {tot_out:,} salidas."
+                f"- Total acumulado: {tot_in:,} entradas y {tot_out:,} salidas.\n"
+                f"{contexto_hitos}"
             )
             table_data = data[:40] if isinstance(data, list) else None
 
         # 4. Mapa de Calor
         elif any(k in slug for k in ["mapa_calor", "heatmap", "mapa_de_calor"]):
-            data = await AttendanceService.get_heatmap(session=db, espacio_id=espacio_id, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_heatmap(
+                session=db,
+                espacio_id=espacio_id,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+                cohorte=cohorte,
+            )
             component = "HeatmapChart"
             payload = data
             top_spot = {}
@@ -203,14 +335,30 @@ async def _resolver_datos_grafico_contexto_interno(
                     top_spot = c
             resumen_metricas = (
                 f"Gráfico enfocado: Mapa de Calor de Ocupación Día × Hora ({nombre_espacio}).\n"
+                f"- Configuración: {sala_desc}.\n"
+                f"- {regimen_desc}\n"
                 f"- Momento de mayor saturación: Día {top_spot.get('dia_semana', 'N/D')} a las {top_spot.get('hora', 'N/D')} hrs con aforo promedio de {max_occ:.0f} ocupantes.\n"
-                f"- Total de combinaciones día-hora evaluadas: {len(data or [])} bloques."
+                f"- Total de combinaciones día-hora evaluadas: {len(data or [])} bloques.\n"
+                f"{contexto_hitos}"
             )
             table_data = data[:35] if isinstance(data, list) else None
 
         # 5. Comparativa de Salas
         elif any(k in slug for k in ["comparativa_salas", "comparativa_de_salas", "comparativa_de_afluencia"]):
-            data = await AttendanceService.get_rooms_comparison(session=db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_rooms_comparison(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                marcajes=marcajes,
+                carrera=carrera,
+                facultad=facultad,
+            )
             component = "RoomComparisonPlotlyChart"
             payload = data
             resumen_salas = data.get("resumen_salas", []) if isinstance(data, dict) else []
@@ -223,17 +371,36 @@ async def _resolver_datos_grafico_contexto_interno(
             pct_s1 = res_s1.get("porcentaje_afluencia", 0)
             pct_s2 = res_s2.get("porcentaje_afluencia", 0)
             predom = "Sala 1 (CSF02 2° Piso)" if tot_s1 >= tot_s2 else "Sala 2 (CSF04 Pecera 1° Piso)"
+            cap_s2_efectiva = CAP_SALA_2_NOCTURNA if regimen_horario == "24h_delta" else CAP_SALA_2
             resumen_metricas = (
                 f"Gráfico enfocado: Comparativa de Afluencia entre Salas (Sala 1 vs Sala 2).\n"
-                f"- Sala 1 (CSF02 2° Piso): {tot_s1:,} accesos registrados ({u_s1:,} alumnos únicos, {pct_s1:.1f}% de afluencia, capacidad: 124 asientos).\n"
-                f"- Sala 2 (CSF04 Pecera 1° Piso): {tot_s2:,} accesos registrados ({u_s2:,} alumnos únicos, {pct_s2:.1f}% de afluencia, capacidad: 226 asientos).\n"
-                f"- Sala predominante en el período: {predom}."
+                f"- Sala 1 (CSF02 2° Piso, Estudio y Biblioteca con Locker): {tot_s1:,} accesos ({u_s1:,} alumnos únicos, {pct_s1:.1f}% de afluencia, capacidad calibrada: {CAP_SALA_1} asientos).\n"
+                f"- Sala 2 (CSF04 Pecera 1° Piso, Estudio 24h): {tot_s2:,} accesos ({u_s2:,} alumnos únicos, {pct_s2:.1f}% de afluencia, capacidad calibrada: {cap_s2_efectiva} asientos).\n"
+                f"- Capacidad combinada calibrada: {CAP_CAMPUS_CALIBRADA} asientos (referencia histórica agregada: {CAP_CAMPUS_REFERENCIA} asientos).\n"
+                f"- Sala predominante en el período: {predom}.\n"
+                f"- {detalle_hardware_torniquetes}\n"
+                f"{contexto_hitos}"
             )
             table_data = resumen_salas if resumen_salas else None
 
         # 6. Torniquetes y Accesos Universales
         elif any(k in slug for k in ["torniquetes", "uso_de_torniquetes", "doors_usage"]):
-            data = await AttendanceService.get_door_usage(db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_door_usage(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+            )
             component = "DoorUsagePlotlyChart"
             payload = data
             top_door = max(data, key=lambda x: x.get("total", 0)) if data else {}
@@ -242,15 +409,33 @@ async def _resolver_datos_grafico_contexto_interno(
             nombre_puerta = top_door.get("puerta", top_door.get("door", "N/D"))
             resumen_metricas = (
                 f"Gráfico enfocado: Uso de Torniquetes y Accesos Universales (Biblioteca CSF).\n"
+                f"- Desglose físico de infraestructura de hardware (4 canales):\n"
+                f"{detalle_hardware_torniquetes}\n"
                 f"- Acceso o torniquete más transitado: '{nombre_puerta}' con {top_door.get('total', 0):,} usos "
                 f"({top_door.get('entradas', 0):,} entradas, {top_door.get('salidas', 0):,} salidas, {top_pct:.1f}% del volumen total).\n"
-                f"- Total de tránsitos registrados: {tot_doors:,} registros en {len(data or [])} accesos físicos."
+                f"- Total de tránsitos registrados: {tot_doors:,} registros en {len(data or [])} accesos físicos.\n"
+                f"{contexto_hitos}"
             )
             table_data = data if isinstance(data, list) else None
 
         # 7. Distribución de Marcajes
         elif any(k in slug for k in ["distribucion_marcajes", "distribucion_de_marcajes", "checkins"]):
-            data = await AttendanceService.get_checkin_distribution(session=db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_checkin_distribution(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+            )
             component = "CheckinDistributionPlotlyChart"
             payload = data
             tot_p = sum(x.get("total_personas", 0) for x in (data or [])) or 1
@@ -260,14 +445,29 @@ async def _resolver_datos_grafico_contexto_interno(
                 res_items.append(f"{item.get('rango_marcajes', item.get('marcajes', 'N/D'))}: {item.get('total_personas', 0):,} personas ({pct:.1f}%)")
             resumen_metricas = (
                 f"Gráfico enfocado: Distribución de Marcajes por Registro Diario (Biblioteca CSF).\n"
+                f"- Entorno: {sala_desc}.\n"
                 f"- Total de personas evaluadas: {tot_p:,}.\n"
-                f"- Desglose por número de marcajes: {'; '.join(res_items)}."
+                f"- Desglose por número de marcajes: {'; '.join(res_items)}.\n"
+                f"{contexto_hitos}"
             )
             table_data = data if isinstance(data, list) else None
 
         # 8. Promedio de Asistencia por Día de la Semana
         elif any(k in slug for k in ["promedio_dias_semana", "promedio_diario_de_ingresos", "daily_average"]):
-            data = await AttendanceService.get_daily_average_attendance(session=db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_daily_average_attendance(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                marcajes=marcajes,
+                carrera=carrera,
+                facultad=facultad,
+            )
             component = "DailyAverageAttendancePlotlyChart"
             payload = data
             if isinstance(data, dict):
@@ -280,8 +480,10 @@ async def _resolver_datos_grafico_contexto_interno(
             low_dia = min(dias_list, key=lambda x: x.get("promedio_ingresos", 0) or x.get("total", 0)) if dias_list else {}
             resumen_metricas = (
                 f"Gráfico enfocado: Promedio Diario de Asistencia por Día de la Semana.\n"
+                f"- Configuración: {sala_desc}.\n"
                 f"- Día con mayor asistencia promedio: {top_dia.get('dia_semana', 'N/D')} con promedio de {top_dia.get('promedio_ingresos', 0):,.0f} personas/día.\n"
-                f"- Día con menor asistencia promedio: {low_dia.get('dia_semana', 'N/D')} con promedio de {low_dia.get('promedio_ingresos', 0):,.0f} personas/día."
+                f"- Día con menor asistencia promedio: {low_dia.get('dia_semana', 'N/D')} con promedio de {low_dia.get('promedio_ingresos', 0):,.0f} personas/día.\n"
+                f"{contexto_hitos}"
             )
             table_data = dias_list if dias_list else None
 
@@ -294,20 +496,38 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Volumen Mensual de Asistencia.\n"
                 f"- Mes de mayor afluencia: {top_mes.get('mes_nombre', top_mes.get('mes', 'N/D'))} con {top_mes.get('total_ingresos', 0):,} ingresos totales y promedio diario de {top_mes.get('promedio_diario', 0):,.0f} personas.\n"
-                f"- Total meses comparados: {len(data or [])} meses."
+                f"- Total meses comparados: {len(data or [])} meses.\n"
+                f"{contexto_hitos}"
             )
             table_data = data if isinstance(data, list) else None
 
         # 10. Evolución Semanal
         elif any(k in slug for k in ["evolucion_semanal", "weekly_evolution"]):
-            data = await AttendanceService.get_weekly_evolution(session=db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_weekly_evolution(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+            )
             component = "WeeklyEvolutionPlotlyChart"
             payload = data
             top_sem = max(data, key=lambda x: x.get("total_ingresos", 0) or x.get("usuarios_unicos", 0)) if data else {}
             resumen_metricas = (
                 f"Gráfico enfocado: Evolución Semanal de Usuarios (Semanas ISO).\n"
+                f"- Configuración: {sala_desc}.\n"
                 f"- Semana con mayor afluencia: {top_sem.get('semana_label', top_sem.get('semana', 'N/D'))} con {top_sem.get('total_ingresos', 0):,} accesos y {top_sem.get('usuarios_unicos', 0):,} usuarios únicos.\n"
-                f"- Total semanas registradas: {len(data or [])} semanas."
+                f"- Total semanas registradas: {len(data or [])} semanas.\n"
+                f"{contexto_hitos}"
             )
             table_data = data[:30] if isinstance(data, list) else None
 
@@ -324,13 +544,30 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Comparativa por Hito del Calendario Académico ({nombre_espacio}).\n"
                 f"- Hito con mayor demanda promedio: '{top_hito.get('hito', top_hito.get('categoria', 'N/D'))}' con promedio de {top_hito.get('promedio_diario', 0):,.0f} accesos diarios.\n"
-                f"- Períodos evaluados: {', '.join([h.get('hito', h.get('categoria', '')) for h in (data or [])])}."
+                f"- Períodos evaluados: {', '.join([h.get('hito', h.get('categoria', '')) for h in (data or [])])}.\n"
+                f"{contexto_hitos}"
             )
             table_data = data if isinstance(data, list) else None
 
         # 12. Distribución Curricular
         elif any(k in slug for k in ["distribucion_curricular", "poblacion_academica", "curricular"]):
-            data = await AttendanceService.get_curricular_distribution(session=db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_curricular_distribution(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+                cohorte=cohorte,
+            )
             component = "CurricularDistributionPlotlyChart"
             payload = data
             if isinstance(data, dict):
@@ -344,7 +581,6 @@ async def _resolver_datos_grafico_contexto_interno(
             tot_asistentes = data.get("total_estudiantes_asistentes", 0) if isinstance(data, dict) else 0
             tot_padron = data.get("total_estudiantes_catalogados", 0) if isinstance(data, dict) else 0
 
-            # Ordenar carreras estrictamente por eventos de asistencia y asistentes únicos
             carreras_ordenadas = sorted(
                 carreras,
                 key=lambda x: (x.get("eventos_asistencia", 0) or 0, x.get("estudiantes_asistentes", 0) or 0),
@@ -367,12 +603,15 @@ async def _resolver_datos_grafico_contexto_interno(
 
             resumen_metricas = (
                 f"Gráfico enfocado: Demografía Institucional y Distribución Curricular (Biblioteca CSF - Ley 21.719).\n"
+                f"- Contexto: {sala_desc}.\n"
+                f"- {regimen_desc}\n"
                 f"- Total de eventos de asistencia registrados en el período: {tot_eventos:,} asistencias.\n"
                 f"- Estudiantes asistentes únicos en el período: {tot_asistentes:,} alumnos (de un padrón catalogado de {tot_padron:,} estudiantes).\n"
                 f"- Carreras líderes en concurrencia:\n"
                 f"  * " + "\n  * ".join(top5_carreras if top5_carreras else ["Sin registros en el rango seleccionado"]) + "\n"
                 f"- Facultades principales: {'; '.join(top3_facs) if top3_facs else 'Sin registros'}.\n"
-                f"- Total de carreras analizadas: {len(carreras)} carreras universitarias."
+                f"- Total de carreras analizadas: {len(carreras)} carreras universitarias.\n"
+                f"{contexto_hitos}"
             )
             table_data = [
                 {
@@ -399,13 +638,29 @@ async def _resolver_datos_grafico_contexto_interno(
                 f"Gráfico enfocado: Proyección de Demanda Futura a 14 Días (HistGradientBoosting + Calendario).\n"
                 f"- Día con mayor afluencia proyectada: {max_dia.get('fecha', 'N/D')} ({max_dia.get('dia_semana', '')}) con {max_dia.get('aforo_proyectado', 0):,.0f} usuarios proyectados.\n"
                 f"- Demanda media diaria proyectada: {avg_14:,.0f} usuarios/día.\n"
-                f"- Horizonte evaluado: 14 días calendario."
+                f"- Horizonte evaluado: 14 días calendario.\n"
+                f"{contexto_hitos}"
             )
             table_data = preds if preds else None
 
         # 14. Perfiles de Visita
         elif any(k in slug for k in ["perfiles_visita", "perfiles_de_visita", "visit_profiles"]):
-            data = await AttendanceService.get_visit_profiles_donut(session=db, espacio_id=1, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await AttendanceService.get_visit_profiles_donut(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+            )
             component = "VisitProfilesPlotlyChart"
             payload = data
             if isinstance(data, dict):
@@ -422,15 +677,17 @@ async def _resolver_datos_grafico_contexto_interno(
             ]
             resumen_metricas = (
                 f"Gráfico enfocado: Perfiles de Visita y Tasa de Rebote (Cálculo Determinista Base de Datos).\n"
+                f"- Configuración: {sala_desc}.\n"
                 f"- Tasa de rebote (< 15 minutos): {tasa_reb:.1f}%.\n"
                 f"- Total de visitas analizadas con entrada y salida: {tot_vis:,}.\n"
-                f"- Distribución: {'; '.join(lista_items)}."
+                f"- Distribución: {'; '.join(lista_items)}.\n"
+                f"{contexto_hitos}"
             )
             table_data = items if items else None
 
         # 15. Composición de Flota
         elif any(k in slug for k in ["composicion_flota", "composicion_de_la_flota", "fleet_composition"]):
-            data = await VehicleService.get_fleet_composition(db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin)
+            data = await VehicleService.get_fleet_composition(db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin, sector=sector)
             component = "FleetDonutChart"
             payload = data.get("por_tipo", data)
             tipos = data.get("por_tipo", [])
@@ -440,13 +697,14 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Composición de la Flota Vehicular ({nombre_espacio}).\n"
                 f"- Tipo de vehículo predominante: '{top_t.get('tipo', 'N/D')}' con {top_t.get('total', 0):,} vehículos ({top_pct:.1f}% de la flota).\n"
-                f"- Parque vehicular total analizado: {tot_v:,} vehículos."
+                f"- Parque vehicular total analizado: {tot_v:,} vehículos.\n"
+                f"{contexto_hitos}"
             )
             table_data = tipos if tipos else None
 
         # 16. Top Marcas
         elif any(k in slug for k in ["top_marcas", "top_marcas_de_vehiculos"]):
-            data = await VehicleService.get_fleet_composition(db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin)
+            data = await VehicleService.get_fleet_composition(db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin, sector=sector)
             component = "FleetDonutChart"
             payload = data.get("por_marca", data)
             marcas = data.get("por_marca", [])
@@ -455,13 +713,26 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Top Marcas de Vehículos ({nombre_espacio}).\n"
                 f"- Marca más frecuente: '{top_m.get('marca', 'N/D')}' con {top_m.get('total', 0):,} vehículos registrados.\n"
-                f"- Marcas líderes: {', '.join(lista_marcas)}."
+                f"- Marcas líderes: {', '.join(lista_marcas)}.\n"
+                f"{contexto_hitos}"
             )
             table_data = marcas[:20] if marcas else None
 
         # 17. Cámaras ANPR
         elif any(k in slug for k in ["camaras_anpr", "distribucion_de_capturas", "camaras"]):
-            data = await VehicleService.get_camera_stats(db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin, alcance=alcance)
+            data = await VehicleService.get_camera_stats(
+                session=db,
+                espacio_id=2,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                sector=sector,
+                tipo_vehiculo=tipo_vehiculo,
+            )
             component = "CameraStatsPlotlyChart"
             payload = data
             top_cam = max(data, key=lambda x: x.get("entradas", 0) + x.get("salidas", 0)) if data else {}
@@ -470,7 +741,8 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Distribución de Capturas por Cámara ANPR ({nombre_espacio}).\n"
                 f"- Cámara con mayor volumen: '{top_cam.get('camara', 'N/D')}' con {top_cam.get('entradas', 0):,} entradas y {top_cam.get('salidas', 0):,} salidas.\n"
-                f"- Total de pasadas capturadas por ANPR: {tot_in + tot_out:,} lecturas."
+                f"- Total de pasadas capturadas por ANPR: {tot_in + tot_out:,} lecturas.\n"
+                f"{contexto_hitos}"
             )
             table_data = data if isinstance(data, list) else None
 
@@ -484,7 +756,8 @@ async def _resolver_datos_grafico_contexto_interno(
                 f"Gráfico enfocado: Flujo de Movilidad Inter-Campus (CSF ↔ San Juan Pablo II).\n"
                 f"- Total de traslados detectados entre campus: {tot_viajes:,} viajes vehiculares.\n"
                 f"- Sentido CSF → CHS: {data.get('csf_a_chs', 0):,} traslados.\n"
-                f"- Sentido CHS → CSF: {data.get('chs_a_csf', 0):,} traslados."
+                f"- Sentido CHS → CSF: {data.get('chs_a_csf', 0):,} traslados.\n"
+                f"{contexto_hitos}"
             )
             table_data = [data] if isinstance(data, dict) else None
 
@@ -498,7 +771,8 @@ async def _resolver_datos_grafico_contexto_interno(
             resumen_metricas = (
                 f"Gráfico enfocado: Evolución Diaria de Accesos Vehiculares (Plotly).\n"
                 f"- Día con mayor afluencia vehicular: {top_d.get('fecha', 'N/D')} con {top_d.get('entradas', 0):,} accesos.\n"
-                f"- Total acumulado en la serie: {tot_e:,} entradas."
+                f"- Total acumulado en la serie: {tot_e:,} entradas.\n"
+                f"{contexto_hitos}"
             )
             table_data = data[:30] if isinstance(data, list) else None
 
@@ -514,9 +788,44 @@ async def _resolver_datos_grafico_contexto_interno(
                 f"Gráfico enfocado: Segmentación y Clústeres de Comportamiento K-Means ({nombre_espacio}).\n"
                 f"- Universo total analizado: {tot_v:,} vehículos/patentes.\n"
                 f"- Posible uso externo detectado: {ext_c:,} vehículos ({ext_pct:.1f}% de la muestra).\n"
-                f"- Clústeres identificados: {', '.join([c.get('perfil', '') for c in data.get('distribucion', [])])}."
+                f"- Clústeres identificados: {', '.join([c.get('perfil', '') for c in data.get('distribucion', [])])}.\n"
+                f"{contexto_hitos}"
             )
             table_data = data.get("distribucion", []) if isinstance(data, dict) else None
+
+        # 21. Campaña 24 Horas & Análisis de Justificación Operativa
+        elif any(k in slug for k in ["campana_24h", "analisis_24h", "flujo_nocturno", "justificacion_24h", "nocturno", "pecera_24h"]):
+            data = await AttendanceService.get_analisis_24h(
+                session=db,
+                espacio_id=1,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                bloque_horario="nocturno" if regimen_horario == "24h_delta" else "todos"
+            )
+            component = "Campaign24hPlotlyChart"
+            payload = data
+            kpis = data.get("kpis_comparativa", {}) if isinstance(data, dict) else {}
+            pico = data.get("pico_nocturno", {}) if isinstance(data, dict) else {}
+            top_carr = data.get("top_carreras", []) if isinstance(data, dict) else []
+            carr_prin = top_carr[0] if top_carr else {}
+            pct_delta = kpis.get("porcentaje_delta_24h", 0)
+            ing_noct = kpis.get("ingresos_nocturnos", 0)
+            tot_ing = kpis.get("total_ingresos", 0)
+            horas_noct = kpis.get("horas_estudio_nocturnas", 0)
+            est_noct = kpis.get("estudiantes_nocturnos_unicos", 0)
+            resumen_metricas = (
+                f"Gráfico enfocado: Campaña 24 Horas & Análisis de Justificación Operativa (Sala 2 CSF04 Pecera: {CAP_SALA_2_NOCTURNA} Asientos calibrados).\n"
+                f"- Evaluación de demanda nocturna (L-J 23:00 a 07:00 h | Vie 22:00 a 06:00 h) durante régimen de exámenes.\n"
+                f"- Aporte Nocturno (Delta 24h): {pct_delta:.2f}% ({ing_noct:,} de {tot_ing:,} accesos totales).\n"
+                f"- Concurrencia Máxima Simultánea: {pico.get('aforo_maximo', 0)} alumnos ({pico.get('tasa_ocupacion_asientos_pct', 0):.1f}% sobre 226 asientos, hora pico: {pico.get('hora_pico', 'N/D')}).\n"
+                f"- Horas de Estudio Nocturnas: {horas_noct:,.0f} hrs ({est_noct:,} estudiantes únicos con permanencia nocturna).\n"
+                f"- Segmentación Curricular Clave: {carr_prin.get('carrera', 'N/D')} ({carr_prin.get('porcentaje', 0):.1f}% del uso nocturno, {carr_prin.get('visitas', 0):,} visitas).\n"
+                f"- Puntos de Control Físico Pecera:\n"
+                f"  * Torniquete Principal Pecera: Canal 2592/2587 (CSF04_110 IN 01 / OUT)\n"
+                f"  * Acceso Universal Prioritario Pecera: Canal 3411/3416 (CSF04_110 IN 02_Door_1 / OUT 02_Door_1)\n"
+                f"{contexto_hitos}"
+            )
+            table_data = top_carr[:15] if top_carr else None
 
         else:
             # Fallback determinista general por si el nombre no coincide exactamente
@@ -647,6 +956,10 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
         c, p, res_m, f, t = await resolver_datos_grafico_contexto("pronostico_14d", espacio, str(d_ini) if d_ini else None, str(d_fin) if d_fin else None, db, req.filtros if req else None)
         return c, p, res_m, f, t
 
+    elif tool_name in ["consultar_campana_24h", "consultar_flujo_nocturno"]:
+        c, p, res_m, f, t = await resolver_datos_grafico_contexto("campana_24h", espacio, str(d_ini) if d_ini else None, str(d_fin) if d_fin else None, db, req.filtros if req else None)
+        return c, p, res_m, f, t
+
     elif tool_name == "consultar_calendario_academico":
         semana_arg = args.get("semana")
         mes_arg = args.get("mes")
@@ -745,6 +1058,9 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
         if espacio == 1:
             resumen_lineas.append(f"- Usuarios únicos registrados: {usuarios_unicos:,} personas.")
         resumen_lineas.append(f"- Explicación causal de asistencia: La afluencia observada responde directamente a la programación de {tipo_periodo}.")
+
+        resumen_hechos_8 = await obtener_resumen_hechos_institucionales(db, d_ini, d_fin, espacio_id=espacio)
+        resumen_lineas.append(f"\n{resumen_hechos_8}")
 
         res_m = "\n".join(resumen_lineas)
 

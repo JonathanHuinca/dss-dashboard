@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     PANDASAI_LLM_API_KEY: str = ""
     TIEMPO_ESPERA_LLM_SEGUNDOS: int = 20
-    MODELO_GEMINI_POR_DEFECTO: str = "gemini-3.5-flash"
+    MODELO_GEMINI_POR_DEFECTO: str = "gemini-3.5-flash-lite"
 
     # Planificador Interno (APScheduler)
     PLANIFICADOR_ACTIVO: bool = True
