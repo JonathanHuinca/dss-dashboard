@@ -16,6 +16,7 @@ Características:
      - Últimos 7 días (168 horas) de datos reales empíricos.
      - Próximos 7 días (168 horas) de proyección futura continua con intervalos de incertidumbre del 80%.
 """
+import json
 import logging
 import shutil
 from datetime import datetime, timedelta
@@ -84,6 +85,17 @@ def load_active_model(modelo_key: str) -> Optional[Prophet]:
 
 
 def active_model_date(modelo_key: str) -> Optional[str]:
+    meta_path = MODELS_DIR / f"{modelo_key}_metadata.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                dt_str = data.get("actualizado_en") or data.get("promovido_en") or data.get("ultima_auditoria_en")
+                if dt_str:
+                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    return dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
     path = _active_path(modelo_key)
     if not path.exists():
         return None
@@ -334,22 +346,40 @@ REGRESORES_PROPHET: list[str] = [
 ]
 
 
+def aplicar_mascara_anomalias_entrenamiento(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Opción A: Reemplaza 'y' por np.nan en feriados oficiales, recesos académicos cerrados,
+    suspensiones de actividades y contingencias (paros) durante el entrenamiento.
+    Prophet omite estos registros en el cálculo del likelihood/pérdida, preservando
+    la estacionalidad semanal real de los días lectivos regulares sin contaminación por ceros.
+    """
+    df_mod = df.copy()
+    mascara_anomalia = (
+        (df_mod["is_holiday"] == 1) |
+        ((df_mod["is_break"] == 1) & (df_mod["es_horario_abierto"] == 0)) |
+        (df_mod["suspension_actividades"] == 1) |
+        (df_mod["is_strike"] == 1)
+    )
+    df_mod.loc[mascara_anomalia, "y"] = np.nan
+    return df_mod
+
+
 def _build_prophet() -> Prophet:
     model = Prophet(
         seasonality_mode="additive",
         daily_seasonality=False,
         weekly_seasonality=False,
         yearly_seasonality=False,
-        changepoint_prior_scale=0.05,
-        seasonality_prior_scale=10.0,
+        changepoint_prior_scale=0.03,
+        seasonality_prior_scale=8.0,
         interval_width=0.80,
     )
     model.add_seasonality(name="diaria_uct", period=1, fourier_order=8)
-    model.add_seasonality(name="semanal_uct", period=7, fourier_order=4)
+    model.add_seasonality(name="semanal_uct", period=7, fourier_order=5)
     model.add_regressor("es_horario_abierto", prior_scale=15.0, standardize=False)
     model.add_regressor("is_holiday", prior_scale=15.0, standardize=False)
     model.add_regressor("suspension_actividades", prior_scale=10.0, standardize=False)
-    model.add_regressor("is_exam_period", standardize=False)
+    model.add_regressor("is_exam_period", prior_scale=12.0, standardize=False)
     model.add_regressor("is_break", standardize=False)
     model.add_regressor("is_strike", standardize=False)
     return model
@@ -387,16 +417,19 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
     test_df = df.iloc[split_idx:].copy()
 
     regressors = REGRESORES_PROPHET
-    model = _build_prophet()
+
+    # Opción A: Aplicar máscara NaN a los días atípicos para no contaminar la estacionalidad semanal
+    train_df_fit = aplicar_mascara_anomalias_entrenamiento(train_df)
 
     import warnings
+    model_eval = _build_prophet()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model.fit(train_df[["ds", "y"] + regressors])
+        model_eval.fit(train_df_fit[["ds", "y"] + regressors])
 
     # Evaluación sobre test set
     test_features = test_df[["ds"] + regressors].copy()
-    forecast_test = model.predict(test_features)
+    forecast_test = model_eval.predict(test_features)
 
     y_true = test_df["y"].values
     y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=cap_val)
@@ -407,7 +440,40 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
     wape = float(100.0 * np.sum(np.abs(y_true - y_pred)) / denom) if denom > 0 else 0.0
     mae = float(np.mean(np.abs(y_true - y_pred)))
 
-    versioned_path = _save_model(model, modelo_key)
+    # Error en Hora Pico (PHE) sobre horas con asistencia >= 75% del máximo
+    max_test = np.max(y_true) if len(y_true) > 0 else 0
+    mask_peak = (y_true >= (0.75 * max_test)) if max_test > 0 else np.zeros_like(y_true, dtype=bool)
+    if np.any(mask_peak):
+        phe = float(100.0 * np.mean(np.abs(y_true[mask_peak] - y_pred[mask_peak]) / y_true[mask_peak]))
+    else:
+        phe = 0.0
+
+    # Calibrar y persistir el modelo de producción activo sobre la serie completa enmascarada
+    df_prod_fit = aplicar_mascara_anomalias_entrenamiento(df)
+    model_prod = _build_prophet()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model_prod.fit(df_prod_fit[["ds", "y"] + regressors])
+
+    versioned_path = _save_model(model_prod, modelo_key)
+
+    # Persistir metadatos analíticos de validación
+    meta_path = MODELS_DIR / f"{modelo_key}_metadata.json"
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f_meta:
+            json.dump({
+                "modelo": modelo_key,
+                "recinto": recinto,
+                "sala": sala,
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "mae": round(mae, 2),
+                "wape": round(wape, 2),
+                "phe": round(phe, 2),
+                "actualizado_en": datetime.now().isoformat(),
+            }, f_meta, indent=2)
+    except Exception as e_meta:
+        logger.warning(f"Error guardando metadatos para {modelo_key}: {e_meta}")
 
     return {
         "modelo": modelo_key,
@@ -417,6 +483,7 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
         "test_rows": len(test_df),
         "mae": round(mae, 2),
         "wape": round(wape, 2),
+        "phe": round(phe, 2),
         "path": str(versioned_path),
         "trained_at": datetime.now().isoformat(),
     }

@@ -216,6 +216,7 @@ async def _entrenar_retador_prophet(
         _fetch_calendar,
         _fetch_hourly_data,
         _fetch_capacidades,
+        aplicar_mascara_anomalias_entrenamiento,
     )
 
     df = await _fetch_hourly_data(session, recinto=recinto, sala=sala)
@@ -237,12 +238,13 @@ async def _entrenar_retador_prophet(
     test_df = df.iloc[split_idx:].copy()
 
     regressors = REGRESORES_PROPHET
+    train_df_fit = aplicar_mascara_anomalias_entrenamiento(train_df)
     model = _build_prophet()
 
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model.fit(train_df[["ds", "y"] + regressors])
+        model.fit(train_df_fit[["ds", "y"] + regressors])
 
     # Evaluación sobre la ventana de validación
     test_features = test_df[["ds"] + regressors].copy()
@@ -785,10 +787,14 @@ async def entrenar_todos_los_modelos(
                         "version": ts,
                     })
                 else:
-                    # Retador no superó al campeón actual: se descarta
+                    # Retador no superó al campeón actual: se descarta y se registra la auditoría del campeón
                     logger.warning(
                         f"[orquestador] Retador descartado para {clave}: WAPE={wape_retador}% no superó al campeón ({desc_benchmark})."
                     )
+                    meta_campeon_existente = _leer_metadatos_campeon(clave, config_m)
+                    meta_campeon_existente["ultima_auditoria_en"] = datetime.utcnow().isoformat()
+                    meta_campeon_existente["ultimo_resultado_auditoria"] = f"Campeón validado (WAPE={wape_benchmark}% vs retador {wape_retador}%)"
+                    _guardar_metadatos_campeon(clave, meta_campeon_existente)
                     resultados.append({
                         "modelo": clave,
                         "familia": config_m["familia"],
