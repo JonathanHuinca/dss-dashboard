@@ -45,8 +45,8 @@ DEFAULT_ROLES = [
 from app.core.config import settings
 
 def obtener_usuarios_demo() -> List[dict]:
-    admin_pw = settings.DEMO_ADMIN_PASSWORD
-    user_pw = settings.DEMO_USER_PASSWORD
+    admin_pw = settings.DEMO_ADMIN_PASSWORD or "AdminUCT2026!"
+    user_pw = settings.DEMO_USER_PASSWORD or "UCTdemo2026!"
     return [
         {
             "email": "admin@uct.cl",
