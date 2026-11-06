@@ -178,7 +178,7 @@ local/
 certificados/
 
 # Datos fuente y scripts auxiliares de la raíz usados localmente
-biblioteca/
+/biblioteca/
 Documentos_soloVista/
 /scripts/
 

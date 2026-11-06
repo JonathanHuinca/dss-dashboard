@@ -116,13 +116,11 @@ const VehicleBehavioralClustersPlotlyChart = memo(
     }))
   )
 )
-const SeccionCampana24Horas = memo(
-  lazy(() =>
-    import('./biblioteca/SeccionCampana24Horas').then((m) => ({
-      default: m.SeccionCampana24Horas,
-    }))
-  )
-)
+const SeccionCampana24Horas = lazy(() =>
+  import('./biblioteca/SeccionCampana24Horas').then((m) => ({
+    default: m.SeccionCampana24Horas,
+  }))
+) as React.ComponentType<any>
 
 function EsqueletoGraficoInstitucional() {
   return (

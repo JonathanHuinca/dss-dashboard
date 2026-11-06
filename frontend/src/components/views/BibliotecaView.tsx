@@ -1217,14 +1217,14 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
             }}
             fechaInicioPersonalizada={fechaInicio24h}
             fechaFinPersonalizada={fechaFin24h}
-            onChangeFechaPersonalizada={(inicio, fin) => {
+            onChangeFechaPersonalizada={(inicio: string, fin: string) => {
               setFechaInicio24h(inicio)
               setFechaFin24h(fin)
             }}
             bloqueHorario={bloqueHorario24h}
             onSelectBloqueHorario={setBloqueHorario24h}
             currentDateRange={dateRange}
-            onApplyDateRange={(range) => onRangeChange?.(range)}
+            onApplyDateRange={(range: any) => onRangeChange?.(range)}
             onOpenReporteModal={() => setModalReporte24hAbierto(true)}
             isRegimenDeltaActive={filters.regimen_horario === '24h_delta'}
             onToggleRegimenDelta={() => {
