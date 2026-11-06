@@ -49,8 +49,18 @@ async def lifespan(app: FastAPI):
 
     try:
         import asyncio
-        from app.core.cache import precalentar_cache_modulos
-        asyncio.create_task(precalentar_cache_modulos())
+        from app.core.cache import precalentar_cache_modulos, limpiar_toda_la_cache
+        from scripts.sincronizar_snapshot_local import restaurar_snapshot
+
+        async def _restaurar_hechos_y_precalentar():
+            try:
+                await asyncio.to_thread(restaurar_snapshot, None, False, "hechos")
+                await limpiar_toda_la_cache()
+            except Exception as exc_snap:
+                logger.warning(f"[startup] Carga en segundo plano de hechos con aviso: {exc_snap}")
+            await precalentar_cache_modulos()
+
+        asyncio.create_task(_restaurar_hechos_y_precalentar())
     except Exception as exc_cache:
         logger.warning(f"[startup] No se pudo iniciar precalentamiento de caché: {exc_cache}")
 

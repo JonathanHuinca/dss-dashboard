@@ -38,5 +38,8 @@ python -c "from scripts.inicializar_base_datos import inicializar_base_y_permiso
 echo "[entrypoint] Ejecutando migraciones Alembic sobre uct_dashboard..."
 alembic upgrade head
 
+echo "[entrypoint] Restaurando tablas base, usuarios y modelos ML del snapshot local..."
+python -m scripts.sincronizar_snapshot_local --restaurar-base || true
+
 echo "[entrypoint] Iniciando servidor FastAPI..."
 exec "$@"
