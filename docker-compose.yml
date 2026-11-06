@@ -28,6 +28,9 @@ services:
 
   api:
     image: ${REGISTRO:-uct}/uct-api:${VERSION:-local}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
       db:
@@ -57,6 +60,9 @@ services:
 
   frontend:
     image: ${REGISTRO:-uct}/uct-frontend:${VERSION:-local}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
       api:
