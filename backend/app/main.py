@@ -108,9 +108,18 @@ CORS_ORIGINS = [
     "http://127.0.0.1:5174",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://indicadoreshikcentral.dev.uct.cl",
+    "https://indicadoreshikcentral.dev.uct.cl",
 ]
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in CORS_ORIGINS:
+    CORS_ORIGINS.append(settings.FRONTEND_URL)
 if settings.is_production:
-    CORS_ORIGINS = ["https://dashboard.uct.cl", settings.FRONTEND_URL]
+    CORS_ORIGINS = [
+        "https://dashboard.uct.cl",
+        "http://indicadoreshikcentral.dev.uct.cl",
+        "https://indicadoreshikcentral.dev.uct.cl",
+        settings.FRONTEND_URL,
+    ]
 
 app.add_middleware(
     CORSMiddleware,

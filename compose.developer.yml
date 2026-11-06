@@ -72,10 +72,17 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      VIRTUAL_HOST: indicadoreshikcentral.dev.uct.cl
+      VIRTUAL_PORT: "80"
+    expose:
+      - "80"
     ports:
       - "3000:80"
     deploy:
