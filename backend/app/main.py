@@ -26,12 +26,14 @@ async def lifespan(app: FastAPI):
     if not settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY.strip():
         logger.warning("Aviso: GEMINI_API_KEY no está configurada en el entorno; el asistente de IA operará en modo limitado.")
 
-    # Aprovisionamiento idempotente de uct_dashboard y login uct_app
-    try:
-        from scripts.inicializar_base_datos import inicializar_base_y_permisos
-        inicializar_base_y_permisos()
-    except Exception as exc_init:
-        logger.warning(f"[startup] Inicialización de base de datos omitida o previa: {exc_init}")
+    # Aprovisionamiento idempotente de uct_dashboard y login uct_app (si no se ejecuto ya en entrypoint.sh)
+    import os
+    if os.environ.get("UCT_ENTRYPOINT_INIT") != "1":
+        try:
+            from scripts.inicializar_base_datos import inicializar_base_y_permisos
+            inicializar_base_y_permisos()
+        except Exception as exc_init:
+            logger.warning(f"[startup] Inicialización de base de datos omitida o previa: {exc_init}")
 
     await run_startup_seed()
 

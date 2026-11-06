@@ -180,6 +180,10 @@ def restaurar_snapshot(
 
     conn = _conectar_sa(base_datos)
     cur = conn.cursor()
+    cur.execute(
+        "SET ARITHABORT ON; SET CONCAT_NULL_YIELDS_NULL ON; SET QUOTED_IDENTIFIER ON; "
+        "SET ANSI_NULLS ON; SET ANSI_PADDING ON; SET ANSI_WARNINGS ON; SET NUMERIC_ROUNDABORT OFF;"
+    )
 
     datos_tablas_todas = payload.get("tables", {})
     if modo == "base":
@@ -233,7 +237,8 @@ def restaurar_snapshot(
     cur.execute("SELECT name FROM sys.tables WHERE is_ms_shipped = 0")
     tablas_existentes = {r[0] for r in cur.fetchall()}
 
-    for tabla in datos_tablas:
+    tablas_constraints = datos_tablas if modo == "hechos" else datos_tablas_todas
+    for tabla in tablas_constraints:
         if tabla in tablas_existentes:
             cur.execute(f"ALTER TABLE [{tabla}] NOCHECK CONSTRAINT ALL")
     conn.commit()
@@ -294,7 +299,7 @@ def restaurar_snapshot(
             dt_tabla = time.perf_counter() - t_tabla
             print(f"  [snapshot-db] {tabla}: {len(filas)} filas restauradas ({dt_tabla:.1f}s)")
     finally:
-        for tabla in datos_tablas:
+        for tabla in tablas_constraints:
             if tabla in tablas_existentes:
                 cur.execute(f"ALTER TABLE [{tabla}] CHECK CONSTRAINT ALL")
         conn.commit()
