@@ -20,6 +20,10 @@ docker-compose.*.yml
 # Carpeta con datos crudos de HikCentral (torniquetes y ANPR)
 Documentos_soloVista/
 
+# Respaldos de base de datos
+*.bak
+*.bacpac
+
 # Archivos de datos con registros de personas y vehiculos
 *.csv
 *.xlsx
