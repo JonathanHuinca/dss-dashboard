@@ -88,7 +88,7 @@ export const UsuariosSection: React.FC = () => {
 
   // Estados para configuración de IA
   const [providerInput, setProviderInput] = useState('gemini')
-  const [modelInput, setModelInput] = useState('gemini-2.5-flash')
+  const [modelInput, setModelInput] = useState('gemini-3.1-flash-lite')
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
   const [configSuccessMsg, setConfigSuccessMsg] = useState<string | null>(null)

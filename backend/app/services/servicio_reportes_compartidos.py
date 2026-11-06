@@ -1016,13 +1016,20 @@ class ServicioReportesCompartidos:
         return resumen
 
     @staticmethod
+    def _es_expirado(expira_en: Optional[datetime]) -> bool:
+        if not expira_en:
+            return False
+        if getattr(expira_en, "tzinfo", None) is not None:
+            return expira_en.astimezone(timezone.utc) < datetime.now(timezone.utc)
+        return expira_en < datetime.now()
+
+    @staticmethod
     def _formatear_resumen_reporte(
         reporte: ReporteCompartido,
         destinatario: Optional[DestinatarioReporte] = None,
     ) -> Dict[str, Any]:
         dest = destinatario or reporte.destinatario
-        ahora = datetime.now()
-        expirado = bool(reporte.expira_en and reporte.expira_en < ahora)
+        expirado = ServicioReportesCompartidos._es_expirado(reporte.expira_en)
         vigente = bool(reporte.activo and (dest.activo if dest else True) and not expirado)
 
         return {
@@ -1399,7 +1406,7 @@ class ServicioReportesCompartidos:
             )
 
         ahora = datetime.now()
-        if reporte.expira_en and reporte.expira_en < ahora:
+        if cls._es_expirado(reporte.expira_en):
             raise HTTPException(
                 status_code=status.HTTP_410_GONE,
                 detail=f"El plazo de vigencia de este reporte expiró el {reporte.expira_en.strftime('%d-%m-%Y %H:%M')}.",
@@ -1466,8 +1473,8 @@ class ServicioReportesCompartidos:
         # Historial de todos los reportes enviados al mismo destinatario
         historial_destinatario = []
         if dest and dest.reportes:
-            for rep_hist in sorted(dest.reportes, key=lambda x: x.creado_en or ahora, reverse=True):
-                exp_h = bool(rep_hist.expira_en and rep_hist.expira_en < ahora)
+            for rep_hist in sorted(dest.reportes, key=lambda x: (x.creado_en.replace(tzinfo=None) if getattr(x.creado_en, "tzinfo", None) else x.creado_en) or ahora, reverse=True):
+                exp_h = cls._es_expirado(rep_hist.expira_en)
                 historial_destinatario.append(
                     {
                         "id": str(rep_hist.id),
@@ -1545,8 +1552,8 @@ class ServicioReportesCompartidos:
 
         ahora = datetime.now()
         reportes_lista = []
-        for rep in sorted(dest.reportes or [], key=lambda r: r.creado_en or ahora, reverse=True):
-            exp_h = bool(rep.expira_en and rep.expira_en < ahora)
+        for rep in sorted(dest.reportes or [], key=lambda r: (r.creado_en.replace(tzinfo=None) if getattr(r.creado_en, "tzinfo", None) else r.creado_en) or ahora, reverse=True):
+            exp_h = cls._es_expirado(rep.expira_en)
             reportes_lista.append(
                 {
                     "id": str(rep.id),
@@ -1604,7 +1611,7 @@ class ServicioReportesCompartidos:
         if not reporte.activo or (reporte.destinatario and not reporte.destinatario.activo):
             raise HTTPException(status_code=403, detail="Este reporte se encuentra deshabilitado.")
 
-        if reporte.expira_en and reporte.expira_en < datetime.now():
+        if cls._es_expirado(reporte.expira_en):
             raise HTTPException(status_code=410, detail="Este reporte ha expirado.")
 
         if not reporte.permitir_ia:

@@ -55,10 +55,10 @@ METRICAS ANALITICAS GENERALES (CAMPUS SAN FRANCISCO 2026):
 from dotenv import dotenv_values
 
 SUPPORTED_MODELS = [
-    "gemini-3.5-flash-lite",
-    "gemini-flash-latest",
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3-flash-preview",
 ]
 
 class ChatMessage(BaseModel):
@@ -68,7 +68,7 @@ class ChatMessage(BaseModel):
 class AssistantRequest(BaseModel):
     message: Optional[str] = None
     question: Optional[str] = None
-    model: str = "gemini-3.5-flash-lite"
+    model: str = "gemini-3.1-flash-lite"
     history: Optional[List[ChatMessage]] = None
 
 class AssistantResponse(BaseModel):
@@ -142,27 +142,17 @@ async def list_available_models():
     return {
         "models": [
             {
-                "id": "gemini-3.5-flash-lite",
-                "name": "Gemini 3.5 Flash Lite (Recomendado)",
-                "description": "Modelo insignia oficial Google GenAI de alta velocidad y máxima cuota operativa",
-            },
-            {
-                "id": "gemini-flash-latest",
-                "name": "Gemini Flash Latest",
-                "description": "Modelo balanceado oficial de alta disponibilidad",
-            },
-            {
                 "id": "gemini-3.1-flash-lite",
-                "name": "Gemini 3.1 Flash Lite",
-                "description": "Equilibrio analítico multidimensional y razonamiento correlacional",
+                "name": "Gemini 3.1 Flash Lite (Recomendado)",
+                "description": "Alta velocidad y cuota diaria amplia (500 consultas/día)",
             },
             {
-                "id": "gemini-3.5-flash",
-                "name": "Gemini 3.5 Flash",
-                "description": "Modelo analítico avanzado para consultas complejas",
+                "id": "gemini-3.5-flash-lite",
+                "name": "Gemini 3.5 Flash Lite",
+                "description": "Alternativa de alta cuota y baja latencia",
             },
         ],
-        "default": "gemini-3.5-flash-lite",
+        "default": "gemini-3.1-flash-lite",
     }
 
 @router.post("/query", response_model=AssistantResponse)
@@ -172,7 +162,7 @@ async def query_assistant(req: AssistantRequest, current_user = Depends(require_
     if not user_msg:
         raise HTTPException(status_code=400, detail="Debe proporcionar un mensaje o pregunta")
 
-    selected_model = req.model if req.model in SUPPORTED_MODELS else "gemini-3.5-flash-lite"
+    selected_model = req.model if req.model in SUPPORTED_MODELS else "gemini-3.1-flash-lite"
     api_key = get_gemini_api_key()
 
     if not api_key:
@@ -215,7 +205,7 @@ async def query_assistant(req: AssistantRequest, current_user = Depends(require_
             temperature=0.2,
         )
 
-        candidate_models = [selected_model, "gemini-3.5-flash-lite", "gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-3.5-flash"]
+        candidate_models = [selected_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview"]
         # Filtrar duplicados preservando orden
         candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
         last_exception = None

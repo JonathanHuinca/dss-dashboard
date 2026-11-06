@@ -450,10 +450,11 @@ def listar_modelos_disponibles(client) -> list[str]:
 
     fallback = [
         settings.MODELO_GEMINI_POR_DEFECTO,
-        "gemini-3.5-flash",
-        "gemini-3.8-flash",
-        "gemini-flash-latest",
         "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-3-flash-preview",
     ]
     _modelos_disponibles_cache["modelos"] = fallback
     return fallback
@@ -469,7 +470,7 @@ class GeminiClient(LLMClientBase):
     def _resolve_model(self, model: Optional[str] = None) -> str:
         chosen_model = model or self.default_model
         # Redirigir modelos deprecados o con cuota restringida al modelo por defecto de alta disponibilidad
-        if chosen_model in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-3.5-flash"]:
+        if chosen_model in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-1.5-flash", "gemini-3.5-flash", "gemini-3.6-flash"]:
             chosen_model = settings.MODELO_GEMINI_POR_DEFECTO
         modelos_disponibles = listar_modelos_disponibles(self.client)
         if chosen_model in modelos_disponibles:
@@ -522,10 +523,11 @@ class GeminiClient(LLMClientBase):
         modelos_candidatos = list(dict.fromkeys([
             effective_model,
             settings.MODELO_GEMINI_POR_DEFECTO,
-            "gemini-3.5-flash-lite",
-            "gemini-flash-latest",
             "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3-flash-preview",
         ]))
 
         res = None
@@ -604,10 +606,11 @@ class GeminiClient(LLMClientBase):
         candidatos_stream = list(dict.fromkeys([
             effective_model,
             settings.MODELO_GEMINI_POR_DEFECTO,
-            "gemini-3.5-flash-lite",
-            "gemini-flash-latest",
             "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3-flash-preview",
         ]))
 
         chunks_yielded = 0
@@ -661,10 +664,11 @@ class GeminiClient(LLMClientBase):
         candidatos_resp = list(dict.fromkeys([
             effective_model,
             settings.MODELO_GEMINI_POR_DEFECTO,
-            "gemini-3.5-flash-lite",
-            "gemini-flash-latest",
             "gemini-3.1-flash-lite",
-            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3-flash-preview",
         ]))
 
         for mod_resp in candidatos_resp:

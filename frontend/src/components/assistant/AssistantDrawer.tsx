@@ -152,12 +152,10 @@ export function AssistantDrawer({
   // Espacio ID según dataset seleccionado
   const espacioIdActual = datasetTipo === 'estacionamiento' ? 2 : 1
 
-  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash-lite')
+  const [selectedModel, setSelectedModel] = useState('gemini-3.1-flash-lite')
   const [availableModels, setAvailableModels] = useState<ModelItem[]>([
-    { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite (Recomendado)', description: 'Inferencia ultrarrápida y alta cuota' },
-    { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', description: 'Modelo balanceado oficial de alta disponibilidad' },
-    { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', description: 'Equilibrio analítico multidimensional' },
-    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash', description: 'Alta capacidad analítica para consultas complejas' },
+    { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Recomendado)', description: 'Alta velocidad y cuota diaria amplia' },
+    { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', description: 'Alternativa de alta cuota y baja latencia' },
   ])
 
   // Estados de persistencia y gestión de conversaciones
@@ -182,7 +180,7 @@ export function AssistantDrawer({
       content:
         'Hola. Soy tu Asistente Analítico Inteligente DSS. Puedo generar gráficos interactivos, tablas estructuradas o informes técnicos sobre aforos y el calendario académico.',
       tipo: 'text',
-      modelUsed: 'gemini-3.5-flash-lite',
+      modelUsed: 'gemini-3.1-flash-lite',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ])

@@ -17,7 +17,7 @@ class ConfiguracionEspacios(Base):
     espacio_id: Mapped[int] = mapped_column(Integer, ForeignKey("espacios.id"), nullable=False)
     ia_asistente_activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     active_provider: Mapped[str] = mapped_column(String(50), default="gemini", nullable=False)
-    default_model: Mapped[str] = mapped_column(String(100), default="gemini-2.5-flash", nullable=False)
+    default_model: Mapped[str] = mapped_column(String(100), default="gemini-3.1-flash-lite", nullable=False)
     encrypted_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DATETIME2, server_default=func.now(), onupdate=func.now(), nullable=False

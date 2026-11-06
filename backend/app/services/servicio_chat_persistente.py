@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
@@ -247,35 +247,41 @@ async def obtener_cuota_ia_usuario(
     if es_ilimitado:
         limite = None
 
-    ahora = datetime.utcnow()
-    inicio_dia = datetime(ahora.year, ahora.month, ahora.day, 0, 0, 0)
+    ahora_utc = datetime.now(timezone.utc)
+    ahora_naive = ahora_utc.replace(tzinfo=None)
+    inicio_dia = datetime(ahora_utc.year, ahora_utc.month, ahora_utc.day, 0, 0, 0)
 
-    # Consulta de solicitudes registradas en auditoría hoy
-    query = (
-        select(func.count(ChatAuditLog.id))
-        .where(
-            ChatAuditLog.usuario_id == usuario.id,
-            ChatAuditLog.timestamp >= inicio_dia,
-            ChatAuditLog.status == "éxito",
-        )
-    )
-    res = await db.execute(query)
-    usadas = res.scalar() or 0
-
-    # Comprobar timestamp de última consulta para cooldown de seguridad
-    query_last = (
-        select(ChatAuditLog.timestamp)
-        .where(ChatAuditLog.usuario_id == usuario.id)
-        .order_by(ChatAuditLog.timestamp.desc())
-    )
-    res_last = await db.execute(query_last)
-    last_time = res_last.scalars().first()
-
+    usadas = 0
     segundos_espera = 0
-    if last_time and min_cooldown > 0:
-        diff = (ahora - last_time).total_seconds()
-        if diff < min_cooldown:
-            segundos_espera = int(min_cooldown - diff)
+    try:
+        query = (
+            select(func.count(ChatAuditLog.id))
+            .where(
+                ChatAuditLog.usuario_id == usuario.id,
+                ChatAuditLog.timestamp >= inicio_dia,
+                ChatAuditLog.status == "éxito",
+            )
+        )
+        res = await db.execute(query)
+        usadas = res.scalar() or 0
+
+        query_last = (
+            select(ChatAuditLog.timestamp)
+            .where(ChatAuditLog.usuario_id == usuario.id)
+            .order_by(ChatAuditLog.timestamp.desc())
+        )
+        res_last = await db.execute(query_last)
+        last_time = res_last.scalars().first()
+
+        if last_time and min_cooldown > 0:
+            if getattr(last_time, "tzinfo", None) is not None:
+                diff = (ahora_utc - last_time.astimezone(timezone.utc)).total_seconds()
+            else:
+                diff = (ahora_naive - last_time).total_seconds()
+            if 0 <= diff < min_cooldown:
+                segundos_espera = min(min_cooldown, int(min_cooldown - diff))
+    except Exception as exc_cuota:
+        logger.warning(f"Aviso calculando cuota IA para usuario {usuario.id}: {exc_cuota}")
 
     if limite is None:
         return {

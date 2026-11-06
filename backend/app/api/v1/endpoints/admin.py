@@ -805,7 +805,7 @@ async def obtener_config_global_admin(
             "id": 1,
             "ia_asistente_activo": True,
             "active_provider": "gemini",
-            "default_model": "gemini-2.5-flash",
+            "default_model": "gemini-3.1-flash-lite",
             "has_api_key": False,
             "masked_api_key": "",
             "updated_at": None,
@@ -909,7 +909,7 @@ async def actualizar_config_global_admin(
     from app.core.security_cipher import mask_api_key
     from app.services.config_service import update_llm_provider
     provider = payload.get("active_provider", "gemini")
-    model = payload.get("default_model", "gemini-2.5-flash")
+    model = payload.get("default_model", "gemini-3.1-flash-lite")
     api_key = payload.get("api_key")
     config = await update_llm_provider(
         db=db,
@@ -918,8 +918,8 @@ async def actualizar_config_global_admin(
         default_model=model,
         api_key=api_key,
     )
-    has_key = bool(config.api_key_encrypted)
-    masked = mask_api_key(config.api_key_encrypted) if has_key else ""
+    has_key = bool(config.encrypted_api_key)
+    masked = mask_api_key(config.encrypted_api_key) if has_key else ""
     return {
         "id": config.id,
         "espacio_id": config.espacio_id,
