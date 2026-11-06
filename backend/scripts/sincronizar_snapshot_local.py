@@ -168,12 +168,15 @@ def restaurar_snapshot(
     if modo in ("completo", "base"):
         modelos_bytes = payload.get("models", {})
         if modelos_bytes:
-            DIRECTORIO_MODELOS.mkdir(parents=True, exist_ok=True)
-            for nombre_archivo, contenido in modelos_bytes.items():
-                destino = DIRECTORIO_MODELOS / nombre_archivo
-                if forzar or not destino.exists():
-                    destino.write_bytes(contenido)
-                    print(f"  [snapshot-modelo] Restaurado {nombre_archivo}")
+            try:
+                DIRECTORIO_MODELOS.mkdir(parents=True, exist_ok=True)
+                for nombre_archivo, contenido in modelos_bytes.items():
+                    destino = DIRECTORIO_MODELOS / nombre_archivo
+                    if forzar or not destino.exists():
+                        destino.write_bytes(contenido)
+                        print(f"  [snapshot-modelo] Restaurado {nombre_archivo}")
+            except Exception as e:
+                print(f"  [snapshot-modelo] Advertencia al restaurar modelos: {e}")
 
     conn = _conectar_sa(base_datos)
     cur = conn.cursor()
@@ -230,7 +233,7 @@ def restaurar_snapshot(
     cur.execute("SELECT name FROM sys.tables WHERE is_ms_shipped = 0")
     tablas_existentes = {r[0] for r in cur.fetchall()}
 
-    for tabla in datos_tablas_todas:
+    for tabla in datos_tablas:
         if tabla in tablas_existentes:
             cur.execute(f"ALTER TABLE [{tabla}] NOCHECK CONSTRAINT ALL")
     conn.commit()
@@ -241,7 +244,7 @@ def restaurar_snapshot(
                 cur.execute(f"DELETE FROM [{tabla}]")
         conn.commit()
 
-        LOTE = 10000
+        LOTE = 2500
         for tabla, meta in datos_tablas.items():
             if tabla not in tablas_existentes:
                 continue
@@ -274,7 +277,7 @@ def restaurar_snapshot(
             if tiene_id:
                 cur.execute(f"SET IDENTITY_INSERT [{tabla}] ON")
 
-            cur.fast_executemany = len(filas) >= 1000
+            cur.fast_executemany = len(filas) >= 500
 
             try:
                 for inicio in range(0, len(filas), LOTE):
@@ -282,7 +285,7 @@ def restaurar_snapshot(
                     if len(indices_validos) != len(columnas_snap):
                         sub = [tuple(r[i] for i in indices_validos) for r in sub]
                     cur.executemany(sql_insert, sub)
-                conn.commit()
+                    conn.commit()
             finally:
                 if tiene_id:
                     cur.execute(f"SET IDENTITY_INSERT [{tabla}] OFF")
@@ -291,7 +294,7 @@ def restaurar_snapshot(
             dt_tabla = time.perf_counter() - t_tabla
             print(f"  [snapshot-db] {tabla}: {len(filas)} filas restauradas ({dt_tabla:.1f}s)")
     finally:
-        for tabla in datos_tablas_todas:
+        for tabla in datos_tablas:
             if tabla in tablas_existentes:
                 cur.execute(f"ALTER TABLE [{tabla}] CHECK CONSTRAINT ALL")
         conn.commit()

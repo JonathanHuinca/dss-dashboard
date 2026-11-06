@@ -48,9 +48,17 @@ export function LoginView() {
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status?: number; data?: { detail?: string } } }
       const status = axiosErr.response?.status
-      const message =
-        axiosErr.response?.data?.detail || 'Credenciales inválidas. Por favor intente nuevamente.'
-      setError(message)
+      if (status && status >= 500) {
+        setError(
+          `El servidor de autenticación se está iniciando o no responde temporalmente (HTTP ${status}). Reintente en unos segundos.`
+        )
+      } else if (!status) {
+        setError('No se pudo conectar con el servidor de autenticación. Verifique su conexión.')
+      } else {
+        const message =
+          axiosErr.response?.data?.detail || 'Credenciales inválidas. Por favor intente nuevamente.'
+        setError(message)
+      }
       if (status === 423) {
         setIsBlocked(true)
       }

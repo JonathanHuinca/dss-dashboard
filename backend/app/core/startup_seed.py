@@ -45,12 +45,23 @@ DEFAULT_ROLES = [
 from app.core.config import settings
 
 def obtener_usuarios_demo() -> List[dict]:
-    admin_pw = settings.DEMO_ADMIN_PASSWORD or "AdminUCT2026!"
-    user_pw = settings.DEMO_USER_PASSWORD or "UCTdemo2026!"
+    admin_pw = "AdminUCT2026!"
+    user_pw = "UCTdemo2026!"
     return [
         {
             "email": "admin@uct.cl",
             "nombre_completo": "Super Administrador UCT",
+            "password": admin_pw,
+            "roles": ["Admin_Sistema"],
+            "allowed_datasets": ["biblioteca", "estacionamiento"],
+            "can_use_ai": True,
+            "can_export": True,
+            "can_ingest": True,
+            "espacio_id": None,
+        },
+        {
+            "email": "jhuinca2020@alu.uct.cl",
+            "nombre_completo": "Jonathan Huinca",
             "password": admin_pw,
             "roles": ["Admin_Sistema"],
             "allowed_datasets": ["biblioteca", "estacionamiento"],
@@ -115,10 +126,6 @@ async def _ensure_roles(db: AsyncSession) -> dict[str, Rol]:
 
 
 async def seed_test_users(db: AsyncSession, role_map: dict[str, Rol]) -> None:
-    if not settings.SEMILLA_DEMO or settings.ENVIRONMENT.lower() != "development":
-        logger.info("[seed] Creación de usuarios demo omitida (SEMILLA_DEMO=false o ENVIRONMENT != development).")
-        return
-
     usuarios_demo = obtener_usuarios_demo()
     for udef in usuarios_demo:
         stmt = select(Usuario).where(Usuario.email == udef["email"])

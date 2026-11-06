@@ -24,8 +24,7 @@ logger = logging.getLogger("uvicorn.error")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY.strip():
-        logger.critical("Error crítico: GEMINI_API_KEY no está configurada o se encuentra vacía en las variables de entorno.")
-        raise RuntimeError("Error crítico de configuración: GEMINI_API_KEY no está configurada o se encuentra vacía en las variables de entorno.")
+        logger.warning("Aviso: GEMINI_API_KEY no está configurada en el entorno; el asistente de IA operará en modo limitado.")
 
     # Aprovisionamiento idempotente de uct_dashboard y login uct_app
     try:
