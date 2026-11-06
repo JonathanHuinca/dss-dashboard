@@ -276,7 +276,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
     } catch (err: any) {
       setErrorPassword(
         err?.response?.data?.detail ||
-          'No fue posible registrar la contraseña. Debe tener mínimo 8 caracteres, una mayúscula, un número y un carácter especial.'
+        'No fue posible registrar la contraseña. Debe tener mínimo 8 caracteres, una mayúscula, un número y un carácter especial.'
       )
     } finally {
       setCreandoPassword(false)
@@ -871,8 +871,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                         {reporte.filtros_bloqueados?.sala === 'CSF02' || reporte.filtros_bloqueados?.sala === 'sala_1'
                           ? 'Sala 1 (CSF02 - 2° Piso)'
                           : reporte.filtros_bloqueados?.sala === 'CSF04' || reporte.filtros_bloqueados?.sala === 'sala_2'
-                          ? 'Sala 2 Pecera (CSF04 - 1° Piso)'
-                          : 'Ambas Salas (Sala 1 + Sala 2)'}
+                            ? 'Sala 2 Pecera (CSF04 - 1° Piso)'
+                            : 'Ambas Salas (Sala 1 + Sala 2)'}
                       </strong>
                     </span>
                     <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-800 border border-slate-200 font-medium">
@@ -898,10 +898,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                     {!reporte.filtros_bloqueados?.regimen_horario || reporte.filtros_bloqueados?.regimen_horario === '24h_total'
                       ? 'Todo Horario (24h completo)'
                       : reporte.filtros_bloqueados?.regimen_horario === 'dentro_horario'
-                      ? 'En Horario Hábil'
-                      : reporte.filtros_bloqueados?.regimen_horario === 'fuera_horario'
-                      ? 'Fuera de Horario'
-                      : reporte.filtros_bloqueados?.regimen_horario}
+                        ? 'En Horario Hábil'
+                        : reporte.filtros_bloqueados?.regimen_horario === 'fuera_horario'
+                          ? 'Fuera de Horario'
+                          : reporte.filtros_bloqueados?.regimen_horario}
                   </strong>
                 </span>
                 {reporte.filtros_bloqueados?.direccion && (
@@ -911,8 +911,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                       {reporte.filtros_bloqueados.direccion === 'entrar'
                         ? 'Solo Entradas'
                         : reporte.filtros_bloqueados.direccion === 'salir'
-                        ? 'Solo Salidas'
-                        : reporte.filtros_bloqueados.direccion}
+                          ? 'Solo Salidas'
+                          : reporte.filtros_bloqueados.direccion}
                     </strong>
                   </span>
                 )}
@@ -923,8 +923,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                       {(reporte.filtros_bloqueados as any).tipo_dia === 'habiles'
                         ? 'Lunes a Viernes'
                         : (reporte.filtros_bloqueados as any).tipo_dia === 'fines_semana'
-                        ? 'Sábado y Domingo'
-                        : (reporte.filtros_bloqueados as any).tipo_dia}
+                          ? 'Sábado y Domingo'
+                          : (reporte.filtros_bloqueados as any).tipo_dia}
                     </strong>
                   </span>
                 )}
@@ -959,13 +959,12 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                   return (
                     <div
                       key={item.id}
-                      className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between gap-2.5 ${
-                        seleccionado
+                      className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between gap-2.5 ${seleccionado
                           ? 'bg-blue-50/70 border-uct-blue-primary shadow-xs'
                           : item.vigente
-                          ? 'bg-slate-50/70 border-slate-200 hover:border-slate-300'
-                          : 'bg-slate-50 border-slate-200 opacity-60'
-                      }`}
+                            ? 'bg-slate-50/70 border-slate-200 hover:border-slate-300'
+                            : 'bg-slate-50 border-slate-200 opacity-60'
+                        }`}
                     >
                       <div>
                         <div className="flex items-center justify-between gap-2 mb-1">
@@ -973,11 +972,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                             {item.codigo_corto}
                           </span>
                           <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                              item.vigente
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${item.vigente
                                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                 : 'bg-red-50 text-red-700 border border-red-200'
-                            }`}
+                              }`}
                           >
                             {item.vigente ? 'Disponible' : item.expirado ? 'Expirado' : 'Deshabilitado'}
                           </span>
@@ -991,11 +989,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                         <button
                           type="button"
                           onClick={() => cargarReportePorToken(item.token_acceso)}
-                          className={`w-full py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                            seleccionado
+                          className={`w-full py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${seleccionado
                               ? 'bg-uct-blue-primary text-white'
                               : 'bg-white hover:bg-slate-100 text-uct-blue-primary border border-slate-300'
-                          }`}
+                            }`}
                         >
                           {seleccionado ? 'Reporte Activo en Pantalla' : 'Visualizar este Reporte'}
                         </button>
@@ -1070,9 +1067,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                             </p>
                           </div>
                           <div
-                            className={`w-9 h-9 shrink-0 rounded-lg border flex items-center justify-center ${
-                              info.claseIconoBanner || 'bg-blue-50 text-uct-blue-primary border-blue-200/60'
-                            }`}
+                            className={`w-9 h-9 shrink-0 rounded-lg border flex items-center justify-center ${info.claseIconoBanner || 'bg-blue-50 text-uct-blue-primary border-blue-200/60'
+                              }`}
                           >
                             <IconComp size={18} />
                           </div>
@@ -1088,11 +1084,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
 
               {kpiCardsItems.length > 0 && (
                 <div
-                  className={`grid grid-cols-1 sm:grid-cols-2 ${
-                    reporte.espacio_id === 2 && kpiCardsItems.length > 4
+                  className={`grid grid-cols-1 sm:grid-cols-2 ${reporte.espacio_id === 2 && kpiCardsItems.length > 4
                       ? 'lg:grid-cols-3 xl:grid-cols-6'
                       : 'lg:grid-cols-4'
-                  } gap-4`}
+                    } gap-4`}
                 >
                   {kpiCardsItems.map((catInd) => {
                     const info = formatearValorIndicador(catInd.id)
@@ -1132,16 +1127,16 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                               reporte.filtros_bloqueados?.sala === 'CSF02'
                                 ? 93
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                ? 120
-                                : 213
+                                  ? 120
+                                  : 213
                             }
                             unit="ocupantes"
                             salaLabel={
                               reporte.filtros_bloqueados?.sala === 'CSF02'
                                 ? 'Sala 1 (CSF02)'
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                ? 'Sala 2 Pecera (CSF04)'
-                                : 'Ambas Salas'
+                                  ? 'Sala 2 Pecera (CSF04)'
+                                  : 'Ambas Salas'
                             }
                             capSala1={93}
                             capSala2={120}
@@ -1345,8 +1340,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                               reporte.filtros_bloqueados?.sala === 'CSF02'
                                 ? 'Sala 1 (CSF02)'
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                ? 'Sala 2 Pecera (CSF04)'
-                                : 'Biblioteca Campus San Francisco'
+                                  ? 'Sala 2 Pecera (CSF04)'
+                                  : 'Biblioteca Campus San Francisco'
                             }
                             recinto="biblioteca"
                           />

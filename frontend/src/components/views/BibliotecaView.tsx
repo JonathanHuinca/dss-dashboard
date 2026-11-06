@@ -569,7 +569,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const renderBannerCampana24Horas = (mostrarBotonSeccion5 = true) => (
     <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-800/50 shadow-md relative overflow-hidden">
       <div className="absolute top-0 right-0 -mr-12 -mt-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
-      
+
       <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-indigo-800/40">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-indigo-600/30 text-indigo-300 border border-indigo-500/30">
@@ -600,11 +600,10 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                 setFilters(prev => ({ ...prev, regimen_horario: '24h_delta' }))
               }
             }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer ${
-              filters.regimen_horario === '24h_delta'
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer ${filters.regimen_horario === '24h_delta'
                 ? 'bg-indigo-500 text-white ring-2 ring-indigo-300'
                 : 'bg-white/10 hover:bg-white/20 text-indigo-100 border border-white/20'
-            }`}
+              }`}
             title="Filtrar todas las métricas y gráficos del panel para mostrar únicamente accesos nocturnos"
           >
             <Layers className="w-3.5 h-3.5 text-indigo-300" />
@@ -748,11 +747,10 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                 onClick={handleDescargarPlantillaOficial}
                 disabled={isExportingPlantilla}
                 title="Generar y descargar informe final en formato oficial idéntico a la plantilla institucional (4 tablas y 5 gráficos dinámicos oscuros)"
-                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-2xs ${
-                  isExportingPlantilla
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-2xs ${isExportingPlantilla
                     ? 'bg-amber-100/90 text-amber-900 border-amber-300 cursor-wait'
                     : 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600 hover:shadow-xs'
-                }`}
+                  }`}
               >
                 {isExportingPlantilla ? (
                   <>
