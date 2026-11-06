@@ -167,6 +167,16 @@ def restaurar_snapshot(
         "SET ARITHABORT ON; SET CONCAT_NULL_YIELDS_NULL ON; SET QUOTED_IDENTIFIER ON; "
         "SET ANSI_NULLS ON; SET ANSI_PADDING ON; SET ANSI_WARNINGS ON; SET NUMERIC_ROUNDABORT OFF;"
     )
+    try:
+        cur.execute("""
+            IF OBJECT_ID('dbo.roles', 'U') IS NOT NULL AND COL_LENGTH('dbo.roles', 'cooldown_segundos') IS NULL
+                ALTER TABLE dbo.roles ADD cooldown_segundos INT NOT NULL CONSTRAINT DF_roles_cooldown_segundos DEFAULT 10;
+            IF OBJECT_ID('dbo.horarios_operacion', 'U') IS NOT NULL AND COL_LENGTH('dbo.horarios_operacion', 'subespacio') IS NULL
+                ALTER TABLE dbo.horarios_operacion ADD subespacio VARCHAR(50) NULL;
+        """)
+        conn.commit()
+    except Exception:
+        pass
 
     if not forzar:
         try:
@@ -175,7 +185,9 @@ def restaurar_snapshot(
                 tiene_usuario = cur.fetchone()[0] > 0
                 cur.execute("SELECT COUNT(*) FROM [dim_estudiante_carrera]")
                 conteo_dim = cur.fetchone()[0]
-                if tiene_usuario and conteo_dim >= 4000:
+                cur.execute("SELECT COUNT(*) FROM [horarios_operacion] WHERE subespacio IS NOT NULL")
+                tiene_subespacio = cur.fetchone()[0] > 0
+                if tiene_usuario and conteo_dim >= 4000 and tiene_subespacio:
                     print("[snapshot] Tablas base y usuarios locales ya sincronizados. Se omite.")
                     conn.close()
                     return
