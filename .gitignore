@@ -9,6 +9,10 @@ backend/.env
 .env.production
 .env.staging
 
+# Archivos Docker Compose exclusivos de infraestructura / entorno local
+compose.*.yml
+docker-compose.*.yml
+
 # ============================================================
 # DATOS OPERACIONALES UCT — Privacidad Ley 21.719
 # ============================================================

@@ -4,6 +4,8 @@ services:
   db:
     image: mcr.microsoft.com/mssql/server:2019-latest
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_PID: ${MSSQL_PID:-Developer}
@@ -39,6 +41,9 @@ services:
       - .env
     environment:
       TZ: America/Santiago
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      PLANIFICADOR_ACTIVO: ${PLANIFICADOR_ACTIVO:-true}
+      SEMILLA_DEMO: ${SEMILLA_DEMO:-true}
       WEB_CONCURRENCY: "1"
     volumes:
       - modelos_ml:/app/models
@@ -47,8 +52,8 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 15s
       timeout: 5s
-      retries: 5
-      start_period: 40s
+      retries: 8
+      start_period: 60s
     stop_grace_period: 60s
     deploy:
       resources:
@@ -63,6 +68,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api/v1
     restart: unless-stopped
     depends_on:
       api:
