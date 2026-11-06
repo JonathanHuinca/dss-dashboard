@@ -50,12 +50,16 @@ async def lifespan(app: FastAPI):
 
     try:
         import asyncio
+        import sys
         from app.core.cache import precalentar_cache_modulos, limpiar_toda_la_cache
-        from scripts.sincronizar_snapshot_local import restaurar_snapshot
 
         async def _restaurar_hechos_y_precalentar():
             try:
-                await asyncio.to_thread(restaurar_snapshot, None, False, "hechos")
+                await asyncio.sleep(5)
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "scripts.sincronizar_snapshot_local", "--restaurar-hechos"
+                )
+                await proc.wait()
                 await limpiar_toda_la_cache()
             except Exception as exc_snap:
                 logger.warning(f"[startup] Carga en segundo plano de hechos con aviso: {exc_snap}")

@@ -161,41 +161,12 @@ def restaurar_snapshot(
         return
 
     t0 = time.perf_counter()
-    with gzip.open(RUTA_SNAPSHOT, "rb") as gz:
-        payload = pickle.load(gz)
-
-    # 1. Restaurar modelos ML activos en /app/models
-    if modo in ("completo", "base"):
-        modelos_bytes = payload.get("models", {})
-        if modelos_bytes:
-            try:
-                DIRECTORIO_MODELOS.mkdir(parents=True, exist_ok=True)
-                for nombre_archivo, contenido in modelos_bytes.items():
-                    destino = DIRECTORIO_MODELOS / nombre_archivo
-                    if forzar or not destino.exists():
-                        destino.write_bytes(contenido)
-                        print(f"  [snapshot-modelo] Restaurado {nombre_archivo}")
-            except Exception as e:
-                print(f"  [snapshot-modelo] Advertencia al restaurar modelos: {e}")
-
     conn = _conectar_sa(base_datos)
     cur = conn.cursor()
     cur.execute(
         "SET ARITHABORT ON; SET CONCAT_NULL_YIELDS_NULL ON; SET QUOTED_IDENTIFIER ON; "
         "SET ANSI_NULLS ON; SET ANSI_PADDING ON; SET ANSI_WARNINGS ON; SET NUMERIC_ROUNDABORT OFF;"
     )
-
-    datos_tablas_todas = payload.get("tables", {})
-    if modo == "base":
-        datos_tablas = {
-            k: v for k, v in datos_tablas_todas.items() if k not in TABLAS_HECHOS_MASIVOS
-        }
-    elif modo == "hechos":
-        datos_tablas = {
-            k: v for k, v in datos_tablas_todas.items() if k in TABLAS_HECHOS_MASIVOS
-        }
-    else:
-        datos_tablas = datos_tablas_todas
 
     if not forzar:
         try:
@@ -231,6 +202,35 @@ def restaurar_snapshot(
                     return
         except Exception:
             pass
+
+    with gzip.open(RUTA_SNAPSHOT, "rb") as gz:
+        payload = pickle.load(gz)
+
+    # 1. Restaurar modelos ML activos en /app/models
+    if modo in ("completo", "base"):
+        modelos_bytes = payload.get("models", {})
+        if modelos_bytes:
+            try:
+                DIRECTORIO_MODELOS.mkdir(parents=True, exist_ok=True)
+                for nombre_archivo, contenido in modelos_bytes.items():
+                    destino = DIRECTORIO_MODELOS / nombre_archivo
+                    if forzar or not destino.exists():
+                        destino.write_bytes(contenido)
+                        print(f"  [snapshot-modelo] Restaurado {nombre_archivo}")
+            except Exception as e:
+                print(f"  [snapshot-modelo] Advertencia al restaurar modelos: {e}")
+
+    datos_tablas_todas = payload.get("tables", {})
+    if modo == "base":
+        datos_tablas = {
+            k: v for k, v in datos_tablas_todas.items() if k not in TABLAS_HECHOS_MASIVOS
+        }
+    elif modo == "hechos":
+        datos_tablas = {
+            k: v for k, v in datos_tablas_todas.items() if k in TABLAS_HECHOS_MASIVOS
+        }
+    else:
+        datos_tablas = datos_tablas_todas
 
     print(f"[snapshot] Iniciando restauracion (modo={modo}) en '{base_datos or 'uct_dashboard'}'...")
 
@@ -291,6 +291,8 @@ def restaurar_snapshot(
                         sub = [tuple(r[i] for i in indices_validos) for r in sub]
                     cur.executemany(sql_insert, sub)
                     conn.commit()
+                    if modo == "hechos":
+                        time.sleep(0.02)
             finally:
                 if tiene_id:
                     cur.execute(f"SET IDENTITY_INSERT [{tabla}] OFF")

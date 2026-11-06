@@ -22,7 +22,7 @@ RUN apk add --no-cache openssl
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY entrypoint-nginx.sh /entrypoint-nginx.sh
-RUN chmod +x /entrypoint-nginx.sh
+RUN sed -i 's/\r$//' /entrypoint-nginx.sh && chmod +x /entrypoint-nginx.sh
 
 EXPOSE 80 443
 
