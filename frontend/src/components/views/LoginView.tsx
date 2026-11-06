@@ -86,8 +86,8 @@ export function LoginView() {
   }
 
   const demoEnv = (import.meta as any).env ?? {}
-  const demoAdminPass: string = demoEnv.VITE_DEMO_ADMIN_PASSWORD ?? ''
-  const demoUserPass: string = demoEnv.VITE_DEMO_USER_PASSWORD ?? ''
+  const demoAdminPass: string = demoEnv.VITE_DEMO_ADMIN_PASSWORD || 'AdminUCT2026!'
+  const demoUserPass: string = demoEnv.VITE_DEMO_USER_PASSWORD || 'UCTdemo2026!'
 
   const setPresetUser = (roleEmail: string, rolePass: string) => {
     setEmail(roleEmail)

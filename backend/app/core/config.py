@@ -67,8 +67,8 @@ class Settings(BaseSettings):
 
     # Control de Semilla y Usuarios Demo
     SEMILLA_DEMO: bool = True
-    DEMO_ADMIN_PASSWORD: str = ""
-    DEMO_USER_PASSWORD: str = ""
+    DEMO_ADMIN_PASSWORD: str = "AdminUCT2026!"
+    DEMO_USER_PASSWORD: str = "UCTdemo2026!"
 
     # Seguridad de Red y Control Perimetral
     ENABLE_IP_WHITELIST: bool = False

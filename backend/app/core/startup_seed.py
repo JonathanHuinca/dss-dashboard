@@ -150,12 +150,17 @@ async def seed_test_users(db: AsyncSession, role_map: dict[str, Rol]) -> None:
 
             logger.info(f"[seed] Usuario creado: {udef['email']} ({udef['roles']})")
         else:
-            # Sincronizar roles y banderas si ya existía
+            # Sincronizar roles y banderas si ya existia
             user.can_use_ai = udef.get("can_use_ai", user.can_use_ai)
             user.can_export = udef.get("can_export", user.can_export)
             user.can_ingest = udef.get("can_ingest", user.can_ingest)
             if udef.get("espacio_id") is not None:
                 user.espacio_id = udef["espacio_id"]
+            if udef.get("password"):
+                user.hashed_password = hash_password(udef["password"])
+                user.is_active = True
+                user.intentos_fallidos_login = 0
+                user.bloqueado_hasta = None
             for role_name in udef["roles"]:
                 rol = role_map.get(role_name)
                 if rol:
