@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.core.config import settings
+from app.core.config import settings, contexto_url_frontend
 from app.core.database import AsyncSessionLocal
 from app.core.security import ip_whitelist_middleware, get_current_user
 from app.core.startup_seed import run_startup_seed
@@ -109,6 +109,38 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Error interno del servidor", "correlation_id": id_correlacion},
     )
+
+
+@app.middleware("http")
+async def sincronizar_url_frontend_middleware(request: Request, call_next):
+    from urllib.parse import urlparse
+    base_detectada = None
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+
+    if origin and origin.startswith(("http://", "https://")):
+        base_detectada = origin.rstrip("/")
+    elif referer and referer.startswith(("http://", "https://")):
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            base_detectada = f"{parsed.scheme}://{parsed.netloc}"
+    elif host and not host.startswith(("api:", "indicadoreshikcentral-api-dev", "127.0.0.1:8000", "localhost:8000")):
+        esquema = "https" if "uct.cl" in host else proto
+        base_detectada = f"{esquema}://{host}".rstrip("/")
+
+    if base_detectada:
+        if "indicadoreshikcentral.dev.uct.cl" in base_detectada:
+            base_detectada = "https://indicadoreshikcentral.dev.uct.cl"
+        settings.FRONTEND_URL = base_detectada
+        token_ctx = contexto_url_frontend.set(base_detectada)
+        try:
+            return await call_next(request)
+        finally:
+            contexto_url_frontend.reset(token_ctx)
+
+    return await call_next(request)
 
 
 app.middleware("http")(ip_whitelist_middleware)

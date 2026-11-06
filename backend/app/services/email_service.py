@@ -5,9 +5,20 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from app.core.config import settings
+from app.core.config import settings, obtener_url_frontend
 
 logger = logging.getLogger("uvicorn.error")
+
+
+def _normalizar_enlace_frontend(enlace: Optional[str]) -> str:
+    if not enlace:
+        return ""
+    base_actual = obtener_url_frontend()
+    if enlace.startswith("/"):
+        return f"{base_actual}{enlace}"
+    if enlace.startswith("http://localhost:3000") and base_actual != "http://localhost:3000":
+        return enlace.replace("http://localhost:3000", base_actual, 1)
+    return enlace
 
 
 def _construir_plantilla_base(contenido_cuerpo: str, titulo: str) -> str:
@@ -138,6 +149,7 @@ async def enviar_correo_activacion(
     """
     Genera y despacha el correo de invitación y activación de cuenta inicial.
     """
+    enlace_activacion = _normalizar_enlace_frontend(enlace_activacion)
     asunto = "Activación de Cuenta — Plataforma DSS Campus San Francisco UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #002855; font-size: 18px; font-weight: 700;">
@@ -174,6 +186,7 @@ async def enviar_correo_recuperacion(
     """
     Genera y despacha el correo de recuperación y desbloqueo de contraseña.
     """
+    enlace_recuperacion = _normalizar_enlace_frontend(enlace_recuperacion)
     asunto = "Recuperación de Contraseña — Plataforma DSS Campus San Francisco UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #002855; font-size: 18px; font-weight: 700;">
@@ -217,6 +230,8 @@ async def enviar_correo_activacion_consultor(
     Despacha el correo institucional UCT para que el nuevo usuario Consultor_Reporte
     active su cuenta y defina su contraseña de acceso a su bandeja de reportes ejecutivos.
     """
+    enlace_activacion = _normalizar_enlace_frontend(enlace_activacion)
+    enlace_portal = _normalizar_enlace_frontend(enlace_portal)
     asunto = "Alta de Cuenta Consultor de Reportes Ejecutivos — DSS UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #003865; font-size: 18px; font-weight: 700;">
@@ -270,6 +285,10 @@ async def enviar_correo_reporte_ejecutivo(
     """
     Despacha el correo institucional UCT notificando la emisión o habilitación de un Reporte Ejecutivo Compartido.
     """
+    enlace_reporte = _normalizar_enlace_frontend(enlace_reporte)
+    enlace_portal = _normalizar_enlace_frontend(enlace_portal)
+    if enlace_activacion_pendiente:
+        enlace_activacion_pendiente = _normalizar_enlace_frontend(enlace_activacion_pendiente)
     asunto = f"Reporte Ejecutivo Disponible ({codigo_corto}) — {titulo_reporte}"
     bloque_nota = ""
     if nota_general and nota_general.strip():

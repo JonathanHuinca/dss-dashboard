@@ -11,7 +11,7 @@ from sqlalchemy import desc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
+from app.core.config import settings, obtener_url_frontend
 from app.domain.auth_models import Rol, TokenActivacion, Usuario, UsuarioRol
 from app.domain.models import Espacio
 from app.domain.reportes_compartidos_models import (
@@ -826,7 +826,7 @@ class ServicioReportesCompartidos:
         await session.commit()
         await session.refresh(destinatario)
 
-        base_url = (settings.FRONTEND_URL or "http://localhost:3000").rstrip("/")
+        base_url = obtener_url_frontend()
         enlace_portal = f"{base_url}/mis-reportes/{destinatario.token_portal}"
         enlace_activacion = f"{base_url}/activar-cuenta?token={token_plano}" if token_plano else None
 
@@ -987,7 +987,7 @@ class ServicioReportesCompartidos:
         await session.refresh(nuevo_reporte)
         await session.refresh(destinatario)
 
-        base_url = (settings.FRONTEND_URL or "http://localhost:3000").rstrip("/")
+        base_url = obtener_url_frontend()
         enlace_reporte = f"{base_url}/reporte-compartido/{nuevo_reporte.token_acceso}"
         enlace_portal = f"{base_url}/mis-reportes/{destinatario.token_portal}"
         enlace_activacion = (
@@ -1220,7 +1220,7 @@ class ServicioReportesCompartidos:
                 creador_id=usuario_actual.id,
             )
             await session.commit()
-            base_url = (settings.FRONTEND_URL or "http://localhost:3000").rstrip("/")
+            base_url = obtener_url_frontend()
             enlace_reporte = f"{base_url}/reporte-compartido/{reporte.token_acceso}"
             enlace_portal = f"{base_url}/mis-reportes/{dest.token_portal}"
             enlace_activacion = (

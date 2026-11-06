@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # Seguridad de Red y Control Perimetral
     ENABLE_IP_WHITELIST: bool = False
     ALLOWED_SUBNETS: str = "10.20.0.0/16,127.0.0.1/32"
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = "https://indicadoreshikcentral.dev.uct.cl"
 
     # Servidor de Correo SMTP institucional
     SMTP_HOST: str = ""
@@ -137,3 +137,14 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+from contextvars import ContextVar
+
+contexto_url_frontend: ContextVar[Optional[str]] = ContextVar("contexto_url_frontend", default=None)
+
+
+def obtener_url_frontend() -> str:
+    """Devuelve la URL base del frontend detectada desde la petición actual o la configuración."""
+    url = contexto_url_frontend.get() or settings.FRONTEND_URL or "https://indicadoreshikcentral.dev.uct.cl"
+    return url.rstrip("/")
+
