@@ -407,19 +407,17 @@ async def forgot_password_endpoint(
             enlace_completo,
         )
 
-    # Respuesta neutral OWASP ASVS: nunca revelar si el correo existe o no
+    # Respuesta neutral OWASP ASVS: nunca revelar si el correo existe o no ni exponer tokens
     mensaje_neutral = (
         "Si el correo institucional se encuentra registrado en la plataforma DSS, "
         "recibirá un enlace con las instrucciones para restablecer su contraseña (validez: 15 minutos)."
     )
 
-    enlace = f"/recuperar-password?token={token_plano}" if token_plano else None
-
     return ForgotPasswordResponse(
         mensaje=mensaje_neutral,
-        enlace_recuperacion=enlace,
-        token_temporal=token_plano,
-        expira_en=expira_en,
+        enlace_recuperacion=None,
+        token_temporal=None,
+        expira_en=None,
     )
 
 
