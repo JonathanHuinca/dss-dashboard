@@ -79,7 +79,7 @@ def obtener_usuarios_demo() -> List[dict]:
             "can_use_ai": True,
             "can_export": True,
             "can_ingest": True,
-            "espacio_id": 1,
+            "espacio_id": None,
         },
         {
             "email": "analista@uct.cl",
@@ -161,7 +161,7 @@ async def seed_test_users(db: AsyncSession, role_map: dict[str, Rol]) -> None:
             user.can_use_ai = udef.get("can_use_ai", user.can_use_ai)
             user.can_export = udef.get("can_export", user.can_export)
             user.can_ingest = udef.get("can_ingest", user.can_ingest)
-            if udef.get("espacio_id") is not None:
+            if "espacio_id" in udef:
                 user.espacio_id = udef["espacio_id"]
             if udef.get("password"):
                 user.hashed_password = hash_password(udef["password"])

@@ -2,6 +2,32 @@ import React, { useEffect, useMemo, useRef, memo } from 'react'
 import Plotly from 'plotly.js-cartesian-dist-min'
 import createPlotlyComponent from 'react-plotly.js/factory'
 
+// Blindaje contra errores de desmonte concurrente en Plotly cuando el elemento DOM es nulo
+if (typeof window !== 'undefined' && Plotly) {
+  const safeWrap = (obj: any, method: string) => {
+    if (obj && typeof obj[method] === 'function') {
+      const orig = obj[method]
+      obj[method] = function (gd: any, ...args: any[]) {
+        if (!gd) return Promise.resolve ? Promise.resolve() : undefined
+        try {
+          return orig.apply(this, [gd, ...args])
+        } catch (err: any) {
+          if (err?.message?.includes('DOM element provided is null or undefined')) {
+            return Promise.resolve ? Promise.resolve() : undefined
+          }
+          throw err
+        }
+      }
+    }
+  }
+
+  safeWrap(Plotly.Plots, 'resize')
+  safeWrap(Plotly, 'purge')
+  safeWrap(Plotly, 'relayout')
+  safeWrap(Plotly, 'restyle')
+  safeWrap(Plotly, 'react')
+}
+
 const Plot = createPlotlyComponent(Plotly)
 
 const DEBOUNCE_RESIZE_MS = 100
@@ -49,9 +75,13 @@ function InteractiveChartComponent({
       timeoutId = window.setTimeout(() => {
         if (animationFrameId) window.cancelAnimationFrame(animationFrameId)
         animationFrameId = window.requestAnimationFrame(() => {
-          const plotEl = el.querySelector('.js-plotly-plot') as any
-          if (plotEl && Plotly.Plots?.resize) {
-            Plotly.Plots.resize(plotEl)
+          const plotEl = el.querySelector('.js-plotly-plot') as HTMLElement | null
+          if (plotEl && plotEl.isConnected && (plotEl as any)._fullLayout && Plotly.Plots?.resize) {
+            try {
+              Plotly.Plots.resize(plotEl)
+            } catch {
+              // Silenciar excepciones en desmontajes concurrentes
+            }
           }
         })
       }, DEBOUNCE_RESIZE_MS)
