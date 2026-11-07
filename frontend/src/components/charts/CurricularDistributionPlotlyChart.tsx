@@ -231,6 +231,7 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
       {
         type: 'pie',
         hole: 0.48,
+        domain: { x: [0, 1], y: [0.28, 1] },
         labels,
         values: itemsDonut.map((e) =>
           metrica === 'visitas' ? e.visitas : e.alumnos
@@ -259,7 +260,7 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
     ]
   }, [elementosOrdenados, agrupacion, topN, metrica, rebanadaSeleccionada])
 
-  const layoutDonut = {
+  const layoutDonut = useMemo(() => ({
     title: {
       text: `Participación Porcentual (%) por ${
         agrupacion === 'carreras'
@@ -277,14 +278,14 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
       orientation: 'h' as const,
       x: 0.5,
       xanchor: 'center' as const,
-      y: -0.12,
+      y: 0.25,
       yanchor: 'top' as const,
       font: { size: 9.5, color: '#334155' },
       itemclick: false as const,
       itemdoubleclick: false as const,
     },
-    margin: { t: 35, r: 15, b: 85, l: 15 },
-  }
+    margin: { t: 35, r: 15, b: 15, l: 15 },
+  }), [agrupacion, topN])
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
     if (event.points && event.points.length > 0) {
