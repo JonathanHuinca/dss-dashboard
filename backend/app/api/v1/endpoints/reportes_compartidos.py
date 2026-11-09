@@ -37,6 +37,12 @@ class RegistrarConsultorReporteRequest(BaseModel):
     unidad_academica: str = Field(..., min_length=2)
 
 
+class VincularUsuarioExistenteRequest(BaseModel):
+    usuario_id: int = Field(..., gt=0)
+    cargo: str = Field(..., min_length=2)
+    unidad_academica: str = Field(..., min_length=2)
+
+
 class NotaItemSchema(BaseModel):
     id: str = Field(..., description="Identificador único o clave de gráfico/sección")
     seccion: str = Field("general", description="general o id del gráfico asociado")
@@ -107,6 +113,29 @@ async def registrar_consultor_reporte(
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.registrar_consultor_reporte(
+        session=db,
+        usuario_actual=current_user,
+        payload=payload.model_dump(),
+    )
+
+
+@router.get("/usuarios-candidatos", summary="Listar usuarios institucionales activos candidatos para rol Consultor_Reporte")
+async def obtener_usuarios_candidatos(
+    current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
+    db: AsyncSession = Depends(get_db),
+):
+    return await ServicioReportesCompartidos.obtener_usuarios_candidatos_consultor(
+        session=db,
+    )
+
+
+@router.post("/vincular-usuario-existente", status_code=status.HTTP_201_CREATED, summary="Vincular usuario del campus a rol Consultor_Reporte preservando su contraseña")
+async def vincular_usuario_existente(
+    payload: VincularUsuarioExistenteRequest,
+    current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
+    db: AsyncSession = Depends(get_db),
+):
+    return await ServicioReportesCompartidos.vincular_usuario_existente_consultor(
         session=db,
         usuario_actual=current_user,
         payload=payload.model_dump(),

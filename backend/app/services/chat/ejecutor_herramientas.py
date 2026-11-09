@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.chat_schemas import ChatRequest
 from app.services.attendance_service import AttendanceService
 from app.services.vehicle_service import VehicleService
-from app.services.prediction_service import get_prophet_forecast, get_gbr_forecast_14days, get_visit_profiles
+from app.services.prediction_service import get_prophet_forecast, get_prophet_presence_forecast, get_gbr_forecast_14days, get_visit_profiles
 from app.services.chat.fechas_chat import (
     extraer_o_normalizar_fechas,
     obtener_anio_activo_espacio,
@@ -127,8 +127,96 @@ async def _resolver_datos_grafico_contexto_interno(
         return None, None, "El gráfico seleccionado pertenece al módulo de Biblioteca CSF. Para consultarlo, cambie al módulo Biblioteca en el selector superior.", None, None
 
     try:
+        # 0. Curva de Presencia Física por Intervalos de Sesión [entrada, salida]
+        if any(k in slug for k in ["presencia_intervalos", "aforo_presencia", "realtime_presence"]):
+            if espacio_id == 2 or "vehic" in slug:
+                data = await VehicleService.get_realtime_presence_curve(
+                    session=db,
+                    fecha_inicio=d_ini,
+                    fecha_fin=d_fin,
+                    espacio_id=2,
+                    alcance=alcance,
+                    regimen_horario=regimen_horario,
+                    direccion=direccion,
+                    dias_semana=dias_semana,
+                    door=door,
+                    sector=sector,
+                    tipo_vehiculo=tipo_vehiculo,
+                )
+                component = "OccupancyAreaChart"
+                payload = data
+                cap = cap_activa if cap_activa else 125
+                max_val = 0
+                max_time = "N/D"
+                tot_in = 0
+                tot_out = 0
+                for r in (data or []):
+                    tot_in += r.get("entradas", 0) or r.get("ingresos", 0) or 0
+                    tot_out += r.get("salidas", 0) or 0
+                    val = r.get("vehiculos_presentes") or r.get("personas_unicas") or 0
+                    if val > max_val:
+                        max_val = val
+                        max_time = r.get("bucket", "N/D")
+                pct_cap = (max_val / cap * 100) if cap else 0
+                resumen_metricas = (
+                    f"Gráfico enfocado: Curva de Presencia Vehicular por Intervalos de Sesión ({nombre_espacio}).\n"
+                    f"- Metodología: Conteo de patentes activas [entrada <= T y salida >= T] por vehículo único.\n"
+                    f"- Entorno y Capacidad Calibrada: {cap} plazas ({sector or 'Todos los Sectores'}).\n"
+                    f"- Pico máximo de presencia vehicular simultánea: {max_val} vehículos ({pct_cap:.1f}% sobre capacidad calibrada de {cap} plazas) el {max_time}.\n"
+                    f"- Total de ingresos vehiculares en el período: {tot_in:,}.\n"
+                    f"- Total de salidas vehiculares en el período: {tot_out:,}.\n"
+                    f"- Intervalos horarios evaluados: {len(data or [])} registros.\n"
+                    f"{contexto_hitos}"
+                )
+                table_data = data[:50] if isinstance(data, list) else None
+            else:
+                data = await AttendanceService.get_realtime_presence_curve(
+                    session=db,
+                    fecha_inicio=d_ini,
+                    fecha_fin=d_fin,
+                    espacio_id=1,
+                    alcance=alcance,
+                    regimen_horario=regimen_horario,
+                    direccion=direccion,
+                    dias_semana=dias_semana,
+                    door=door,
+                    perfil_visita=perfil_visita,
+                    marcajes=marcajes,
+                    sala=sala,
+                    carrera=carrera,
+                    facultad=facultad,
+                    cohorte=cohorte,
+                )
+                component = "OccupancyAreaChart"
+                payload = data
+                cap = cap_activa
+                max_val = 0
+                max_time = "N/D"
+                tot_in = 0
+                tot_out = 0
+                for r in (data or []):
+                    tot_in += r.get("ingresos", 0) or r.get("entradas", 0) or 0
+                    tot_out += r.get("salidas", 0) or 0
+                    val = r.get("personas_unicas") or 0
+                    if val > max_val:
+                        max_val = val
+                        max_time = r.get("bucket", "N/D")
+                pct_cap = (max_val / cap * 100) if cap else 0
+                resumen_metricas = (
+                    f"Gráfico enfocado: Curva de Presencia Física en Sala por Intervalos de Sesión ({nombre_espacio}).\n"
+                    f"- Metodología: Conteo de sesiones activas [entrada <= T y salida >= T] por usuario único.\n"
+                    f"- Entorno y Capacidad Calibrada: {sala_desc}.\n"
+                    f"- {regimen_desc}\n"
+                    f"- Pico máximo de presencia física simultánea: {max_val} personas ({pct_cap:.1f}% sobre capacidad calibrada de {cap} asientos) el {max_time}.\n"
+                    f"- Total de ingresos registrados en el período: {tot_in:,}.\n"
+                    f"- Total de salidas registradas en el período: {tot_out:,}.\n"
+                    f"- Intervalos horarios evaluados: {len(data or [])} registros.\n"
+                    f"{contexto_hitos}"
+                )
+                table_data = data[:50] if isinstance(data, list) else None
+
         # 1. Curva de Aforo / Ocupación
-        if any(k in slug for k in ["aforo_curva", "curva_ocupacion", "curva_de_aforo", "curva_de_ocupacion"]):
+        elif any(k in slug for k in ["aforo_curva", "curva_ocupacion", "curva_de_aforo", "curva_de_ocupacion"]):
             if espacio_id == 2:
                 data = await VehicleService.get_hourly_flow(
                     session=db,
@@ -213,7 +301,27 @@ async def _resolver_datos_grafico_contexto_interno(
                 )
                 table_data = data[:50] if isinstance(data, list) else None
 
-        # 2. Pronóstico Prophet
+        # 2a. Pronóstico Prophet de Presencia Física
+        elif any(k in slug for k in ["prophet_presencia", "presencia_prophet"]):
+            data = await get_prophet_presence_forecast(db, sala=sala or "todas")
+            component = "ForecastLineChart"
+            payload = data
+            pron = data.get("pronostico_7d") or data.get("forecast") or []
+            max_p = max((pt.get("yhat", 0) for pt in pron), default=0)
+            avg_p = sum(pt.get("yhat", 0) for pt in pron) / len(pron) if pron else 0
+            m_stat = data.get("model_status", {})
+            resumen_metricas = (
+                f"Gráfico enfocado: Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado).\n"
+                f"- Modelo: Prophet con saturación sigmoide acotada a capacidad física ({data.get('capacidad_asientos')} asientos).\n"
+                f"- Alcance: 7 días históricos de presencia por intervalos y 7 días proyectados.\n"
+                f"- Pico de ocupación física proyectado: {max_p:.0f} ocupantes simultáneos.\n"
+                f"- Demanda media: {avg_p:.0f} ocupantes.\n"
+                f"- Estado del modelo: {m_stat.get('status', 'ok')} ({m_stat.get('model_date', 'reciente')}).\n"
+                f"{contexto_hitos}"
+            )
+            table_data = pron[:40] if pron else None
+
+        # 2. Pronóstico Prophet Flujo
         elif any(k in slug for k in ["prophet", "pronostico_prophet", "prediccion_prophet"]):
             data = await get_prophet_forecast(db, recinto="vehicular" if espacio_id == 2 else "biblioteca")
             component = "ForecastLineChart"
@@ -760,21 +868,6 @@ async def _resolver_datos_grafico_contexto_interno(
                 f"{contexto_hitos}"
             )
             table_data = [data] if isinstance(data, dict) else None
-
-        # 19. Evolución Diaria Vehicular
-        elif any(k in slug for k in ["evolucion_diaria", "evolucion_diaria_de_accesos"]):
-            data = await VehicleService.get_daily_evolution(db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin)
-            component = "VehicleDailyPlotlyChart"
-            payload = data
-            top_d = max(data, key=lambda x: x.get("entradas", 0) or x.get("total", 0)) if data else {}
-            tot_e = sum(x.get("entradas", 0) for x in (data or []))
-            resumen_metricas = (
-                f"Gráfico enfocado: Evolución Diaria de Accesos Vehiculares (Plotly).\n"
-                f"- Día con mayor afluencia vehicular: {top_d.get('fecha', 'N/D')} con {top_d.get('entradas', 0):,} accesos.\n"
-                f"- Total acumulado en la serie: {tot_e:,} entradas.\n"
-                f"{contexto_hitos}"
-            )
-            table_data = data[:30] if isinstance(data, list) else None
 
         # 20. K-Means Clusters
         elif any(k in slug for k in ["kmeans", "clusters", "conductuales"]):

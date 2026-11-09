@@ -20,7 +20,7 @@ from app.domain.reportes_compartidos_models import (
     ReporteCompartido,
 )
 from app.services.attendance_service import AttendanceService
-from app.services.auth_service import generar_token_activacion
+from app.services.auth_service import generar_token_activacion, normalizar_rol
 from app.services.email_service import (
     enviar_correo_activacion_consultor,
     enviar_correo_reporte_ejecutivo,
@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 CATALOGO_GRAFICOS_BIBLIOTECA = [
-    {"id": "aforo_curva", "titulo": "Curva de Aforo Concurrente vs Capacidad"},
-    {"id": "prophet_diario", "titulo": "Pronóstico Continuo Prophet (7 Días)"},
+    {"id": "aforo_presencia_intervalos", "titulo": "Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima"},
+    {"id": "prophet_presencia_14dias", "titulo": "Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado)"},
     {"id": "flujo_horario", "titulo": "Flujo Horario de Ingresos y Salidas"},
     {"id": "mapa_calor", "titulo": "Mapa de Calor (Día de Semana x Hora)"},
     {"id": "comparativa_salas", "titulo": "Comparativa Sala 1 vs Sala 2 (Pecera)"},
@@ -45,7 +45,7 @@ CATALOGO_GRAFICOS_BIBLIOTECA = [
     {"id": "hitos_academicos", "titulo": "Comparativa por Hito del Calendario Académico"},
     {"id": "distribucion_curricular", "titulo": "Distribución por Carrera y Facultad (Ley 21.719)"},
     {"id": "perfiles_visita", "titulo": "Perfiles de Estadía y Permanencia (Donut)"},
-    {"id": "campana_24_horas", "titulo": "8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno"},
+    {"id": "campana_24_horas", "titulo": "Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno"},
 ]
 
 CATALOGO_INDICADORES_BIBLIOTECA = [
@@ -61,10 +61,9 @@ CATALOGO_INDICADORES_BIBLIOTECA = [
 ]
 
 CATALOGO_GRAFICOS_ESTACIONAMIENTO = [
-    {"id": "aforo_vehicular_curva", "titulo": "Curva de Concurrencia vs Capacidad Vehicular"},
+    {"id": "presencia_vehicular_intervalos", "titulo": "Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad"},
     {"id": "prophet_vehicular", "titulo": "Pronóstico Continuo Prophet Vehicular"},
     {"id": "flujo_horario_vehicular", "titulo": "Flujo Horario de Ingresos y Salidas Vehiculares"},
-    {"id": "evolucion_diaria_vehicular", "titulo": "Serie Temporal de Accesos Diarios"},
     {"id": "composicion_flota", "titulo": "Composición por Tipo de Vehículo"},
     {"id": "distribucion_marcas", "titulo": "Distribución por Marca de Vehículo"},
     {"id": "estadisticas_camaras", "titulo": "Distribución por Pórtico y Cámara ANPR"},
@@ -426,17 +425,21 @@ class ServicioReportesCompartidos:
             from app.services.prediction_service import get_prophet_forecast
 
             flujo_bib = None
-            if (
-                "flujo_horario" in graficos_visibles
-                or "aforo_curva" in graficos_visibles
-                or "prophet_diario" in graficos_visibles
-            ):
+            if "flujo_horario" in graficos_visibles:
                 flujo_bib = await AttendanceService.get_hourly_flow(**kwargs_comunes)
                 graficos_resultado["flujo_horario"] = flujo_bib
-                if "aforo_curva" in graficos_visibles:
-                    graficos_resultado["aforo_curva"] = flujo_bib
 
-            if "prophet_diario" in graficos_visibles:
+            if "aforo_presencia_intervalos" in graficos_visibles:
+                try:
+                    graficos_resultado["aforo_presencia_intervalos"] = (
+                        await AttendanceService.get_realtime_presence_curve(**kwargs_comunes)
+                    )
+                except Exception as exc:
+                    logger.warning("Fallo aforo_presencia_intervalos en reporte: %s", exc)
+                    graficos_resultado["aforo_presencia_intervalos"] = []
+
+            if "prophet_presencia_14dias" in graficos_visibles:
+                from app.services.prediction_service import get_prophet_presence_forecast
                 sala_raw_p = str(sala or "").lower()
                 if "csf02" in sala_raw_p or "sala_1" in sala_raw_p or sala_raw_p == "1":
                     sala_prophet = "sala1"
@@ -445,12 +448,12 @@ class ServicioReportesCompartidos:
                 else:
                     sala_prophet = "todas"
                 try:
-                    graficos_resultado["prophet_diario"] = await get_prophet_forecast(
-                        session, recinto="biblioteca", sala=sala_prophet
+                    graficos_resultado["prophet_presencia_14dias"] = await get_prophet_presence_forecast(
+                        session, sala=sala_prophet
                     )
                 except Exception as exc:
-                    logger.warning("Fallo prophet biblioteca en reporte: %s", exc)
-                    graficos_resultado["prophet_diario"] = {}
+                    logger.warning("Fallo prophet_presencia_14dias en reporte: %s", exc)
+                    graficos_resultado["prophet_presencia_14dias"] = {}
 
             if "evolucion_semanal" in graficos_visibles:
                 graficos_resultado["evolucion_semanal"] = await AttendanceService.get_weekly_evolution(**kwargs_comunes)
@@ -607,14 +610,29 @@ class ServicioReportesCompartidos:
 
             from app.services.prediction_service import get_prophet_forecast
 
-            if (
-                "flujo_horario_vehicular" in graficos_visibles
-                or "aforo_vehicular_curva" in graficos_visibles
-                or "prophet_vehicular" in graficos_visibles
-            ):
+            if "flujo_horario_vehicular" in graficos_visibles or "prophet_vehicular" in graficos_visibles:
                 graficos_resultado["flujo_horario_vehicular"] = flujo_h
-                if "aforo_vehicular_curva" in graficos_visibles:
-                    graficos_resultado["aforo_vehicular_curva"] = flujo_h
+
+            if "presencia_vehicular_intervalos" in graficos_visibles:
+                try:
+                    graficos_resultado["presencia_vehicular_intervalos"] = (
+                        await VehicleService.get_realtime_presence_curve(
+                            session=session,
+                            fecha_inicio=fecha_inicio,
+                            fecha_fin=fecha_fin,
+                            espacio_id=2,
+                            alcance=alcance,
+                            regimen_horario=regimen_horario,
+                            direccion=direccion,
+                            dias_semana=dias_semana,
+                            door=door,
+                            sector=sector,
+                            tipo_vehiculo=tipo_vehiculo,
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Fallo presencia_vehicular_intervalos en reporte: %s", exc)
+                    graficos_resultado["presencia_vehicular_intervalos"] = []
 
             if "prophet_vehicular" in graficos_visibles:
                 try:
@@ -625,10 +643,6 @@ class ServicioReportesCompartidos:
                     logger.warning("Fallo prophet vehicular en reporte: %s", exc)
                     graficos_resultado["prophet_vehicular"] = {}
 
-            if "evolucion_diaria_vehicular" in graficos_visibles:
-                graficos_resultado["evolucion_diaria_vehicular"] = await VehicleService.get_daily_evolution(
-                    session, 2, fecha_inicio, fecha_fin, sector=sector
-                )
             if "composicion_flota" in graficos_visibles or "distribucion_marcas" in graficos_visibles:
                 flota_data = await VehicleService.get_fleet_composition(
                     session, 2, fecha_inicio, fecha_fin, sector=sector
@@ -862,6 +876,163 @@ class ServicioReportesCompartidos:
         }
 
     @classmethod
+    async def obtener_usuarios_candidatos_consultor(
+        cls,
+        session: AsyncSession,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retorna la lista de usuarios institucionales activos que pueden ser vinculados
+        al rol Consultor_Reporte sin necesidad de forzar cambio ni asignación de contraseña.
+        """
+        stmt_users = (
+            select(Usuario)
+            .options(selectinload(Usuario.roles))
+            .where(Usuario.is_active == True)
+            .order_by(Usuario.nombre_completo.asc())
+        )
+        usuarios = (await session.execute(stmt_users)).scalars().all()
+
+        stmt_dest = select(DestinatarioReporte)
+        destinatarios = (await session.execute(stmt_dest)).scalars().all()
+        dest_por_email = {d.email.strip().lower(): d for d in destinatarios}
+
+        candidatos: List[Dict[str, Any]] = []
+        for u in usuarios:
+            email_norm = u.email.strip().lower()
+            roles_nombres = [r.nombre for r in (u.roles or [])]
+            es_consultor = any(normalizar_rol(r) == "Consultor_Reporte" for r in roles_nombres)
+            dest_asociado = dest_por_email.get(email_norm)
+
+            cargo_sugerido = "Consultor/a Institucional"
+            if dest_asociado and dest_asociado.cargo:
+                cargo_sugerido = dest_asociado.cargo
+            elif any("Director" in r for r in roles_nombres):
+                cargo_sugerido = "Director/a Institucional"
+            elif any("Analista" in r for r in roles_nombres):
+                cargo_sugerido = "Analista Curricular y de Gestión"
+            elif any("Admin" in r for r in roles_nombres):
+                cargo_sugerido = "Administrador/a del Sistema DSS"
+            elif any("Guardia" in r for r in roles_nombres):
+                cargo_sugerido = "Personal de Seguridad del Campus"
+
+            unidad_sugerida = "Universidad Católica de Temuco"
+            if dest_asociado and dest_asociado.unidad_academica:
+                unidad_sugerida = dest_asociado.unidad_academica
+
+            candidatos.append(
+                {
+                    "id": u.id,
+                    "email": u.email,
+                    "nombre_completo": u.nombre_completo,
+                    "roles": roles_nombres,
+                    "es_consultor": es_consultor,
+                    "destinatario_id": dest_asociado.id if dest_asociado else None,
+                    "cargo_sugerido": cargo_sugerido,
+                    "unidad_sugerida": unidad_sugerida,
+                }
+            )
+
+        return candidatos
+
+    @classmethod
+    async def vincular_usuario_existente_consultor(
+        cls,
+        session: AsyncSession,
+        usuario_actual: Usuario,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Asigna el rol Consultor_Reporte a un usuario institucional existente y crea o actualiza su perfil
+        en destinatarios_reportes preservando su contraseña actual (sin forzar nueva contraseña ni enviar correo de activación).
+        """
+        usuario_id = int(payload.get("usuario_id") or 0)
+        cargo = str(payload.get("cargo") or "").strip()
+        unidad_academica = str(payload.get("unidad_academica") or "").strip()
+
+        if usuario_id <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Debe especificar un usuario institucional válido.",
+            )
+        if not cargo or not unidad_academica:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Debe indicar cargo y carrera o unidad académica del destinatario.",
+            )
+
+        stmt_usr = select(Usuario).options(selectinload(Usuario.roles)).where(Usuario.id == usuario_id)
+        usuario = (await session.execute(stmt_usr)).scalar_one_or_none()
+        if not usuario or not usuario.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="El usuario seleccionado no existe o se encuentra inactivo.",
+            )
+
+        stmt_rol = select(Rol).where(Rol.nombre == "Consultor_Reporte")
+        rol_consultor = (await session.execute(stmt_rol)).scalar_one_or_none()
+        if not rol_consultor:
+            rol_consultor = Rol(
+                nombre="Consultor_Reporte",
+                descripcion="Consultor institucional con acceso a reportes ejecutivos compartidos",
+            )
+            session.add(rol_consultor)
+            await session.flush()
+
+        roles_actuales_ids = {r.id for r in (usuario.roles or [])}
+        if rol_consultor.id not in roles_actuales_ids:
+            session.add(UsuarioRol(usuario_id=usuario.id, rol_id=rol_consultor.id))
+            await session.flush()
+
+        email_dest = usuario.email.strip().lower()
+        ahora = datetime.now()
+
+        stmt_dest = select(DestinatarioReporte).where(DestinatarioReporte.email == email_dest)
+        destinatario = (await session.execute(stmt_dest)).scalar_one_or_none()
+
+        if not destinatario:
+            destinatario = DestinatarioReporte(
+                email=email_dest,
+                nombre_completo=usuario.nombre_completo,
+                cargo=cargo,
+                unidad_academica=unidad_academica,
+                token_portal=secrets.token_urlsafe(32),
+                activo=True,
+                creado_en=ahora,
+                actualizado_en=ahora,
+            )
+            session.add(destinatario)
+            await session.flush()
+        else:
+            destinatario.nombre_completo = usuario.nombre_completo
+            destinatario.cargo = cargo
+            destinatario.unidad_academica = unidad_academica
+            destinatario.activo = True
+            destinatario.actualizado_en = ahora
+
+        await session.commit()
+        await session.refresh(destinatario)
+
+        cuenta_activada = bool(
+            usuario.is_active
+            and usuario.hashed_password != "PENDIENTE_ACTIVACION"
+            and usuario.hashed_password.startswith("$2")
+        )
+
+        return {
+            "id": destinatario.id,
+            "usuario_id": usuario.id,
+            "nombre_completo": destinatario.nombre_completo,
+            "email": destinatario.email,
+            "cargo": destinatario.cargo,
+            "unidad_academica": destinatario.unidad_academica,
+            "token_portal": destinatario.token_portal,
+            "activo": destinatario.activo,
+            "cuenta_activada": cuenta_activada,
+            "enlace_activacion": None,
+            "correo_enviado": False,
+        }
+
+    @classmethod
     async def crear_reporte_compartido(
         cls,
         session: AsyncSession,
@@ -924,7 +1095,7 @@ class ServicioReportesCompartidos:
         graficos_visibles = payload.get("graficos_visibles") or (
             ["flujo_horario", "evolucion_semanal", "comparativa_salas", "distribucion_curricular"]
             if espacio_id == 1
-            else ["flujo_horario_vehicular", "evolucion_diaria_vehicular", "composicion_flota", "estadisticas_camaras"]
+            else ["flujo_horario_vehicular", "composicion_flota", "estadisticas_camaras"]
         )
         indicadores_visibles = payload.get("indicadores_visibles") or (
             [i["id"] for i in CATALOGO_INDICADORES_BIBLIOTECA]
@@ -934,18 +1105,19 @@ class ServicioReportesCompartidos:
         modo_datos = str(payload.get("modo_datos") or "dinamico_acotado")
         notas_items = payload.get("notas_items") or []
 
-        datos_instantanea_str: Optional[str] = None
-        if modo_datos == "instantanea_fija":
-            datos_ensamblados = await cls.ensamblar_datos_reporte_confinado(
-                session=session,
-                espacio_id=espacio_id,
-                fecha_inicio=fecha_inicio,
-                fecha_fin=fecha_fin,
-                filtros=filtros_bloqueados,
-                graficos_visibles=graficos_visibles,
-                indicadores_visibles=indicadores_visibles,
-            )
-            datos_instantanea_str = _serializar_json_seguro(datos_ensamblados)
+        # Siempre pre-ensamblamos los datos iniciales al emitir el reporte
+        # para que tanto en 'instantanea_fija' como en 'dinamico_acotado'
+        # la primera visualizacion y la bandeja respondan de inmediato.
+        datos_ensamblados = await cls.ensamblar_datos_reporte_confinado(
+            session=session,
+            espacio_id=espacio_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            filtros=filtros_bloqueados,
+            graficos_visibles=graficos_visibles,
+            indicadores_visibles=indicadores_visibles,
+        )
+        datos_instantanea_str = _serializar_json_seguro(datos_ensamblados)
 
         expira_en = payload.get("expira_en")
         if isinstance(expira_en, str) and expira_en.strip():
@@ -1429,9 +1601,10 @@ class ServicioReportesCompartidos:
         graficos_visibles = _cargar_json_seguro(reporte.graficos_visibles_json, [])
         indicadores_visibles = _cargar_json_seguro(reporte.indicadores_visibles_json, [])
 
-        if reporte.modo_datos == "instantanea_fija" and reporte.datos_instantanea_json:
+        if reporte.datos_instantanea_json:
             datos_confinados = _cargar_json_seguro(reporte.datos_instantanea_json, {})
             ind_ej_guardados = datos_confinados.get("indicadores_ejecutivos") or {}
+            graficos_guardados = datos_confinados.get("graficos") or {}
             ids_cat_actual = {
                 i["id"]
                 for i in (
@@ -1441,9 +1614,11 @@ class ServicioReportesCompartidos:
                 )
             }
             ind_vis_guardados = datos_confinados.get("indicadores_visibles") or []
+            faltan_graficos = any(g in graficos_visibles and g not in graficos_guardados for g in graficos_visibles)
             if (
                 "dias_operativos" not in ind_ej_guardados
                 or not any(i in ids_cat_actual for i in ind_vis_guardados)
+                or faltan_graficos
             ):
                 datos_confinados = await cls.ensamblar_datos_reporte_confinado(
                     session=session,
@@ -1469,6 +1644,8 @@ class ServicioReportesCompartidos:
                 graficos_visibles=graficos_visibles,
                 indicadores_visibles=indicadores_visibles,
             )
+            reporte.datos_instantanea_json = _serializar_json_seguro(datos_confinados)
+            await session.commit()
 
         # Historial de todos los reportes enviados al mismo destinatario
         historial_destinatario = []
@@ -1624,9 +1801,10 @@ class ServicioReportesCompartidos:
         graficos_visibles = _cargar_json_seguro(reporte.graficos_visibles_json, [])
         indicadores_visibles = _cargar_json_seguro(reporte.indicadores_visibles_json, [])
 
-        if reporte.modo_datos == "instantanea_fija" and reporte.datos_instantanea_json:
+        if reporte.datos_instantanea_json:
             datos_confinados = _cargar_json_seguro(reporte.datos_instantanea_json, {})
             ind_ej_guardados = datos_confinados.get("indicadores_ejecutivos") or {}
+            graficos_guardados = datos_confinados.get("graficos") or {}
             ids_cat_actual = {
                 i["id"]
                 for i in (
@@ -1636,9 +1814,11 @@ class ServicioReportesCompartidos:
                 )
             }
             ind_vis_guardados = datos_confinados.get("indicadores_visibles") or []
+            faltan_graficos = any(g in graficos_visibles and g not in graficos_guardados for g in graficos_visibles)
             if (
                 "dias_operativos" not in ind_ej_guardados
                 or not any(i in ids_cat_actual for i in ind_vis_guardados)
+                or faltan_graficos
             ):
                 datos_confinados = await cls.ensamblar_datos_reporte_confinado(
                     session=session,
@@ -1664,6 +1844,8 @@ class ServicioReportesCompartidos:
                 graficos_visibles=graficos_visibles,
                 indicadores_visibles=indicadores_visibles,
             )
+            reporte.datos_instantanea_json = _serializar_json_seguro(datos_confinados)
+            await session.commit()
 
         resumen_contexto = {
             "titulo_reporte": reporte.titulo_reporte,

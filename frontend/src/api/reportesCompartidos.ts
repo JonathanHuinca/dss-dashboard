@@ -119,6 +119,23 @@ export interface RegistrarConsultorPayload {
   unidad_academica: string
 }
 
+export interface UsuarioCandidatoConsultor {
+  id: number
+  email: string
+  nombre_completo: string
+  roles: string[]
+  es_consultor: boolean
+  destinatario_id: number | null
+  cargo_sugerido: string
+  unidad_sugerida: string
+}
+
+export interface VincularUsuarioExistentePayload {
+  usuario_id: number
+  cargo: string
+  unidad_academica: string
+}
+
 export interface RespuestaReportePublico {
   reporte: ReporteCompartidoResumen
   datos: {
@@ -167,18 +184,37 @@ export async function registrarConsultorReporte(
   return data
 }
 
+export async function fetchUsuariosCandidatosConsultor(): Promise<UsuarioCandidatoConsultor[]> {
+  const { data } = await api.get<UsuarioCandidatoConsultor[]>('/reportes-compartidos/usuarios-candidatos')
+  return data
+}
+
+export async function vincularUsuarioExistenteConsultor(
+  payload: VincularUsuarioExistentePayload
+): Promise<DestinatarioReporteInfo> {
+  const { data } = await api.post<DestinatarioReporteInfo>(
+    '/reportes-compartidos/vincular-usuario-existente',
+    payload
+  )
+  return data
+}
+
 export async function fetchMisReportesConsultor(): Promise<{
   destinatario: DestinatarioReporteInfo
   reportes: Array<any>
 }> {
-  const { data } = await api.get('/reportes-compartidos/mis-reportes')
+  const { data } = await api.get('/reportes-compartidos/mis-reportes', {
+    timeout: 45_000,
+  })
   return data
 }
 
 export async function crearReporteCompartido(
   payload: CrearReporteCompartidoPayload
 ): Promise<ReporteCompartidoResumen> {
-  const { data } = await api.post<ReporteCompartidoResumen>('/reportes-compartidos', payload)
+  const { data } = await api.post<ReporteCompartidoResumen>('/reportes-compartidos', payload, {
+    timeout: 90_000,
+  })
   return data
 }
 
@@ -224,7 +260,9 @@ export async function activarCuentaConsultorDesdeReporte(
 }
 
 export async function fetchReportePublicoPorToken(tokenAcceso: string): Promise<RespuestaReportePublico> {
-  const { data } = await api.get<RespuestaReportePublico>(`/reportes-compartidos/publico/${tokenAcceso}`)
+  const { data } = await api.get<RespuestaReportePublico>(`/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}`, {
+    timeout: 60_000,
+  })
   return data
 }
 
@@ -232,7 +270,9 @@ export async function fetchPortalDestinatarioPorToken(tokenPortal: string): Prom
   destinatario: DestinatarioReporteInfo
   reportes: Array<any>
 }> {
-  const { data } = await api.get(`/reportes-compartidos/portal/${tokenPortal}`)
+  const { data } = await api.get(`/reportes-compartidos/portal/${encodeURIComponent(tokenPortal)}`, {
+    timeout: 45_000,
+  })
   return data
 }
 
