@@ -65,8 +65,8 @@ logger = logging.getLogger("app.core.cache")
 
 # Constantes de TTL oficiales
 TTL_AFORO_VIVO: int = 60         # 1 minuto
-TTL_KPIS_DIA: int = 300          # 5 minutos
-TTL_HISTORICOS: int = 900        # 15 minutos
+TTL_KPIS_DIA: int = 900          # 15 minutos
+TTL_HISTORICOS: int = 1800       # 30 minutos
 
 
 class CacheInterface(ABC):
@@ -245,6 +245,13 @@ async def invalidar_cache_por_espacio(espacio_id: int) -> int:
     Invalida todas las claves de caché vinculadas a un espacio institucional específico.
     Se invoca automáticamente tras una ingesta de datos o sincronización horaria.
     """
+    try:
+        from app.services.attendance_service import invalidar_cache_horarios as inv_att
+        from app.services.vehicle_service import invalidar_cache_horarios as inv_veh
+        inv_att(espacio_id)
+        inv_veh(espacio_id)
+    except Exception:
+        pass
     prefijo = f"espacio:{espacio_id}"
     cantidad = await _cache_global.invalidate_prefix(prefijo)
     logger.info(f"[cache] Invalidadas {cantidad} entradas para {prefijo}")
@@ -253,6 +260,13 @@ async def invalidar_cache_por_espacio(espacio_id: int) -> int:
 
 async def limpiar_toda_la_cache() -> int:
     """Limpia la totalidad de la memoria de caché del sistema."""
+    try:
+        from app.services.attendance_service import invalidar_cache_horarios as inv_att
+        from app.services.vehicle_service import invalidar_cache_horarios as inv_veh
+        inv_att(None)
+        inv_veh(None)
+    except Exception:
+        pass
     cantidad = await _cache_global.clear()
     logger.info(f"[cache] Purga total ejecutada: {cantidad} entradas eliminadas.")
     return cantidad
@@ -279,16 +293,27 @@ def _normalizar_argumentos_funcion(func: Callable, args: tuple, kwargs: dict) ->
     return normalizados
 
 
-def _contexto_seguridad_usuario(usuario: Any) -> Dict[str, Any]:
-    """Huella de autorización (roles, recinto, datasets) para aislar la caché por perfil."""
+_MAPA_ESPACIO_POR_FUNCION: Dict[str, int] = {
+    "get_forecast_attendance": 1,
+    "get_forecast_presence_endpoint": 1,
+    "get_forecast_parking": 2,
+    "get_intercampus_mobility": 2,
+    "get_behavioral_clusters": 2,
+}
+
+
+def _contexto_seguridad_usuario(usuario: Any, espacio_id: Optional[int] = None) -> Dict[str, Any]:
+    """Contexto de seguridad normalizado por recinto autorizado para compartir caché de forma segura entre perfiles."""
+    if espacio_id is not None:
+        return {"espacio_autorizado": int(espacio_id)}
     if usuario is None:
-        return {"roles": [], "espacio": None, "datasets": []}
-    from app.services.auth_service import normalizar_rol
-    roles = sorted({normalizar_rol(r.nombre) for r in (getattr(usuario, "roles", None) or [])})
+        return {"datasets": []}
     datasets = getattr(usuario, "allowed_datasets", None)
     if isinstance(datasets, (list, tuple, set)):
         datasets = sorted(str(d).lower() for d in datasets)
-    return {"roles": roles, "espacio": getattr(usuario, "espacio_id", None), "datasets": datasets}
+    else:
+        datasets = []
+    return {"datasets": datasets}
 
 
 def _generar_clave_cache(
@@ -366,6 +391,8 @@ def cachear_respuesta(
 
             usuario = kwargs_efectivos.get("current_user")
             espacio_id_param = kwargs_efectivos.get("espacio_id") if por_espacio else None
+            if espacio_id_param is None and por_espacio:
+                espacio_id_param = _MAPA_ESPACIO_POR_FUNCION.get(func.__name__)
 
             # RLS: validar acceso antes de evaluar cualquier entrada de caché
             if usuario is not None and espacio_id_param is not None:
@@ -378,7 +405,7 @@ def cachear_respuesta(
                 kwargs=kwargs_efectivos,
                 categoria=categoria,
                 espacio_id=espacio_id_param,
-                contexto_usuario=_contexto_seguridad_usuario(usuario),
+                contexto_usuario=_contexto_seguridad_usuario(usuario, espacio_id_param),
             )
 
             def _marcar(estado: str) -> None:
@@ -420,12 +447,7 @@ _precalentamiento_en_curso: bool = False
 async def precalentar_cache_modulos() -> Dict[str, Any]:
     """
     Precalienta automáticamente en el arranque de la API los datos analíticos y predictivos
-    de la última semana registrada para tres perfiles clave de usuario:
-    1. Admin_Sistema (Global)
-    2. Director_Recinto (Recinto 1 - Biblioteca)
-    3. Director_Recinto (Recinto 2 - Estacionamiento)
-
-    Registra métricas en consola y exporta la evidencia a disco para la tesis de grado.
+    de la última semana registrada y de los hitos académicos del selector de períodos.
     """
     global _precalentamiento_en_curso
     if _precalentamiento_en_curso:
@@ -439,133 +461,165 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
         import os
         from datetime import date, timedelta
         from types import SimpleNamespace
+        from sqlalchemy import text
         from app.core.database import AsyncSessionLocal
         from app.api.v1.endpoints import attendance, vehicles, predictions, metrics
 
-        # Definición canónica de perfiles institucionales para precalentamiento
-        perfiles = [
-            {
-                "nombre": "Admin_Sistema",
-                "descripcion": "Administrador de Sistema (Acceso Global)",
-                "usuario": SimpleNamespace(
-                    id=9001,
-                    roles=[SimpleNamespace(nombre="Admin_Sistema")],
-                    allowed_datasets=["biblioteca", "estacionamiento"],
-                    espacio_id=None,
-                    is_active=True,
-                ),
-                "incluye_biblioteca": True,
-                "incluye_estacionamiento": True,
-            },
-            {
-                "nombre": "Director_Recinto_Biblioteca",
-                "descripcion": "Director de Recinto (Recinto 1 - Biblioteca)",
-                "usuario": SimpleNamespace(
-                    id=9002,
-                    roles=[SimpleNamespace(nombre="Director_Recinto")],
-                    allowed_datasets=["biblioteca"],
-                    espacio_id=1,
-                    is_active=True,
-                ),
-                "incluye_biblioteca": True,
-                "incluye_estacionamiento": False,
-            },
-            {
-                "nombre": "Director_Recinto_Estacionamiento",
-                "descripcion": "Director de Recinto (Recinto 2 - Estacionamiento)",
-                "usuario": SimpleNamespace(
-                    id=9003,
-                    roles=[SimpleNamespace(nombre="Director_Recinto")],
-                    allowed_datasets=["estacionamiento"],
-                    espacio_id=2,
-                    is_active=True,
-                ),
-                "incluye_biblioteca": False,
-                "incluye_estacionamiento": True,
-            },
-        ]
-
+        usr_admin = SimpleNamespace(
+            id=9001,
+            roles=[SimpleNamespace(nombre="Admin_Sistema")],
+            allowed_datasets=["biblioteca", "estacionamiento"],
+            espacio_id=None,
+            is_active=True,
+        )
         respuesta_ficticia = Response()
 
         async with AsyncSessionLocal() as sesion:
-            # 1. Determinar ventanas cronológicas de última semana
+            # 1. Determinar ventanas cronológicas de Biblioteca y Estacionamiento
             limites_bib = await metrics.get_date_bounds(
                 response=respuesta_ficticia,
                 espacio_id=1,
-                current_user=perfiles[0]["usuario"],
+                current_user=usr_admin,
                 db=sesion,
             )
-            fecha_max_bib = (limites_bib.get("fecha_max") if isinstance(limites_bib, dict) else getattr(limites_bib, "fecha_max", None)) or "2026-10-14"
-            fin_bib = date.fromisoformat(str(fecha_max_bib)[:10])
+            fecha_min_bib_str = (limites_bib.get("fecha_min") if isinstance(limites_bib, dict) else getattr(limites_bib, "fecha_min", None)) or "2026-03-01"
+            fecha_max_bib_str = (limites_bib.get("fecha_max") if isinstance(limites_bib, dict) else getattr(limites_bib, "fecha_max", None)) or "2026-10-14"
+            min_bib = date.fromisoformat(str(fecha_min_bib_str)[:10])
+            fin_bib = date.fromisoformat(str(fecha_max_bib_str)[:10])
             ini_bib = fin_bib - timedelta(days=6)
 
             limites_veh = await metrics.get_date_bounds(
                 response=respuesta_ficticia,
                 espacio_id=2,
-                current_user=perfiles[0]["usuario"],
+                current_user=usr_admin,
                 db=sesion,
             )
-            fecha_max_veh = (limites_veh.get("fecha_max") if isinstance(limites_veh, dict) else getattr(limites_veh, "fecha_max", None)) or "2026-10-14"
-            fin_veh = date.fromisoformat(str(fecha_max_veh)[:10])
+            fecha_min_veh_str = (limites_veh.get("fecha_min") if isinstance(limites_veh, dict) else getattr(limites_veh, "fecha_min", None)) or "2026-03-01"
+            fecha_max_veh_str = (limites_veh.get("fecha_max") if isinstance(limites_veh, dict) else getattr(limites_veh, "fecha_max", None)) or "2026-10-14"
+            min_veh = date.fromisoformat(str(fecha_min_veh_str)[:10])
+            fin_veh = date.fromisoformat(str(fecha_max_veh_str)[:10])
             ini_veh = fin_veh - timedelta(days=6)
 
-            # 2. Ejecutar precalentamiento para cada perfil configurado
-            for perfil_info in perfiles:
-                usr = perfil_info["usuario"]
-                p_nombre = perfil_info["nombre"]
+            # Detectar rango de Semana de Exámenes si existe en horarios_operacion
+            ini_ex_bib, fin_ex_bib = date(2026, 7, 6), date(2026, 7, 13)
+            try:
+                r_ex = (await sesion.execute(text("""
+                    SELECT TOP 1 CAST(fecha_inicio AS DATE) AS fi, CAST(fecha_fin AS DATE) AS ff
+                    FROM horarios_operacion
+                    WHERE activo = 1 AND fecha_inicio IS NOT NULL AND fecha_fin IS NOT NULL
+                      AND (LOWER(descripcion) LIKE '%examen%' OR tipo_horario = 'extendido_24h')
+                    ORDER BY id ASC
+                """))).first()
+                if r_ex and r_ex.fi and r_ex.ff:
+                    ini_ex_bib = r_ex.fi if isinstance(r_ex.fi, date) else date.fromisoformat(str(r_ex.fi)[:10])
+                    fin_ex_bib = r_ex.ff if isinstance(r_ex.ff, date) else date.fromisoformat(str(r_ex.ff)[:10])
+            except Exception:
+                pass
 
-                # Tareas de Biblioteca
-                if perfil_info["incluye_biblioteca"]:
-                    tareas_bib = [
-                        lambda: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=1, fecha_inicio=ini_bib, fecha_fin=fin_bib, current_user=usr, db=sesion),
-                        lambda: attendance.get_kpis(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_occupancy_realtime(response=respuesta_ficticia, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_hourly_flow(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_heatmap(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_peak_valley(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_weekly_evolution(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_monthly_volume(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_academic_milestones_comparison(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_doors_usage(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_rooms_comparison(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_daily_average_attendance(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_curricular_distribution(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_checkins_distribution(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: attendance.get_visit_profiles_donut(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr, db=sesion),
-                        lambda: predictions.get_forecast_attendance(response=respuesta_ficticia, sala="todas", db=sesion, current_user=usr),
-                        lambda: predictions.get_forecast_14days_endpoint(response=respuesta_ficticia, espacio_id=1, db=sesion, current_user=usr),
-                        lambda: predictions.get_alerts(response=respuesta_ficticia, db=sesion, current_user=usr),
-                    ]
-                    for fn in tareas_bib:
-                        try:
-                            await fn()
-                            conteo_ejecutadas += 1
-                        except Exception as exc_b:
-                            conteo_omitidas += 1
-                            logger.debug(f"[cache] Precalentamiento {p_nombre} biblioteca omitido: {exc_b}")
+            # Filtros por defecto del Frontend en Biblioteca (App.tsx)
+            f_bib_ui = {
+                "alcance": "conformes",
+                "regimen_horario": "dentro_horario,24h_delta",
+                "direccion": "completos",
+                "incluir_pausas_bano": True,
+                "desduplicar_rafagas": True,
+            }
 
-                # Tareas de Estacionamiento
-                if perfil_info["incluye_estacionamiento"]:
-                    tareas_veh = [
-                        lambda: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=2, fecha_inicio=ini_veh, fecha_fin=fin_veh, current_user=usr, db=sesion),
-                        lambda: vehicles.get_kpis(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_parking_occupancy(response=respuesta_ficticia, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_hourly_flow(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_fleet_composition(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_camera_stats(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_daily_evolution(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_academic_milestones_comparison(response=respuesta_ficticia, espacio_id=2, current_user=usr, db=sesion),
-                        lambda: vehicles.get_intercampus_mobility(response=respuesta_ficticia, current_user=usr, db=sesion),
-                        lambda: vehicles.get_behavioral_clusters(response=respuesta_ficticia, current_user=usr, db=sesion),
-                        lambda: predictions.get_forecast_parking(response=respuesta_ficticia, db=sesion, current_user=usr),
-                    ]
-                    for fn in tareas_veh:
-                        try:
-                            await fn()
-                            conteo_ejecutadas += 1
-                        except Exception as exc_v:
-                            conteo_omitidas += 1
-                            logger.debug(f"[cache] Precalentamiento {p_nombre} estacionamiento omitido: {exc_v}")
+            # Rangos de hitos académicos del selector de períodos para Biblioteca
+            rangos_bib = [
+                (ini_bib, fin_bib),                                              # Última semana registrada
+                (max(min_bib, fin_bib - timedelta(days=29)), fin_bib),           # Últimos 30 días
+                (min_bib, min(fin_bib, min_bib + timedelta(days=14))),           # Inicio Período Académico
+                (ini_ex_bib, fin_ex_bib),                                        # Semana de Exámenes (BD)
+                (date(2026, 7, 6), date(2026, 7, 13)),                           # Semana de Exámenes (Semestral)
+                (min_bib, fin_bib),                                              # Historial Completo
+            ]
+
+            # Rangos de hitos académicos del selector de períodos para Estacionamiento
+            rangos_veh = [
+                (ini_veh, fin_veh),                                              # Última semana registrada
+                (max(min_veh, fin_veh - timedelta(days=29)), fin_veh),           # Últimos 30 días
+                (min_veh, min(fin_veh, min_veh + timedelta(days=14))),           # Inicio Período Académico
+                (ini_ex_bib, fin_ex_bib),                                        # Semana de Exámenes (BD)
+                (date(2026, 7, 6), date(2026, 7, 13)),                           # Semana de Exámenes (Semestral)
+                (min_veh, fin_veh),                                              # Historial Completo
+            ]
+
+            # 2. Precalentar consultas de arranque inmediato (Última semana con filtros UI y API)
+            tareas_iniciales = [
+                # Biblioteca (Filtros UI por defecto)
+                lambda: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=1, fecha_inicio=ini_bib, fecha_fin=fin_bib, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_kpis(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_occupancy_realtime(response=respuesta_ficticia, espacio_id=1, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_realtime_presence_curve(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_hourly_flow(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_rooms_comparison(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_curricular_distribution(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_visit_profiles_donut(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_heatmap(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                lambda: attendance.get_peak_valley(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr_admin, db=sesion),
+                lambda: predictions.get_forecast_presence_endpoint(response=respuesta_ficticia, sala="todas", db=sesion, current_user=usr_admin),
+                lambda: predictions.get_forecast_attendance(response=respuesta_ficticia, sala="todas", db=sesion, current_user=usr_admin),
+                lambda: predictions.get_forecast_14days_endpoint(response=respuesta_ficticia, espacio_id=1, db=sesion, current_user=usr_admin),
+                lambda: predictions.get_alerts(response=respuesta_ficticia, db=sesion, current_user=usr_admin),
+                # Estacionamiento (Filtros UI por defecto)
+                lambda: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=2, fecha_inicio=ini_veh, fecha_fin=fin_veh, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_kpis(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_parking_occupancy(response=respuesta_ficticia, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_realtime_presence_curve(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_hourly_flow(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_fleet_composition(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_camera_stats(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_daily_evolution(response=respuesta_ficticia, fecha_inicio=ini_veh, fecha_fin=fin_veh, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_academic_milestones_comparison(response=respuesta_ficticia, espacio_id=2, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_intercampus_mobility(response=respuesta_ficticia, current_user=usr_admin, db=sesion),
+                lambda: vehicles.get_behavioral_clusters(response=respuesta_ficticia, current_user=usr_admin, db=sesion),
+                lambda: predictions.get_forecast_parking(response=respuesta_ficticia, db=sesion, current_user=usr_admin),
+            ]
+
+            for fn in tareas_iniciales:
+                try:
+                    await fn()
+                    conteo_ejecutadas += 1
+                except Exception as exc_i:
+                    conteo_omitidas += 1
+                    logger.debug(f"[cache] Precalentamiento inicial omitido: {exc_i}")
+
+            # 3. Precalentar el resto de Hitos Académicos del Selector de Períodos (Biblioteca y Estacionamiento)
+            for r_ini, r_fin in rangos_bib[1:]:
+                tareas_rango_bib = [
+                    lambda ri=r_ini, rf=r_fin: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=1, fecha_inicio=ri, fecha_fin=rf, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_kpis(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_realtime_presence_curve(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_hourly_flow(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_rooms_comparison(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_curricular_distribution(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_visit_profiles_donut(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_heatmap(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, **f_bib_ui, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: attendance.get_peak_valley(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=1, current_user=usr_admin, db=sesion),
+                ]
+                for fn in tareas_rango_bib:
+                    try:
+                        await fn()
+                        conteo_ejecutadas += 1
+                    except Exception:
+                        conteo_omitidas += 1
+
+            for r_ini, r_fin in rangos_veh[1:]:
+                tareas_rango_veh = [
+                    lambda ri=r_ini, rf=r_fin: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=2, fecha_inicio=ri, fecha_fin=rf, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: vehicles.get_kpis(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=2, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: vehicles.get_realtime_presence_curve(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=2, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: vehicles.get_hourly_flow(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=2, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: vehicles.get_fleet_composition(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=2, current_user=usr_admin, db=sesion),
+                    lambda ri=r_ini, rf=r_fin: vehicles.get_camera_stats(response=respuesta_ficticia, fecha_inicio=ri, fecha_fin=rf, espacio_id=2, current_user=usr_admin, db=sesion),
+                ]
+                for fn in tareas_rango_veh:
+                    try:
+                        await fn()
+                        conteo_ejecutadas += 1
+                    except Exception:
+                        conteo_omitidas += 1
 
         tiempo_total_s = round(time.perf_counter() - t_inicio, 3)
         cache_stats = _cache_global.stats()

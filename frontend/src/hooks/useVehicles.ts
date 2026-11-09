@@ -39,13 +39,20 @@ export function useParkingOccupancy(sector?: string) {
   })
 }
 
-export function useVehicleHourlyFlow(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, sector?: string) {
+export function useVehicleHourlyFlow(
+  fechaInicio?: string,
+  fechaFin?: string,
+  filters?: DataFilters | string,
+  sector?: string,
+  opts?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ['vehicle-hourly-flow', fechaInicio, fechaFin, filters, sector],
     queryFn: ({ signal }) => fetchVehicleHourlyFlow(fechaInicio, fechaFin, filters, sector, signal),
     ...opcionesConsultaAnalitica(),
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    ...opts,
   })
 }
 

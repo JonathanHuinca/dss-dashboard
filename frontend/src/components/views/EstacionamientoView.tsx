@@ -211,11 +211,6 @@ export function EstacionamientoView({ dateRange }: Props) {
     return `${visible ? 'block' : 'hidden'} ${clasesExtra}`
   }
 
-  useEffect(() => {
-    const tPrecarga = setTimeout(() => setPrecargaSilenciosaVehicular(true), 300)
-    return () => clearTimeout(tPrecarga)
-  }, [])
-
   // Objeto de filtros serializado para React Query
   const filtrosQuery = useMemo(() => {
     return {
@@ -227,6 +222,12 @@ export function EstacionamientoView({ dateRange }: Props) {
       dias_semana: diasSeleccionados.length > 0 ? diasSeleccionados.join(',') : undefined,
     }
   }, [sectorSeleccionado, tiposSeleccionados, direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados])
+
+  useEffect(() => {
+    setPrecargaSilenciosaVehicular(false)
+    const tPrecarga = setTimeout(() => setPrecargaSilenciosaVehicular(true), 550)
+    return () => clearTimeout(tPrecarga)
+  }, [dateRange?.inicio, dateRange?.fin, filtrosQuery])
 
   // Sincronización continua de filtros vehiculares y período con el asistente IA
   const { setFiltrosActivos, setPeriodoActivo } = useAssistant()
@@ -247,10 +248,10 @@ export function EstacionamientoView({ dateRange }: Props) {
     }
   }, [dateRange, setPeriodoActivo])
 
-  // Queries analíticas reactivas a los filtros con precarga silenciosa
+  // Queries analíticas reactivas a los filtros con precarga silenciosa diferida
   const kpis = useVehicleKpis(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
   const live = useParkingOccupancy(sectorSeleccionado)
-  const flow = useVehicleHourlyFlow(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
+  const flow = useVehicleHourlyFlow(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaVehicular })
   const presenceCurve = useVehiclePresenceCurve(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
   const forecast = useForecastParking({ enabled: esSeccionVisible('seccion_1') || precargaSilenciosaVehicular })
   const alerts = useAlerts()
@@ -354,14 +355,14 @@ export function EstacionamientoView({ dateRange }: Props) {
     },
     {
       label: 'Máximo Ocupación (Período)',
-      valor: kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} veh`,
+      valor: !kpis.data && kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} veh`,
       subtexto: 'pico vehicular concurrente',
       icono: ParkingCircle,
       color: 'gold',
     },
     {
       label: 'Pico Proyectado Prophet (+7d)',
-      valor: forecast.isLoading ? '…' : `${forecast.data?.pronostico_7d ? Math.round(Math.max(...forecast.data.pronostico_7d.map(p => p.yhat))) : 0} veh/h`,
+      valor: !forecast.data && forecast.isLoading ? '…' : `${forecast.data?.pronostico_7d ? Math.round(Math.max(...forecast.data.pronostico_7d.map(p => p.yhat))) : 0} veh/h`,
       subtexto: forecast.data?.model_status.status === 'ok' ? `Modelo: ${forecast.data.model_status.model_date}` : 'Modelo en calibración',
       icono: Sparkles,
       color: 'gold',

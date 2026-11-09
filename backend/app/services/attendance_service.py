@@ -17,8 +17,8 @@ UMBRAL_ALERTA_85 = 0.85
 # Prefijo de hash seudonimizado asociado a registros sin credencial / marcajes de prueba excluidos de conformes
 PREFIJO_HASH_PRUEBA_EXCLUIDO = "e8f17a68%"
 
-# Caché en memoria para reutilizar horarios de operación entre gráficos simultáneos
-cache_horarios_espacio: TTLCache = TTLCache(maxsize=32, ttl=300)
+# Caché en memoria para reutilizar horarios de operación, calendario y contingencias entre gráficos simultáneos
+cache_horarios_espacio: TTLCache = TTLCache(maxsize=64, ttl=300)
 
 
 async def obtener_horarios_operacion_cacheados(session: AsyncSession, espacio_id: int) -> list:
@@ -38,9 +38,58 @@ async def obtener_horarios_operacion_cacheados(session: AsyncSession, espacio_id
     return filas
 
 
+async def obtener_calendario_contingencias_cacheados(session: AsyncSession, espacio_id: int) -> dict:
+    clave_cache = f"cal_contingencias:{espacio_id}"
+    if clave_cache in cache_horarios_espacio:
+        return cache_horarios_espacio[clave_cache]
+    feriados: list[date] = []
+    paros_fed: list[date] = []
+    paros_car: list[date] = []
+    contingencias: list = []
+    try:
+        sql_cal = text("""
+            SELECT CAST(fecha AS DATE) AS fecha, is_holiday, is_strike_federado, is_strike_carrera
+            FROM calendario_academico
+            WHERE is_holiday = 1 OR is_strike_federado = 1 OR is_strike_carrera = 1
+        """)
+        for r in (await session.execute(sql_cal)).fetchall():
+            f_val = r.fecha if isinstance(r.fecha, date) else date.fromisoformat(str(r.fecha)[:10])
+            if getattr(r, "is_holiday", 0):
+                feriados.append(f_val)
+            if getattr(r, "is_strike_federado", 0):
+                paros_fed.append(f_val)
+            if getattr(r, "is_strike_carrera", 0):
+                paros_car.append(f_val)
+    except Exception:
+        pass
+    try:
+        sql_cont = text("""
+            SELECT CAST(fecha_inicio AS DATE) AS fecha_inicio,
+                   CAST(fecha_fin AS DATE) AS fecha_fin,
+                   subespacio,
+                   hora_inicio,
+                   hora_fin
+            FROM contingencias_academicas
+            WHERE implica_cierre_total = 1
+              AND (espacio_id IS NULL OR espacio_id = :espacio_id)
+        """)
+        contingencias = (await session.execute(sql_cont, {"espacio_id": espacio_id})).fetchall()
+    except Exception:
+        contingencias = []
+    datos = {
+        "feriados": feriados,
+        "paros_fed": paros_fed,
+        "paros_car": paros_car,
+        "contingencias": contingencias,
+    }
+    cache_horarios_espacio[clave_cache] = datos
+    return datos
+
+
 def invalidar_cache_horarios(espacio_id: Optional[int] = None) -> None:
     if espacio_id is not None:
         cache_horarios_espacio.pop(f"horarios_24h:{espacio_id}", None)
+        cache_horarios_espacio.pop(f"cal_contingencias:{espacio_id}", None)
     else:
         cache_horarios_espacio.clear()
 
@@ -112,46 +161,64 @@ class AttendanceService:
         is_24h_sql = f"({' OR '.join(h24_clauses)})" if h24_clauses else "1=0"
         not_24h_sql = f"(NOT ({' OR '.join(h24_clauses)}))" if h24_clauses else "1=1"
 
-        holiday_sql = """EXISTS (
-            SELECT 1 FROM calendario_academico ca 
-            WHERE ca.fecha = CAST(time AS DATE) 
-              AND ca.is_holiday = 1
-        )"""
+        # Resolver calendario y contingencias en memoria para evitar subconsultas EXISTS por fila
+        cal_data = await obtener_calendario_contingencias_cacheados(session, espacio_id)
+        feriados_rango = [
+            f for f in cal_data["feriados"]
+            if (not fecha_inicio or f >= fecha_inicio) and (not fecha_fin or f <= fecha_fin)
+        ]
+        paros_fed_rango = [
+            f for f in cal_data["paros_fed"]
+            if (not fecha_inicio or f >= fecha_inicio) and (not fecha_fin or f <= fecha_fin)
+        ]
+        paros_car_rango = [
+            f for f in cal_data["paros_car"]
+            if (not fecha_inicio or f >= fecha_inicio) and (not fecha_fin or f <= fecha_fin)
+        ]
 
-        closure_sql = """(
-            EXISTS (
-                SELECT 1 FROM calendario_academico ca 
-                WHERE ca.fecha = CAST(time AS DATE) 
-                  AND ca.is_holiday = 1
-            )
-            OR EXISTS (
-                SELECT 1 FROM contingencias_academicas cca
-                WHERE cca.implica_cierre_total = 1
-                  AND (cca.espacio_id IS NULL OR cca.espacio_id = :espacio_id)
-                  AND CAST(time AS DATE) BETWEEN cca.fecha_inicio AND cca.fecha_fin
-                  AND (
-                      cca.subespacio IS NULL OR cca.subespacio = 'todos'
-                      OR (cca.subespacio = 'sala_1' AND (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%'))
-                      OR (cca.subespacio = 'sala_2' AND (door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%'))
-                  )
-                  AND (
-                      cca.hora_inicio IS NULL OR cca.hora_fin IS NULL OR cca.hora_inicio = '' OR cca.hora_fin = ''
-                      OR (CAST(time AS TIME) >= CAST(cca.hora_inicio AS TIME) AND CAST(time AS TIME) <= CAST(cca.hora_fin AS TIME))
-                  )
-            )
-        )"""
+        holiday_sql = (
+            f"CAST(time AS DATE) IN ({', '.join(repr(f.isoformat()) for f in feriados_rango)})"
+            if feriados_rango else "1=0"
+        )
+        strike_fed_sql = (
+            f"CAST(time AS DATE) IN ({', '.join(repr(f.isoformat()) for f in paros_fed_rango)})"
+            if paros_fed_rango else "1=0"
+        )
+        strike_car_sql = (
+            f"CAST(time AS DATE) IN ({', '.join(repr(f.isoformat()) for f in paros_car_rango)})"
+            if paros_car_rango else "1=0"
+        )
 
-        strike_fed_sql = """EXISTS (
-            SELECT 1 FROM calendario_academico ca 
-            WHERE ca.fecha = CAST(time AS DATE) 
-              AND ca.is_strike_federado = 1
-        )"""
+        cont_clauses = []
+        for idx_c, cca in enumerate(cal_data["contingencias"]):
+            c_ini = cca.fecha_inicio if isinstance(cca.fecha_inicio, date) else date.fromisoformat(str(cca.fecha_inicio)[:10])
+            c_fin = cca.fecha_fin if isinstance(cca.fecha_fin, date) else date.fromisoformat(str(cca.fecha_fin)[:10])
+            if (fecha_fin and c_ini > fecha_fin) or (fecha_inicio and c_fin < fecha_inicio):
+                continue
+            partes_c = [f"(CAST(time AS DATE) BETWEEN '{c_ini.isoformat()}' AND '{c_fin.isoformat()}')"]
+            sub_c = (getattr(cca, "subespacio", None) or "todos").strip()
+            if sub_c == "sala_1":
+                partes_c.append("(door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')")
+            elif sub_c == "sala_2":
+                partes_c.append("(door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')")
+            h_ini_c = (getattr(cca, "hora_inicio", None) or "").strip()
+            h_fin_c = (getattr(cca, "hora_fin", None) or "").strip()
+            if h_ini_c and h_fin_c:
+                p_hi = f"cca_hi_{idx_c}"
+                p_hf = f"cca_hf_{idx_c}"
+                params[p_hi] = h_ini_c if len(h_ini_c) > 5 else f"{h_ini_c}:00"
+                params[p_hf] = h_fin_c if len(h_fin_c) > 5 else f"{h_fin_c}:00"
+                partes_c.append(f"(CAST(time AS TIME) >= CAST(:{p_hi} AS TIME) AND CAST(time AS TIME) <= CAST(:{p_hf} AS TIME))")
+            cont_clauses.append(f"({' AND '.join(partes_c)})")
 
-        strike_car_sql = """EXISTS (
-            SELECT 1 FROM calendario_academico ca 
-            WHERE ca.fecha = CAST(time AS DATE) 
-              AND ca.is_strike_carrera = 1
-        )"""
+        if feriados_rango and cont_clauses:
+            closure_sql = f"({holiday_sql} OR {' OR '.join(cont_clauses)})"
+        elif feriados_rango:
+            closure_sql = f"({holiday_sql})"
+        elif cont_clauses:
+            closure_sql = f"({' OR '.join(cont_clauses)})"
+        else:
+            closure_sql = "1=0"
 
         regular_open_sql = """(
             (dia_semana_iso BETWEEN 1 AND 4 AND CAST(time AS TIME) >= '08:30:00' AND CAST(time AS TIME) <= '20:30:00')
@@ -159,7 +226,7 @@ class AttendanceService:
             OR (dia_semana_iso = 6 AND CAST(time AS TIME) >= '10:30:00' AND CAST(time AS TIME) <= '13:30:00')
         )"""
 
-        f_oficial_sql = f"({regular_open_sql} AND NOT ({holiday_sql}))"
+        f_oficial_sql = f"({regular_open_sql} AND NOT ({holiday_sql}))" if feriados_rango else regular_open_sql
 
         regular_closed_sql = """(
             dia_semana_iso = 7
@@ -221,8 +288,13 @@ class AttendanceService:
                         clean_item = r_item.replace("horario_", "")
                         is_delta = clean_item.endswith("_delta")
                         h_id = int(clean_item.replace("_delta", "").replace("_total", ""))
-                        sql_h = text("SELECT fecha_inicio, fecha_fin, hora_apertura, hora_cierre, es_continuo_24h, subespacio FROM horarios_operacion WHERE id = :h_id")
-                        h_row = (await session.execute(sql_h, {"h_id": h_id})).first()
+                        clave_h = f"horario_id:{h_id}"
+                        if clave_h in cache_horarios_espacio:
+                            h_row = cache_horarios_espacio[clave_h]
+                        else:
+                            sql_h = text("SELECT fecha_inicio, fecha_fin, hora_apertura, hora_cierre, es_continuo_24h, subespacio FROM horarios_operacion WHERE id = :h_id")
+                            h_row = (await session.execute(sql_h, {"h_id": h_id})).first()
+                            cache_horarios_espacio[clave_h] = h_row
                         if h_row:
                             sub_clauses = []
                             p_ini = f"h_ini_{h_id}"
@@ -428,55 +500,69 @@ class AttendanceService:
         params["rebote"] = UMBRAL_REBOTE_MIN
 
         sql = text(f"""
+            WITH base AS (
+                SELECT
+                    person_id_hash,
+                    time,
+                    hora_dia,
+                    permanencia_min
+                FROM eventos_asistencia
+                WHERE {where_sql}
+            ),
+            kpis AS (
+                SELECT
+                    COUNT(*)                                        AS total_registros,
+                    COUNT(DISTINCT person_id_hash)                  AS usuarios_unicos,
+                    COUNT(DISTINCT CAST(time AS DATE))              AS dias_operativos,
+                    ROUND(CAST(AVG(CAST(permanencia_min AS FLOAT)) AS DECIMAL(10,2)), 2) AS permanencia_promedio_min,
+                    ROUND(
+                        100.0 * SUM(CASE WHEN permanencia_min < :rebote THEN 1 ELSE 0 END)
+                        / NULLIF(SUM(CASE WHEN permanencia_min IS NOT NULL THEN 1 ELSE 0 END), 0),
+                    2)                                              AS tasa_rebote_pct,
+                    ROUND(SUM(permanencia_min) / 60.0, 1)           AS horas_estudiante_total
+                FROM base
+            ),
+            mediana AS (
+                SELECT TOP 1
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY permanencia_min) OVER () AS permanencia_mediana_min
+                FROM base
+                WHERE permanencia_min IS NOT NULL
+            ),
+            peak AS (
+                SELECT TOP 1 hora_dia AS hora, COUNT(DISTINCT person_id_hash) AS total
+                FROM base
+                GROUP BY hora_dia
+                ORDER BY total DESC
+            ),
+            max_h AS (
+                SELECT COALESCE(MAX(cnt), 0) AS max_ingresos
+                FROM (
+                    SELECT COUNT(DISTINCT person_id_hash) AS cnt
+                    FROM base
+                    GROUP BY DATEADD(hour, DATEDIFF(hour, 0, time), 0)
+                ) sub
+            )
             SELECT
-                COUNT(*)                                        AS total_registros,
-                COUNT(DISTINCT person_id_hash)                  AS usuarios_unicos,
-                COUNT(DISTINCT CAST(time AS DATE))              AS dias_operativos,
-                ROUND(CAST(AVG(CAST(permanencia_min AS FLOAT)) AS DECIMAL(10,2)), 2) AS permanencia_promedio_min,
-                ROUND(
-                    100.0 * SUM(CASE WHEN permanencia_min < :rebote THEN 1 ELSE 0 END)
-                    / NULLIF(SUM(CASE WHEN permanencia_min IS NOT NULL THEN 1 ELSE 0 END), 0),
-                2)                                              AS tasa_rebote_pct,
-                ROUND(SUM(permanencia_min) / 60.0, 1)           AS horas_estudiante_total
-            FROM eventos_asistencia
-            WHERE {where_sql}
+                kp.total_registros,
+                kp.usuarios_unicos,
+                kp.dias_operativos,
+                kp.permanencia_promedio_min,
+                kp.tasa_rebote_pct,
+                kp.horas_estudiante_total,
+                COALESCE((SELECT permanencia_mediana_min FROM mediana), 0) AS permanencia_mediana_min,
+                (SELECT hora FROM peak) AS hora_punta_num,
+                mh.max_ingresos
+            FROM kpis kp
+            CROSS JOIN max_h mh
         """)
         row = (await session.execute(sql, params)).first()
-
-        sql_median = text(f"""
-            SELECT DISTINCT
-                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY permanencia_min) OVER () AS permanencia_mediana_min
-            FROM eventos_asistencia
-            WHERE {where_sql}
-              AND permanencia_min IS NOT NULL
-        """)
-        row_median = (await session.execute(sql_median, params)).first()
-        mediana = row_median.permanencia_mediana_min if row_median and row_median.permanencia_mediana_min is not None else 0
 
         dias = row.dias_operativos or 1 if row else 1
         total = row.total_registros or 0 if row else 0
         unicos = row.usuarios_unicos or 0 if row else 0
-
-        sql_peak = text(f"""
-            SELECT TOP 1 hora_dia AS hora, COUNT(DISTINCT person_id_hash) AS total
-            FROM eventos_asistencia
-            WHERE {where_sql}
-            GROUP BY hora_dia
-            ORDER BY total DESC
-        """)
-        row_peak = (await session.execute(sql_peak, params)).first()
-        hora_punta = f"{row_peak.hora:02d}:00 hrs" if row_peak and row_peak.hora is not None else "14:00 hrs"
-
-        sql_max = text(f"""
-            SELECT COALESCE(MAX(cnt), 0)
-            FROM (
-                SELECT COUNT(DISTINCT person_id_hash) as cnt
-                FROM eventos_asistencia
-                WHERE {where_sql}
-                GROUP BY DATEADD(hour, DATEDIFF(hour, 0, time), 0)
-            ) sub
-        """)
-        max_ingresos = (await session.execute(sql_max, params)).scalar() or 0
+        mediana = row.permanencia_mediana_min if row and row.permanencia_mediana_min is not None else 0
+        hora_punta = f"{row.hora_punta_num:02d}:00 hrs" if row and row.hora_punta_num is not None else "14:00 hrs"
+        max_ingresos = row.max_ingresos if row and row.max_ingresos is not None else 0
 
         return {
             "total_registros":          total,

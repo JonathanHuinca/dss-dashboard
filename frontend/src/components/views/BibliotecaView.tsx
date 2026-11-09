@@ -44,7 +44,7 @@ import { exportarPlantillaOficialSalasEstudio } from '../../utils/excelExport'
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
 import { useAuth } from '../../context/AuthContext'
 import { useAssistant } from '../../context/AssistantContext'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 
 
 import {
@@ -298,18 +298,23 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   useEffect(() => {
     const t1 = setTimeout(() => setLoadStage(1), 50)
     const t2 = setTimeout(() => setLoadStage(2), 120)
-    const tPrecarga = setTimeout(() => setPrecargaSilenciosaLista(true), 300)
     return () => {
       clearTimeout(t1)
       clearTimeout(t2)
-      clearTimeout(tPrecarga)
     }
   }, [])
+
+  // Priorizar los gráficos de la sección visible al cambiar período o filtro antes de precargar secciones ocultas
+  useEffect(() => {
+    setPrecargaSilenciosaLista(false)
+    const tPrecarga = setTimeout(() => setPrecargaSilenciosaLista(true), 650)
+    return () => clearTimeout(tPrecarga)
+  }, [dateRange?.inicio, dateRange?.fin, filters])
 
   // Nivel 0 (Inmediato): KPIs vitales y datos en tiempo real
   const kpis = useAttendanceKpis(dateRange?.inicio, dateRange?.fin, filters)
   const live = useOccupancyRealtime()
-  const flow = useAttendanceHourlyFlow(dateRange?.inicio, dateRange?.fin, filters)
+  const flow = useAttendanceHourlyFlow(dateRange?.inicio, dateRange?.fin, filters, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
   const presenceCurve = useAttendancePresenceCurve(dateRange?.inicio, dateRange?.fin, filters)
   const alerts = useAlerts()
 
@@ -418,19 +423,18 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const presenceForecast = useForecastPresence(salaPronosticoPresencia)
 
 
-  // Carga inmediata de la sección activa y precarga silenciosa en segundo plano a los 300ms
-  const heatmap = useHeatmap(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_4') || precargaSilenciosaLista })
-  const peakValley = usePeakValley(dateRange?.inicio, dateRange?.fin, { enabled: esSeccionVisible('seccion_4') || precargaSilenciosaLista })
-  const weekly = useWeeklyEvolution(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_6') || precargaSilenciosaLista })
-  const roomsComp = useRoomsComparison(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_1') || esSeccionVisible('seccion_5') || precargaSilenciosaLista })
-  const dailyAvg = useDailyAverageAttendance(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_6') || precargaSilenciosaLista })
+  // Carga inmediata de la sección activa y precarga silenciosa diferida para secciones en segundo plano
+  const heatmap = useHeatmap(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
+  const weekly = useWeeklyEvolution(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaLista })
+  const roomsComp = useRoomsComparison(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_1') || esSeccionVisible('seccion_2') || precargaSilenciosaLista })
+  const dailyAvg = useDailyAverageAttendance(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaLista })
 
-  const monthly = useMonthlyVolume(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_6') || precargaSilenciosaLista })
-  const milestones = useAcademicMilestones(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_6') || precargaSilenciosaLista })
-  const doors = useDoorsUsage(dateRange?.inicio, dateRange?.fin, filters, { enabled: esSeccionVisible('seccion_5') || precargaSilenciosaLista })
-  const checkins = useCheckinsDistribution(dateRange?.inicio, dateRange?.fin, filters, { enabled: esSeccionVisible('seccion_3') || esSeccionVisible('seccion_5') || precargaSilenciosaLista })
-  const curricular = useCurricularDistribution(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaLista })
-  const visitProfiles = useVisitProfilesDonut(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaLista })
+  const monthly = useMonthlyVolume(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaLista })
+  const milestones = useAcademicMilestones(dateRange?.inicio, dateRange?.fin, 1, filters, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaLista })
+  const doors = useDoorsUsage(dateRange?.inicio, dateRange?.fin, filters, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaLista })
+  const checkins = useCheckinsDistribution(dateRange?.inicio, dateRange?.fin, filters, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaLista })
+  const curricular = useCurricularDistribution(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
+  const visitProfiles = useVisitProfilesDonut(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
 
   const bibAlert = alerts.data?.alertas.find(a => a.recinto === 'biblioteca')
 
@@ -492,6 +496,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
         fechaFin: esModoPersonalizado ? fechaFin24h : undefined,
         bloqueHorario: bloqueHorario24h,
       }),
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
   })
 
   const tieneCampana24hActiva = useMemo(() => {
@@ -824,7 +830,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
             />
             <KpiCard
               title="Aforo Máximo Registrado"
-              value={kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} personas`}
+              value={!kpis.data && kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} personas`}
               subtitle={`Máximo vs ${capacidadActiva} asientos ${salaLabel ? `(${salaLabel})` : '(Global)'}`}
               icon={Activity}
               iconColor="#C59B27"

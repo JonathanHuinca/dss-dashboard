@@ -1,5 +1,5 @@
 import React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import {
   CalendarDays,
   GraduationCap,
@@ -23,12 +23,13 @@ interface Props {
 export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filters }) => {
   const isEstacionamiento = espacioId === 2
 
-  const { data, isLoading, isFetching, isError, refetch } = useQuery<KPISummary>({
+  const { data, isLoading, isFetching, isError } = useQuery<KPISummary>({
     queryKey: ['kpi-summary', espacioId, selectedRange?.inicio, selectedRange?.fin, filters],
     queryFn: () => fetchKpiSummary(espacioId, selectedRange?.inicio, selectedRange?.fin, filters),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
   })
 
   const activePeriodLabel = selectedRange?.label || data?.periodo_label || 'Historial Semestre Completo'
@@ -78,7 +79,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
           </div>
         </div>
 
-        {isLoading ? (
+        {!data && isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             {[1, 2, 3, 4, 5].map((i) => (
               <div
@@ -94,12 +95,12 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
               </div>
             ))}
           </div>
-        ) : isError ? (
+        ) : !data && isError ? (
           <div className="py-4 text-center text-xs text-rose-600 bg-rose-50/50 rounded-xl border border-rose-200/60">
             No fue posible cargar las métricas gerenciales.
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 transition-opacity duration-150 ${isFetching ? 'opacity-90' : 'opacity-100'}`}>
             {/* Card 1: Días Operativos */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-emerald-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-400 to-teal-500"></div>

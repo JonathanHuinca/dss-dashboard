@@ -4,8 +4,9 @@ import { DateRange } from '../../types/dateRange'
 import { PeriodSelector } from './PeriodSelector'
 import { useAuth } from '../../context/AuthContext'
 import { useAssistant } from '../../context/AssistantContext'
-import { fetchAttendanceKpis } from '../../api/asistencia'
-import { fetchVehicleKpis } from '../../api/vehiculos'
+import { fetchKpiSummary, DataFilters } from '../../api/clienteBase'
+import { fetchAttendanceKpis, fetchAttendancePresenceCurve, fetchRoomsComparison } from '../../api/asistencia'
+import { fetchVehicleKpis, fetchVehiclePresenceCurve } from '../../api/vehiculos'
 
 export type Tab = 'biblioteca' | 'estacionamiento' | 'admin' | 'reportes'
 
@@ -15,28 +16,55 @@ interface Props {
   selectedRange: DateRange
   onRangeChange: (r: DateRange) => void
   onOpenAssistant?: () => void
+  filters?: DataFilters
 }
-export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant }: Props) {
+export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant, filters }: Props) {
   const queryClient = useQueryClient()
-  const { logout, userRole, roles, isSuperAdmin, canAccessAdmin, hasDatasetAccess } = useAuth()
+  const { logout, userRole, roles, canAccessAdmin, hasDatasetAccess } = useAuth()
   const { isAiEnabled } = useAssistant()
   const espacioId = active === 'biblioteca' ? 1 : active === 'estacionamiento' ? 2 : undefined
   const tieneRolConsultor = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
 
-  // Prefetching predictivo de KPIs para un rango específico
+  // Prefetching predictivo con las claves exactas de React Query al abrir el selector o pasar el cursor
   const precargarKpisRango = (range: DateRange) => {
     if (!range.inicio || !range.fin) return
     const stale = 1000 * 60 * 5
     if (active === 'biblioteca') {
       queryClient.prefetchQuery({
-        queryKey: ['attendance-kpis', range.inicio, range.fin, undefined],
-        queryFn: ({ signal }) => fetchAttendanceKpis(range.inicio, range.fin, undefined, signal),
+        queryKey: ['kpi-summary', 1, range.inicio, range.fin, filters],
+        queryFn: () => fetchKpiSummary(1, range.inicio, range.fin, filters),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['attendance-kpis', range.inicio, range.fin, filters],
+        queryFn: ({ signal }) => fetchAttendanceKpis(range.inicio, range.fin, filters, signal),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['attendance-presence-curve', range.inicio, range.fin, filters],
+        queryFn: ({ signal }) => fetchAttendancePresenceCurve(range.inicio, range.fin, filters, signal),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['rooms-comparison', range.inicio, range.fin, filters, 1],
+        queryFn: ({ signal }) => fetchRoomsComparison(range.inicio, range.fin, filters, 1, signal),
         staleTime: stale,
       })
     } else if (active === 'estacionamiento') {
+      const fVeh = filters || { alcance: 'conformes' }
       queryClient.prefetchQuery({
-        queryKey: ['vehicle-kpis', range.inicio, range.fin, undefined, 'todos'],
-        queryFn: ({ signal }) => fetchVehicleKpis(range.inicio, range.fin, undefined, 'todos', signal),
+        queryKey: ['kpi-summary', 2, range.inicio, range.fin, fVeh],
+        queryFn: () => fetchKpiSummary(2, range.inicio, range.fin, fVeh),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['vehicle-kpis', range.inicio, range.fin, fVeh, 'todos'],
+        queryFn: ({ signal }) => fetchVehicleKpis(range.inicio, range.fin, fVeh, 'todos', signal),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['vehicle-presence-curve', range.inicio, range.fin, fVeh, 'todos'],
+        queryFn: ({ signal }) => fetchVehiclePresenceCurve(range.inicio, range.fin, fVeh, 'todos', signal),
         staleTime: stale,
       })
     }

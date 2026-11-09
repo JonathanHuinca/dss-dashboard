@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import {
   Calendar,
   ChevronDown,
@@ -37,6 +37,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
     queryKey: ['date-bounds', espacioId],
     queryFn: () => fetchDateBounds(espacioId),
     staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
   })
 
   // Consulta dinámica de horarios y períodos operativos configurados
@@ -44,6 +45,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
     queryKey: ['horarios-periodos', espacioId],
     queryFn: () => fetchHorarios({ espacio_id: espacioId }),
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
   })
 
   const minDate = dateBounds?.fecha_min || '2026-03-01'

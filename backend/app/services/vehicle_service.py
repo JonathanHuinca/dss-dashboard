@@ -12,8 +12,8 @@ from app.core.cache import TTLCache
 CAPACIDAD_ESTACIONAMIENTO = 180
 UMBRAL_ALERTA_90 = 0.90
 
-# Caché en memoria para reutilizar horarios de operación vehiculares
-cache_horarios_espacio: TTLCache = TTLCache(maxsize=32, ttl=300)
+# Caché en memoria para reutilizar horarios de operación y calendario vehiculares
+cache_horarios_espacio: TTLCache = TTLCache(maxsize=64, ttl=300)
 
 
 async def obtener_horarios_operacion_cacheados(session: AsyncSession, espacio_id: int) -> list:
@@ -33,9 +33,38 @@ async def obtener_horarios_operacion_cacheados(session: AsyncSession, espacio_id
     return filas
 
 
+async def obtener_calendario_vehicular_cacheado(session: AsyncSession) -> dict:
+    clave_cache = "cal_vehicular"
+    if clave_cache in cache_horarios_espacio:
+        return cache_horarios_espacio[clave_cache]
+    feriados: list[date] = []
+    paros_fed: list[date] = []
+    paros_car: list[date] = []
+    try:
+        sql_cal = text("""
+            SELECT CAST(fecha AS DATE) AS fecha, is_holiday, is_strike_federado, is_strike_carrera
+            FROM calendario_academico
+            WHERE is_holiday = 1 OR is_strike_federado = 1 OR is_strike_carrera = 1
+        """)
+        for r in (await session.execute(sql_cal)).fetchall():
+            f_val = r.fecha if isinstance(r.fecha, date) else date.fromisoformat(str(r.fecha)[:10])
+            if getattr(r, "is_holiday", 0):
+                feriados.append(f_val)
+            if getattr(r, "is_strike_federado", 0):
+                paros_fed.append(f_val)
+            if getattr(r, "is_strike_carrera", 0):
+                paros_car.append(f_val)
+    except Exception:
+        pass
+    datos = {"feriados": feriados, "paros_fed": paros_fed, "paros_car": paros_car}
+    cache_horarios_espacio[clave_cache] = datos
+    return datos
+
+
 def invalidar_cache_horarios(espacio_id: Optional[int] = None) -> None:
     if espacio_id is not None:
         cache_horarios_espacio.pop(f"horarios_24h:{espacio_id}", None)
+        cache_horarios_espacio.pop("cal_vehicular", None)
     else:
         cache_horarios_espacio.clear()
 
@@ -85,30 +114,39 @@ class VehicleService:
         is_24h_sql = f"({' OR '.join(h24_clauses)})" if h24_clauses else "1=0"
         not_24h_sql = f"(NOT ({' OR '.join(h24_clauses)}))" if h24_clauses else "1=1"
 
-        closure_sql = """EXISTS (
-            SELECT 1 FROM calendario_academico ca 
-            WHERE ca.fecha = CAST(time AS DATE) 
-              AND ca.is_holiday = 1
-        )"""
+        cal_data = await obtener_calendario_vehicular_cacheado(session)
+        feriados_rango = [
+            f for f in cal_data["feriados"]
+            if (not fecha_inicio or f >= fecha_inicio) and (not fecha_fin or f <= fecha_fin)
+        ]
+        paros_fed_rango = [
+            f for f in cal_data["paros_fed"]
+            if (not fecha_inicio or f >= fecha_inicio) and (not fecha_fin or f <= fecha_fin)
+        ]
+        paros_car_rango = [
+            f for f in cal_data["paros_car"]
+            if (not fecha_inicio or f >= fecha_inicio) and (not fecha_fin or f <= fecha_fin)
+        ]
 
-        strike_fed_sql = """EXISTS (
-            SELECT 1 FROM calendario_academico ca 
-            WHERE ca.fecha = CAST(time AS DATE) 
-              AND ca.is_strike_federado = 1
-        )"""
-
-        strike_car_sql = """EXISTS (
-            SELECT 1 FROM calendario_academico ca 
-            WHERE ca.fecha = CAST(time AS DATE) 
-              AND ca.is_strike_carrera = 1
-        )"""
+        closure_sql = (
+            f"CAST(time AS DATE) IN ({', '.join(repr(f.isoformat()) for f in feriados_rango)})"
+            if feriados_rango else "1=0"
+        )
+        strike_fed_sql = (
+            f"CAST(time AS DATE) IN ({', '.join(repr(f.isoformat()) for f in paros_fed_rango)})"
+            if paros_fed_rango else "1=0"
+        )
+        strike_car_sql = (
+            f"CAST(time AS DATE) IN ({', '.join(repr(f.isoformat()) for f in paros_car_rango)})"
+            if paros_car_rango else "1=0"
+        )
 
         regular_open_sql = """(
             (DATEPART(WEEKDAY, time) BETWEEN 2 AND 6 AND CAST(time AS TIME) >= '07:00:00' AND CAST(time AS TIME) <= '22:00:00')
             OR (DATEPART(WEEKDAY, time) = 7 AND CAST(time AS TIME) >= '08:00:00' AND CAST(time AS TIME) <= '14:00:00')
         )"""
 
-        f_oficial_sql = f"({regular_open_sql} AND NOT ({closure_sql}))"
+        f_oficial_sql = f"({regular_open_sql} AND NOT ({closure_sql}))" if feriados_rango else regular_open_sql
 
         regular_closed_sql = """(
             DATEPART(WEEKDAY, time) = 1
@@ -150,8 +188,13 @@ class VehicleService:
                         clean_item = r_item.replace("horario_", "")
                         is_delta = clean_item.endswith("_delta")
                         h_id = int(clean_item.replace("_delta", "").replace("_total", ""))
-                        sql_h = text("SELECT fecha_inicio, fecha_fin, hora_apertura, hora_cierre, es_continuo_24h FROM horarios_operacion WHERE id = :h_id")
-                        h_row = (await session.execute(sql_h, {"h_id": h_id})).first()
+                        clave_h = f"horario_id:{h_id}"
+                        if clave_h in cache_horarios_espacio:
+                            h_row = cache_horarios_espacio[clave_h]
+                        else:
+                            sql_h = text("SELECT fecha_inicio, fecha_fin, hora_apertura, hora_cierre, es_continuo_24h FROM horarios_operacion WHERE id = :h_id")
+                            h_row = (await session.execute(sql_h, {"h_id": h_id})).first()
+                            cache_horarios_espacio[clave_h] = h_row
                         if h_row:
                             sub_clauses = []
                             p_ini = f"h_ini_{h_id}"
@@ -274,7 +317,7 @@ class VehicleService:
         )
 
         sql_global = text(f"""
-            WITH ev_base AS (
+            WITH ev_raw AS (
                 SELECT
                     time,
                     patente_hash,
@@ -295,48 +338,91 @@ class VehicleService:
                     direccion,
                     camara,
                     calidad_lectura
-                FROM ev_base
+                FROM ev_raw
                 WHERE patente_hash = 'unknown'
                    OR prev_same_dir_time IS NULL
                    OR DATEDIFF(minute, prev_same_dir_time, time) > 15
+            ),
+            kpis AS (
+                SELECT
+                    COUNT(DISTINCT patente_hash)                                   AS vehiculos_unicos,
+                    SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END)         AS total_entradas,
+                    SUM(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END)          AS total_salidas,
+                    COUNT(DISTINCT CAST(time AS DATE))                             AS dias_operativos,
+                    ROUND(
+                        100.0 * SUM(CASE WHEN calidad_lectura = 'unknown' THEN 1 ELSE 0 END)
+                        / NULLIF(COUNT(*), 0),
+                    2)                                                             AS tasa_lectura_fallida_pct
+                FROM ev_dedup
+            ),
+            peak AS (
+                SELECT TOP 1 DATEPART(hour, time) AS hora, COUNT(*) AS total
+                FROM ev_raw
+                GROUP BY DATEPART(hour, time)
+                ORDER BY total DESC
+            ),
+            max_h AS (
+                SELECT COALESCE(MAX(cnt), 0) AS max_entradas
+                FROM (
+                    SELECT COUNT(*) AS cnt
+                    FROM ev_raw
+                    GROUP BY DATEADD(hour, DATEDIFF(hour, 0, time), 0)
+                ) sub
             )
             SELECT
-                COUNT(DISTINCT patente_hash)                                   AS vehiculos_unicos,
-                SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END)         AS total_entradas,
-                SUM(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END)          AS total_salidas,
-                COUNT(DISTINCT CAST(time AS DATE))                             AS dias_operativos,
-                ROUND(
-                    100.0 * SUM(CASE WHEN calidad_lectura = 'unknown' THEN 1 ELSE 0 END)
-                    / NULLIF(COUNT(*), 0),
-                2)                                                             AS tasa_lectura_fallida_pct
-            FROM ev_dedup
+                kp.vehiculos_unicos,
+                kp.total_entradas,
+                kp.total_salidas,
+                kp.dias_operativos,
+                kp.tasa_lectura_fallida_pct,
+                (SELECT hora FROM peak) AS hora_punta_num,
+                mh.max_entradas
+            FROM kpis kp
+            CROSS JOIN max_h mh
         """)
         row_g = (await session.execute(sql_global, params)).one()
 
         dias = row_g.dias_operativos or 1
         entradas = row_g.total_entradas or 0
         salidas = row_g.total_salidas or 0
+        hora_punta = f"{row_g.hora_punta_num:02d}:00 hrs" if row_g.hora_punta_num is not None else "08:00 hrs"
+        max_entradas = row_g.max_entradas or 0
 
-        # Calibración dinámica de capacidad según sector
-        capacidad_max = 125
-        if sector and sector != "todos":
-            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-            sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
-            try:
-                sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
-                cap_sec = (await session.execute(sql_sec_cap)).scalar()
-                if cap_sec and cap_sec > 0:
-                    capacidad_max = int(cap_sec)
-            except Exception:
-                pass
+        # Calibración dinámica de capacidad según sector con caché en RAM
+        clave_cap = f"cap_veh:{espacio_id}:{sector or 'todos'}"
+        if clave_cap in cache_horarios_espacio:
+            capacidad_max = cache_horarios_espacio[clave_cap]
         else:
-            from app.domain.models import Espacio
-            espacio_obj = (await session.execute(select(Espacio.capacidad_max).where(Espacio.id == espacio_id))).scalar_one_or_none()
-            capacidad_max = espacio_obj or 125
+            capacidad_max = 125
+            if sector and sector != "todos":
+                sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
+                sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
+                try:
+                    sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
+                    cap_sec = (await session.execute(sql_sec_cap)).scalar()
+                    if cap_sec and cap_sec > 0:
+                        capacidad_max = int(cap_sec)
+                except Exception:
+                    pass
+            else:
+                from app.domain.models import Espacio
+                espacio_obj = (await session.execute(select(Espacio.capacidad_max).where(Espacio.id == espacio_id))).scalar_one_or_none()
+                capacidad_max = espacio_obj or 125
+            cache_horarios_espacio[clave_cap] = capacidad_max
 
         turnover = round(entradas / dias / max(1, capacidad_max), 2)
 
-        sql_perm = text("""
+        fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
+        perm_conds = ["ent.espacio_id = :espacio_id"]
+        params_perm = {"espacio_id": espacio_id}
+        if fecha_inicio:
+            perm_conds.append("ent.time >= :inicio AND sal.time >= :inicio")
+            params_perm["inicio"] = fecha_inicio
+        if fin_exclusive:
+            perm_conds.append("ent.time < :fin")
+            params_perm["fin"] = fin_exclusive
+
+        sql_perm = text(f"""
             SELECT TOP 1
                 ROUND(
                     PERCENTILE_CONT(0.5) WITHIN GROUP (
@@ -351,35 +437,10 @@ class VehicleService:
              AND sal.time < DATEADD(hour, 24, ent.time)
              AND ent.direccion = 'entrada'
              AND sal.direccion = 'salida'
-            WHERE ent.espacio_id = :espacio_id
-              AND (:inicio IS NULL OR ent.time >= :inicio)
-              AND (:fin IS NULL OR ent.time < :fin)
+            WHERE {' AND '.join(perm_conds)}
         """)
-        fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
-        params_perm = {**params, "inicio": fecha_inicio, "fin": fin_exclusive}
         row_p = (await session.execute(sql_perm, params_perm)).first()
         mediana_min = float(row_p.permanencia_mediana_min) if row_p and row_p.permanencia_mediana_min is not None else 0.0
-
-        sql_peak = text(f"""
-            SELECT TOP 1 DATEPART(hour, time) AS hora, COUNT(*) AS total
-            FROM eventos_vehiculares
-            WHERE {where_sql}
-            GROUP BY DATEPART(hour, time)
-            ORDER BY total DESC
-        """)
-        row_peak = (await session.execute(sql_peak, params)).first()
-        hora_punta = f"{row_peak.hora:02d}:00 hrs" if row_peak and row_peak.hora is not None else "08:00 hrs"
-
-        sql_max = text(f"""
-            SELECT COALESCE(MAX(cnt), 0)
-            FROM (
-                SELECT COUNT(*) as cnt
-                FROM eventos_vehiculares
-                WHERE {where_sql}
-                GROUP BY DATEADD(hour, DATEDIFF(hour, 0, time), 0)
-            ) sub
-        """)
-        max_entradas = (await session.execute(sql_max, params)).scalar() or 0
 
         return {
             "vehiculos_unicos":          int(row_g.vehiculos_unicos or 0),

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { fetchAttendanceKpis } from './api/asistencia'
 import { fetchVehicleKpis } from './api/vehiculos'
 import { Header, Tab } from './components/layout/Header'
@@ -95,12 +95,23 @@ function AppRouter() {
     staleTime: 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
     enabled: isAuthenticated && currentEspacioId !== undefined,
   })
 
   const [range, setRange] = useState<DateRange>(() =>
     buildLatestWeekPreset(fechaMaxCacheada || '2026-10-14')
   )
+  const [lastBibRange, setLastBibRange] = useState<DateRange>(range)
+  const [lastEstRange, setLastEstRange] = useState<DateRange>(range)
+
+  useEffect(() => {
+    if (tab === 'biblioteca') setLastBibRange(range)
+    else if (tab === 'estacionamiento') setLastEstRange(range)
+  }, [tab, range])
+
+  const bibliotecaRange = tab === 'biblioteca' ? range : lastBibRange
+  const estacionamientoRange = tab === 'estacionamiento' ? range : lastEstRange
   const [bibliotecaFilters, setBibliotecaFilters] = useState<DataFilters>({
     alcance: 'conformes',
     regimen_horario: 'dentro_horario,24h_delta',
@@ -262,6 +273,7 @@ function AppRouter() {
         selectedRange={range}
         onRangeChange={handleRangeChange}
         onOpenAssistant={() => openAssistant()}
+        filters={filtrosActivos}
       />
       <main>
           <Suspense fallback={<VistaCargando />}>
@@ -280,7 +292,7 @@ function AppRouter() {
             {hasDatasetAccess('biblioteca') && visitedTabs.has('biblioteca') && (
               <div className={tab === 'biblioteca' ? 'block' : 'hidden'}>
                 <BibliotecaView
-                  dateRange={range}
+                  dateRange={bibliotecaRange}
                   onRangeChange={handleRangeChange}
                   filters={bibliotecaFilters}
                   onFiltersChange={setBibliotecaFilters}
@@ -289,7 +301,7 @@ function AppRouter() {
             )}
             {hasDatasetAccess('estacionamiento') && visitedTabs.has('estacionamiento') && (
               <div className={tab === 'estacionamiento' ? 'block' : 'hidden'}>
-                <EstacionamientoView dateRange={range} onRangeChange={handleRangeChange} />
+                <EstacionamientoView dateRange={estacionamientoRange} onRangeChange={handleRangeChange} />
               </div>
             )}
             {canAccessAdmin && visitedTabs.has('admin') && (

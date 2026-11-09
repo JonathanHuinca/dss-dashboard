@@ -49,13 +49,19 @@ export function useOccupancyRealtime() {
   })
 }
 
-export function useAttendanceHourlyFlow(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) {
+export function useAttendanceHourlyFlow(
+  fechaInicio?: string,
+  fechaFin?: string,
+  filters?: DataFilters | string,
+  opts?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ['attendance-hourly-flow', fechaInicio, fechaFin, filters],
     queryFn: ({ signal }) => fetchAttendanceHourlyFlow(fechaInicio, fechaFin, filters, signal),
     ...opcionesConsultaAnalitica(),
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    ...opts,
   })
 }
 
