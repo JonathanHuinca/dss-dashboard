@@ -65,6 +65,25 @@ function AppRouter() {
     }
     return 'biblioteca'
   })
+  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(() => new Set([
+    userRole === 'Consultor_Reporte' && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
+      ? 'reportes'
+      : 'biblioteca'
+  ]))
+
+  useEffect(() => {
+    setVisitedTabs(prev => {
+      if (prev.has(tab)) return prev
+      const next = new Set(prev)
+      next.add(tab)
+      return next
+    })
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event('resize'))
+    }, 20)
+    return () => clearTimeout(timer)
+  }, [tab])
+
   const currentEspacioId = tab === 'biblioteca' ? 1 : tab === 'estacionamiento' ? 2 : undefined
 
   const fechaMaxCacheada = obtenerFechaMaxCacheada(currentEspacioId)
@@ -258,16 +277,26 @@ function AppRouter() {
           </div>
         ) : (
           <>
-            {tab === 'biblioteca' && (
-              <BibliotecaView
-                dateRange={range}
-                onRangeChange={handleRangeChange}
-                filters={bibliotecaFilters}
-                onFiltersChange={setBibliotecaFilters}
-              />
+            {hasDatasetAccess('biblioteca') && visitedTabs.has('biblioteca') && (
+              <div className={tab === 'biblioteca' ? 'block' : 'hidden'}>
+                <BibliotecaView
+                  dateRange={range}
+                  onRangeChange={handleRangeChange}
+                  filters={bibliotecaFilters}
+                  onFiltersChange={setBibliotecaFilters}
+                />
+              </div>
             )}
-            {tab === 'estacionamiento' && <EstacionamientoView dateRange={range} onRangeChange={handleRangeChange} />}
-            {tab === 'admin' && <AdminDashboard />}
+            {hasDatasetAccess('estacionamiento') && visitedTabs.has('estacionamiento') && (
+              <div className={tab === 'estacionamiento' ? 'block' : 'hidden'}>
+                <EstacionamientoView dateRange={range} onRangeChange={handleRangeChange} />
+              </div>
+            )}
+            {canAccessAdmin && visitedTabs.has('admin') && (
+              <div className={tab === 'admin' ? 'block' : 'hidden'}>
+                <AdminDashboard />
+              </div>
+            )}
           </>
           )}
           </Suspense>

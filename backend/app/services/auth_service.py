@@ -569,6 +569,12 @@ async def invitar_usuario(
                 detail="No tiene permisos para invitar usuarios en el sistema.",
             )
 
+    if not espacio_id and invite_in.allowed_datasets:
+        if set(invite_in.allowed_datasets) == {"biblioteca"}:
+            espacio_id = 1
+        elif set(invite_in.allowed_datasets) == {"estacionamiento"}:
+            espacio_id = 2
+
     can_use_ai = invite_in.can_use_ai
     can_export = invite_in.can_export
     can_ingest = invite_in.can_ingest
