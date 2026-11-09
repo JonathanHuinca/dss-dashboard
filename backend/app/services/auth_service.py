@@ -428,7 +428,20 @@ async def update_user_status(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="No tiene permisos para modificar el estado de usuarios con jerarquía superior o equivalente.",
                     )
-                if user.created_by_user_id != current_user.id and user.espacio_id != current_user.espacio_id:
+                director_datasets = set(current_user.allowed_datasets or [])
+                if current_user.espacio_id == 1:
+                    director_datasets.add("biblioteca")
+                elif current_user.espacio_id == 2:
+                    director_datasets.add("estacionamiento")
+
+                target_datasets = set(user.allowed_datasets or [])
+                if user.espacio_id == 1:
+                    target_datasets.add("biblioteca")
+                elif user.espacio_id == 2:
+                    target_datasets.add("estacionamiento")
+
+                coincide_recinto = bool(director_datasets.intersection(target_datasets))
+                if user.created_by_user_id != current_user.id and not coincide_recinto and user.espacio_id != current_user.espacio_id:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Solo puede modificar el estado de usuarios de su propio recinto.",
@@ -461,10 +474,49 @@ async def list_users(db: AsyncSession, current_user: Optional[Usuario] = None) -
         user_roles = [normalizar_rol(r.nombre) for r in current_user.roles]
         if "Admin_Sistema" not in user_roles:
             if "Director_Recinto" in user_roles:
-                stmt = stmt.where(
-                    (Usuario.created_by_user_id == current_user.id)
-                    | (Usuario.espacio_id == current_user.espacio_id)
-                )
+                director_datasets = set(current_user.allowed_datasets or [])
+                if current_user.espacio_id == 1:
+                    director_datasets.add("biblioteca")
+                elif current_user.espacio_id == 2:
+                    director_datasets.add("estacionamiento")
+
+                es_solo_estacionamiento = "estacionamiento" in director_datasets and "biblioteca" not in director_datasets
+                es_solo_biblioteca = "biblioteca" in director_datasets and "estacionamiento" not in director_datasets
+
+                result = await db.execute(stmt)
+                todos = list(result.scalars().all())
+
+                usuarios_filtrados: List[Usuario] = []
+                for u in todos:
+                    if u.id == current_user.id:
+                        usuarios_filtrados.append(u)
+                        continue
+
+                    u_roles = [normalizar_rol(r.nombre) for r in u.roles]
+                    if "Admin_Sistema" in u_roles or "Director_Recinto" in u_roles:
+                        continue
+
+                    u_datasets = set(u.allowed_datasets or [])
+                    if u.espacio_id == 1:
+                        u_datasets.add("biblioteca")
+                    elif u.espacio_id == 2:
+                        u_datasets.add("estacionamiento")
+
+                    if u.created_by_user_id == current_user.id:
+                        usuarios_filtrados.append(u)
+                        continue
+
+                    if es_solo_estacionamiento:
+                        if "estacionamiento" in u_datasets and "biblioteca" not in u_datasets:
+                            usuarios_filtrados.append(u)
+                    elif es_solo_biblioteca:
+                        if "biblioteca" in u_datasets and "estacionamiento" not in u_datasets:
+                            usuarios_filtrados.append(u)
+                    else:
+                        if director_datasets.intersection(u_datasets):
+                            usuarios_filtrados.append(u)
+
+                return usuarios_filtrados
             else:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -494,13 +546,23 @@ async def invitar_usuario(
             created_by_user_id = creator.id
         elif "Director_Recinto" in creator_roles:
             for r in assigned_roles:
-                if r not in ("Analista_Consulta", "Guardia_Seguridad"):
+                if r not in ("Analista_Consulta", "Guardia_Seguridad", "Consultor_Reporte"):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Los Directores de Recinto solo pueden invitar usuarios con rol Analista_Consulta o Guardia_Seguridad.",
+                        detail="Los Directores de Recinto solo pueden invitar usuarios con rol Analista_Consulta, Guardia_Seguridad o Consultor_Reporte.",
                     )
             espacio_id = creator.espacio_id
             created_by_user_id = creator.id
+            director_datasets = set(creator.allowed_datasets or [])
+            if creator.espacio_id == 1:
+                director_datasets.add("biblioteca")
+            elif creator.espacio_id == 2:
+                director_datasets.add("estacionamiento")
+
+            allowed_ds = [d for d in invite_in.allowed_datasets if d in director_datasets]
+            if not allowed_ds:
+                allowed_ds = list(director_datasets)
+            invite_in.allowed_datasets = allowed_ds
         else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -583,7 +645,20 @@ async def reenviar_invitacion_usuario(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="No tiene permisos para gestionar invitaciones de usuarios con jerarquía superior o equivalente.",
                     )
-                if user.created_by_user_id != creator.id and user.espacio_id != creator.espacio_id:
+                director_datasets = set(creator.allowed_datasets or [])
+                if creator.espacio_id == 1:
+                    director_datasets.add("biblioteca")
+                elif creator.espacio_id == 2:
+                    director_datasets.add("estacionamiento")
+
+                target_datasets = set(user.allowed_datasets or [])
+                if user.espacio_id == 1:
+                    target_datasets.add("biblioteca")
+                elif user.espacio_id == 2:
+                    target_datasets.add("estacionamiento")
+
+                coincide_recinto = bool(director_datasets.intersection(target_datasets))
+                if user.created_by_user_id != creator.id and not coincide_recinto and user.espacio_id != creator.espacio_id:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Solo puede gestionar usuarios de su propio recinto.",

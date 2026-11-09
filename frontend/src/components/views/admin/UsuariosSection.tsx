@@ -73,9 +73,16 @@ const normalizarCuotaEspanol = (q?: string | null): string => {
 }
 
 export const UsuariosSection: React.FC = () => {
-  const { isSuperAdmin, isDirectivo } = useAuth()
+  const { isSuperAdmin, isDirectivo, userId, allowedDatasets } = useAuth()
   const isSuperAdminOrDirectivo = isSuperAdmin || isDirectivo
   const queryClient = useQueryClient()
+
+  const datasetsIniciales = React.useMemo(() => {
+    if (isSuperAdmin) return ['biblioteca', 'estacionamiento']
+    if (allowedDatasets.includes('estacionamiento') && !allowedDatasets.includes('biblioteca')) return ['estacionamiento']
+    if (allowedDatasets.includes('biblioteca') && !allowedDatasets.includes('estacionamiento')) return ['biblioteca']
+    return allowedDatasets.length > 0 ? allowedDatasets : ['biblioteca', 'estacionamiento']
+  }, [isSuperAdmin, allowedDatasets])
 
   const [searchQuery, setSearchQuery] = useState('')
   const [userToDelete, setUserToDelete] = useState<UserItem | null>(null)
@@ -83,7 +90,7 @@ export const UsuariosSection: React.FC = () => {
   const [newName, setNewName] = useState('')
   const [newEmail, setNewEmail] = useState('')
   const [newRole, setNewRole] = useState('Guardia_Seguridad')
-  const [newDatasets, setNewDatasets] = useState<string[]>(['biblioteca', 'estacionamiento'])
+  const [newDatasets, setNewDatasets] = useState<string[]>(datasetsIniciales)
   const [modalError, setModalError] = useState<string | null>(null)
 
   // Estados para configuración de IA
@@ -137,6 +144,33 @@ export const UsuariosSection: React.FC = () => {
     }
     return base
   }, [rolesList, isSuperAdmin, isDirectivo])
+
+  // Verificación jerárquica de permisos de gestión sobre usuarios específicos (RBAC)
+  const puedeGestionarUsuario = React.useCallback(
+    (targetUser: UserItem) => {
+      const esPropio = Boolean(userId && targetUser.id === userId)
+      if (esPropio) return false
+      if (isSuperAdmin) return true
+      if (isDirectivo) {
+        const esJerarquiaAlta = targetUser.roles.some(
+          (r) => r.nombre === 'Admin_Sistema' || r.nombre === 'Director_Recinto'
+        )
+        return !esJerarquiaAlta
+      }
+      return false
+    },
+    [userId, isSuperAdmin, isDirectivo]
+  )
+
+  const puedeEliminarUsuario = React.useCallback(
+    (targetUser: UserItem) => {
+      const esPropio = Boolean(userId && targetUser.id === userId)
+      if (esPropio) return false
+      // Eliminación permanente exclusiva de Super Administrador UCT (RF27)
+      return isSuperAdmin
+    },
+    [userId, isSuperAdmin]
+  )
 
   // Estados para cuotas y tiempos por rol
   const [roleDrafts, setRoleDrafts] = useState<Record<number, { quota: string; cooldown: number }>>({})
@@ -620,7 +654,10 @@ export const UsuariosSection: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => setIsModalOpen(true)}
+              onClick={() => {
+                setNewDatasets(datasetsIniciales)
+                setIsModalOpen(true)
+              }}
               className="flex items-center gap-1.5 px-3.5 py-1.5 bg-uct-blue-primary hover:bg-uct-blue-hover text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
             >
               <UserPlus size={14} />
@@ -653,6 +690,11 @@ export const UsuariosSection: React.FC = () => {
               ) : (
                 filteredUsers.map((u) => {
                   const estaBloqueado = Boolean(u.bloqueado_hasta && new Date(u.bloqueado_hasta) > new Date())
+                  const puedeGestionar = puedeGestionarUsuario(u)
+                  const puedeEliminar = puedeEliminarUsuario(u)
+                  const puedeReenviar = puedeGestionar
+                  const puedeDesbloquear = puedeGestionar && estaBloqueado
+
                   return (
                     <tr key={u.id} className="hover:bg-slate-50/50 transition">
                       <td className="py-3 px-3">
@@ -683,7 +725,7 @@ export const UsuariosSection: React.FC = () => {
                           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200">
                             <Lock size={11} /> Bloqueado
                           </span>
-                        ) : (
+                        ) : puedeGestionar ? (
                           <button
                             type="button"
                             onClick={() => toggleUserStatusMutation.mutate({ userId: u.id, is_active: !u.is_active })}
@@ -697,35 +739,49 @@ export const UsuariosSection: React.FC = () => {
                             <span className={`w-1.5 h-1.5 rounded-full ${u.is_active ? 'bg-emerald-600' : 'bg-slate-400'}`} />
                             <span>{u.is_active ? 'Activo' : 'Inactivo'}</span>
                           </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 select-none">
+                            <span className={`w-1.5 h-1.5 rounded-full ${u.is_active ? 'bg-emerald-600' : 'bg-slate-400'}`} />
+                            <span>{u.is_active ? 'Activo' : 'Inactivo'}</span>
+                          </span>
                         )}
                       </td>
                       <td className="py-3 px-3">
-                        <button
-                          type="button"
-                          onClick={() => toggleUserAiMutation.mutate({ userId: u.id, can_use_ai: !u.can_use_ai })}
-                          title={u.can_use_ai ? 'Haga clic para revocar acceso a IA' : 'Haga clic para autorizar uso de IA'}
-                          className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border transition cursor-pointer ${
-                            u.can_use_ai
-                              ? 'text-purple-700 bg-purple-50 border-purple-200 hover:bg-purple-100'
-                              : 'text-slate-500 bg-slate-100 border-slate-200 hover:bg-slate-200'
-                          }`}
-                        >
-                          {u.can_use_ai ? <Bot size={12} className="text-purple-600" /> : <BotOff size={12} className="text-slate-400" />}
-                          <span>{u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
-                        </button>
+                        {puedeGestionar ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleUserAiMutation.mutate({ userId: u.id, can_use_ai: !u.can_use_ai })}
+                            title={u.can_use_ai ? 'Haga clic para revocar acceso a IA' : 'Haga clic para autorizar uso de IA'}
+                            className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border transition cursor-pointer ${
+                              u.can_use_ai
+                                ? 'text-purple-700 bg-purple-50 border-purple-200 hover:bg-purple-100'
+                                : 'text-slate-500 bg-slate-100 border-slate-200 hover:bg-slate-200'
+                            }`}
+                          >
+                            {u.can_use_ai ? <Bot size={12} className="text-purple-600" /> : <BotOff size={12} className="text-slate-400" />}
+                            <span>{u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 select-none">
+                            {u.can_use_ai ? <Bot size={12} className="text-purple-600" /> : <BotOff size={12} className="text-slate-400" />}
+                            <span>{u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => resendInvitationMutation.mutate(u.id)}
-                            disabled={resendInvitationMutation.isPending}
-                            className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition cursor-pointer"
-                            title="Reenviar enlace de activación / reseteo de contraseña"
-                          >
-                            <KeyRound size={14} />
-                          </button>
-                          {estaBloqueado && (
+                          {puedeReenviar && (
+                            <button
+                              type="button"
+                              onClick={() => resendInvitationMutation.mutate(u.id)}
+                              disabled={resendInvitationMutation.isPending}
+                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition cursor-pointer"
+                              title="Reenviar enlace de activación / reseteo de contraseña"
+                            >
+                              <KeyRound size={14} />
+                            </button>
+                          )}
+                          {puedeDesbloquear && (
                             <button
                               type="button"
                               onClick={() => unlockMutation.mutate(u.id)}
@@ -735,14 +791,19 @@ export const UsuariosSection: React.FC = () => {
                               <Unlock size={14} />
                             </button>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setUserToDelete(u)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                            title="Eliminar usuario"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          {puedeEliminar && (
+                            <button
+                              type="button"
+                              onClick={() => setUserToDelete(u)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                              title="Eliminar usuario"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                          {!puedeReenviar && !puedeDesbloquear && !puedeEliminar && (
+                            <span className="text-slate-300 text-xs px-2 select-none">—</span>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -833,24 +894,30 @@ export const UsuariosSection: React.FC = () => {
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Módulos / Datasets Autorizados</label>
                 <div className="flex items-center gap-4 text-xs text-slate-700">
-                  <label className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newDatasets.includes('biblioteca')}
-                      onChange={() => handleDatasetCheckbox('biblioteca')}
-                      className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40"
-                    />
-                    <span>Biblioteca</span>
-                  </label>
-                  <label className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newDatasets.includes('estacionamiento')}
-                      onChange={() => handleDatasetCheckbox('estacionamiento')}
-                      className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40"
-                    />
-                    <span>Estacionamiento</span>
-                  </label>
+                  {(isSuperAdmin || allowedDatasets.includes('biblioteca')) && (
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newDatasets.includes('biblioteca')}
+                        onChange={() => handleDatasetCheckbox('biblioteca')}
+                        disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('estacionamiento')}
+                        className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
+                      />
+                      <span>Biblioteca</span>
+                    </label>
+                  )}
+                  {(isSuperAdmin || allowedDatasets.includes('estacionamiento')) && (
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newDatasets.includes('estacionamiento')}
+                        onChange={() => handleDatasetCheckbox('estacionamiento')}
+                        disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('biblioteca')}
+                        className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
+                      />
+                      <span>Estacionamiento</span>
+                    </label>
+                  )}
                 </div>
               </div>
 
