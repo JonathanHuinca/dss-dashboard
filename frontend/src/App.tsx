@@ -84,12 +84,16 @@ function AppRouter() {
   )
   const [bibliotecaFilters, setBibliotecaFilters] = useState<DataFilters>({
     alcance: 'conformes',
-    regimen_horario: 'todos',
-    direccion: 'todos',
+    regimen_horario: 'dentro_horario,24h_delta',
+    direccion: 'completos',
     dias_semana: '',
     door: '',
     perfil_visita: 'todos',
     marcajes: 'todos',
+    sala: '',
+    carrera: '',
+    facultad: '',
+    cohorte: '',
     incluir_pausas_bano: true,
     desduplicar_rafagas: true,
   })

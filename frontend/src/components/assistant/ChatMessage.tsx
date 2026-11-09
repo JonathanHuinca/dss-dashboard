@@ -21,7 +21,6 @@ const Forecast14DaysPlotlyChart = lazy(() => import('../charts/Forecast14DaysPlo
 const VisitProfilesPlotlyChart = lazy(() => import('../charts/VisitProfilesPlotlyChart').then(m => ({ default: m.VisitProfilesPlotlyChart })))
 const CameraStatsPlotlyChart = lazy(() => import('../charts/CameraStatsPlotlyChart').then(m => ({ default: m.CameraStatsPlotlyChart })))
 const IntercampusMobilityPlotlyChart = lazy(() => import('../charts/IntercampusMobilityPlotlyChart').then(m => ({ default: m.IntercampusMobilityPlotlyChart })))
-const VehicleDailyPlotlyChart = lazy(() => import('../charts/VehicleDailyPlotlyChart').then(m => ({ default: m.VehicleDailyPlotlyChart })))
 const VehicleMilestonesPlotlyChart = lazy(() => import('../charts/VehicleMilestonesPlotlyChart').then(m => ({ default: m.VehicleMilestonesPlotlyChart })))
 const VehicleBehavioralClustersPlotlyChart = lazy(() => import('../charts/VehicleBehavioralClustersPlotlyChart').then(m => ({ default: m.VehicleBehavioralClustersPlotlyChart })))
 
@@ -314,18 +313,6 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
             <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-2 mt-2">
               <Suspense fallback={fallbackLoader}>
                 <IntercampusMobilityPlotlyChart data={msg.payload} />
-              </Suspense>
-            </div>
-          )
-        }
-        break
-
-      case 'VehicleDailyPlotlyChart':
-        if (Array.isArray(msg.payload) && msg.payload.length > 0) {
-          return (
-            <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-2 mt-2">
-              <Suspense fallback={fallbackLoader}>
-                <VehicleDailyPlotlyChart data={msg.payload} />
               </Suspense>
             </div>
           )

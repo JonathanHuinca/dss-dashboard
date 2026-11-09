@@ -51,8 +51,9 @@ import {
   useAttendanceKpis,
   useOccupancyRealtime,
   useAttendanceHourlyFlow,
+  useAttendancePresenceCurve,
   useHeatmap,
-  useForecastAttendance,
+  useForecastPresence,
   useAlerts,
   usePeakValley,
   useWeeklyEvolution,
@@ -134,8 +135,8 @@ function SectionHeader({
 
 const BIBLIOTECA_CHARTS: ChartConfigItem[] = [
   // 1. Aforo y Demanda en Tiempo Real
-  { id: 'aforo_curva', label: 'Curva de Aforo Concurrente', category: 'Aforo en Tiempo Real', description: 'Ocupación por minuto vs umbrales 70%, 85% y límite 350' },
-  { id: 'prophet_diario', label: 'Pronóstico Prophet (3 Días)', category: 'Aforo en Tiempo Real', description: 'Demanda predictiva horaria a corto plazo' },
+  { id: 'aforo_presencia_intervalos', label: 'Curva de Presencia Física en Sala (Intervalos de Sesión)', category: 'Aforo en Tiempo Real', description: 'Ocupación física real por intervalos [entrada ≤ T y salida ≥ T] vs capacidad' },
+  { id: 'prophet_presencia_14dias', label: 'Pronóstico de Presencia Física (Prophet Logístico Acotado)', category: 'Aforo en Tiempo Real', description: 'Proyección continua a 14 días (7d reales + 7d proyectados) de ocupación física en sala vs capacidad' },
   // 2. Demografía Institucional y Distribución Curricular
   { id: 'distribucion_curricular', label: 'Distribución por Carrera Institucional (Ley 21.719)', category: 'Demografía y Carreras', description: 'Padrón académico disociado por carreras universitarias' },
   // 3. Análisis de Comportamiento y Perfiles de Visita
@@ -155,7 +156,7 @@ const BIBLIOTECA_CHARTS: ChartConfigItem[] = [
 ]
 
 const SECCIONES_MODULO_BIBLIOTECA: SeccionModuloItem[] = [
-  { id: 'seccion_1', numero: 1, titulo: '1. Resumen y Demanda General', subtitulo: 'Aforo, Padrón, Perfiles y Demanda Horaria', icono: Activity, cantidadGraficos: 6 },
+  { id: 'seccion_1', numero: 1, titulo: '1. Resumen y Demanda General', subtitulo: 'Aforo, Padrón, Perfiles y Demanda Horaria', icono: Activity, cantidadGraficos: 7 },
   { id: 'seccion_2', numero: 2, titulo: '2. Salas y Torniquetes', subtitulo: 'Sala 1 vs Sala 2, Torniquetes', icono: DoorClosed, cantidadGraficos: 3 },
   { id: 'seccion_3', numero: 3, titulo: '3. Evolución e Hitos', subtitulo: 'Mensual, Semanal, Lun-Dom, Hitos', icono: Calendar, cantidadGraficos: 4 },
   { id: 'seccion_4', numero: 4, titulo: '4. Explorador de Microdatos', subtitulo: 'Tabla paginada de eventos', icono: Layers, cantidadGraficos: 1 },
@@ -222,12 +223,16 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   }
   const [internalFilters, setInternalFilters] = useState<DataFilters>({
     alcance: 'conformes',
-    regimen_horario: 'todos',
-    direccion: 'todos',
+    regimen_horario: 'dentro_horario,24h_delta',
+    direccion: 'completos',
     dias_semana: '',
     door: '',
     perfil_visita: 'todos',
     marcajes: 'todos',
+    sala: '',
+    carrera: '',
+    facultad: '',
+    cohorte: '',
     incluir_pausas_bano: true,
     desduplicar_rafagas: true,
   })
@@ -305,6 +310,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const kpis = useAttendanceKpis(dateRange?.inicio, dateRange?.fin, filters)
   const live = useOccupancyRealtime()
   const flow = useAttendanceHourlyFlow(dateRange?.inicio, dateRange?.fin, filters)
+  const presenceCurve = useAttendancePresenceCurve(dateRange?.inicio, dateRange?.fin, filters)
   const alerts = useAlerts()
 
   const espacioQuery = useQuery({
@@ -383,6 +389,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
             clearInterval(sondeoRef.current)
             sondeoRef.current = null
             queryClient.invalidateQueries({ queryKey: ['forecast-attendance'] })
+            queryClient.invalidateQueries({ queryKey: ['forecast-presence'] })
             setIsRetraining(false)
             setRetrainMsg('Modelo actualizado')
             setTimeout(() => setRetrainMsg(null), 3500)
@@ -407,8 +414,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     }
   }
 
-  const [salaPronostico, setSalaPronostico] = useState<'todas' | 'sala1' | 'sala2'>('todas')
-  const forecast = useForecastAttendance(salaPronostico)
+  const [salaPronosticoPresencia, setSalaPronosticoPresencia] = useState<'todas' | 'sala1' | 'sala2'>('todas')
+  const presenceForecast = useForecastPresence(salaPronosticoPresencia)
 
 
   // Carga inmediata de la sección activa y precarga silenciosa en segundo plano a los 300ms
@@ -544,8 +551,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
 
   // Helpers para visibilidad de secciones combinados con la barra lateral (5 secciones unificadas)
   const showSec1 = esSeccionVisible('seccion_1') && (
-    visibleCharts.aforo_curva !== false ||
-    visibleCharts.prophet_diario !== false ||
+    visibleCharts.aforo_presencia_intervalos !== false ||
+    visibleCharts.prophet_presencia_14dias !== false ||
     visibleCharts.distribucion_curricular !== false ||
     visibleCharts.perfiles_visita !== false ||
     visibleCharts.flujo_horario !== false ||
@@ -864,20 +871,20 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
           />
 
           <div className="flex flex-wrap gap-4 items-start">
-            {/* 1.1 Curva de Aforo Concurrente */}
-            {visibleCharts.aforo_curva !== false && (
+            {/* 1.1 Curva de Presencia Física en Sala por Intervalos de Sesión */}
+            {visibleCharts.aforo_presencia_intervalos !== false && (
               <ChartCard
-                contextoGrafico="aforo_curva"
+                contextoGrafico="aforo_presencia_intervalos"
                 layout="full"
-                title={salaLabel ? `Curva de Aforo Concurrente — ${salaLabel}` : "Curva de Aforo Concurrente vs Capacidad Máxima"}
+                title={salaLabel ? `Curva de Presencia Física en Sala (Intervalos de Sesión) — ${salaLabel}` : "Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima"}
                 action={<LiveBadge lastUpdated={lastTs} />}
                 minHeight={450}
-                isFetching={flow.isFetching || roomsComp.isFetching}
+                isFetching={presenceCurve.isFetching || roomsComp.isFetching}
               >
                 <Suspense fallback={<ChartSkeleton />}>
-                  {flow.data && flow.data.length > 0 ? (
+                  {presenceCurve.data && presenceCurve.data.length > 0 ? (
                     <OccupancyAreaChart
-                      data={flow.data}
+                      data={presenceCurve.data}
                       capacidad={capacidadActiva}
                       salaLabel={salaLabel}
                       capSala1={capSala1}
@@ -885,22 +892,22 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                       comparativaSalas={roomsComp.data?.flujo_horario_comparado}
                     />
                   ) : (
-                    <EmptyState label="Sin datos de aforo para este período" />
+                    <EmptyState label="Sin datos de presencia para este período" />
                   )}
                 </Suspense>
               </ChartCard>
             )}
 
-            {/* 1.2 Pronóstico Prophet 14 Días */}
-            {visibleCharts.prophet_diario !== false && (
+            {/* 1.2 Pronóstico Prophet Presencia Física 14 Días (Logístico Acotado) */}
+            {visibleCharts.prophet_presencia_14dias !== false && (
               <ChartCard
-                contextoGrafico="prophet_diario"
+                contextoGrafico="prophet_presencia_14dias"
                 layout="full"
                 minHeight={460}
-                isFetching={forecast.isFetching}
-                title={`Pronóstico Continuo Prophet — 14 Días (7 Días Históricos Reales + 7 Días Proyectados) — ${salaPronostico === 'sala1'
+                isFetching={presenceForecast.isFetching}
+                title={`Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado) — 14 Días (7 Días Históricos Reales + 7 Días Proyectados) — ${salaPronosticoPresencia === 'sala1'
                   ? 'Sala 1 (CSF02 2° Piso)'
-                  : salaPronostico === 'sala2'
+                  : salaPronosticoPresencia === 'sala2'
                     ? 'Sala 2 (CSF04 Pecera 1° Piso)'
                     : 'Todas las Salas (Campus San Francisco)'
                   }`}
@@ -909,8 +916,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                     <div className="flex items-center bg-gray-100 dark:bg-gray-800 p-0.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs">
                       <button
                         type="button"
-                        onClick={() => setSalaPronostico('todas')}
-                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${salaPronostico === 'todas'
+                        onClick={() => setSalaPronosticoPresencia('todas')}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${salaPronosticoPresencia === 'todas'
                           ? 'bg-white dark:bg-gray-700 text-uct-navy dark:text-white shadow-xs font-semibold'
                           : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                           }`}
@@ -919,8 +926,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                       </button>
                       <button
                         type="button"
-                        onClick={() => setSalaPronostico('sala1')}
-                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${salaPronostico === 'sala1'
+                        onClick={() => setSalaPronosticoPresencia('sala1')}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${salaPronosticoPresencia === 'sala1'
                           ? 'bg-white dark:bg-gray-700 text-uct-navy dark:text-white shadow-xs font-semibold'
                           : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                           }`}
@@ -929,8 +936,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                       </button>
                       <button
                         type="button"
-                        onClick={() => setSalaPronostico('sala2')}
-                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${salaPronostico === 'sala2'
+                        onClick={() => setSalaPronosticoPresencia('sala2')}
+                        className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${salaPronosticoPresencia === 'sala2'
                           ? 'bg-white dark:bg-gray-700 text-uct-navy dark:text-white shadow-xs font-semibold'
                           : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                           }`}
@@ -939,40 +946,40 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                       </button>
                     </div>
 
-                    {forecast.data?.model_status.status === 'ok' ? (
+                    {presenceForecast.data?.model_status.status === 'ok' ? (
                       <div className="hidden sm:flex items-center gap-1.5 text-[11px]">
                         <span className="text-slate-600 dark:text-slate-300 font-medium">
-                          Proyección: <strong className="text-uct-navy dark:text-sky-300 font-semibold">{forecast.data.anchor_timestamp ? new Date(forecast.data.anchor_timestamp).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : 'Hoy'} (+7d)</strong>
+                          Proyección: <strong className="text-uct-navy dark:text-sky-300 font-semibold">{presenceForecast.data.anchor_timestamp ? new Date(presenceForecast.data.anchor_timestamp).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : 'Hoy'} (+7d)</strong>
                         </span>
                         <span className="text-gray-300 dark:text-gray-600">|</span>
                         <span className="text-uct-success font-medium">
-                          Calibrado: {forecast.data.model_status.model_date}
+                          Calibrado: {presenceForecast.data.model_status.model_date}
                         </span>
                       </div>
                     ) : (
-                      <span className="text-[11px] text-uct-warning hidden sm:inline">Modelo no entrenado</span>
+                      <span className="text-[11px] text-uct-warning hidden sm:inline">Modelo en calibración</span>
                     )}
                   </div>
                 }
               >
                 <Suspense fallback={<ChartSkeleton />}>
-                  {forecast.data?.forecast && forecast.data.forecast.length > 0 ? (
+                  {presenceForecast.data?.forecast && presenceForecast.data.forecast.length > 0 ? (
                     <ForecastLineChart
-                      forecast={forecast.data.forecast}
-                      historico7d={forecast.data.historico_7d}
-                      pronostico7d={forecast.data.pronostico_7d}
-                      capacidad={forecast.data.capacidad_asientos ?? capacidadActiva}
+                      forecast={presenceForecast.data.forecast}
+                      historico7d={presenceForecast.data.historico_7d}
+                      pronostico7d={presenceForecast.data.pronostico_7d}
+                      capacidad={presenceForecast.data.capacidad_asientos ?? capacidadActiva}
                       salaNombre={
-                        salaPronostico === 'sala1'
+                        salaPronosticoPresencia === 'sala1'
                           ? 'Sala 1 CSF02'
-                          : salaPronostico === 'sala2'
+                          : salaPronosticoPresencia === 'sala2'
                             ? 'Sala 2 CSF04'
                             : 'Todas las Salas'
                       }
                       recinto="biblioteca"
                     />
                   ) : (
-                    <EmptyState label={forecast.data?.model_status?.message ?? 'Sin pronóstico disponible'} />
+                    <EmptyState label={presenceForecast.data?.model_status?.message ?? 'Sin pronóstico de presencia disponible'} />
                   )}
                 </Suspense>
               </ChartCard>

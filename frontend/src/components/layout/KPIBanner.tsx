@@ -6,7 +6,6 @@ import {
   Repeat,
   Flame,
   Users,
-  RefreshCw,
   TrendingUp,
   Building2,
   Car,
@@ -77,16 +76,6 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
               </p>
             </div>
           </div>
-
-          <button
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-uct-blue-primary bg-slate-50 hover:bg-slate-100/80 border border-slate-200 transition-all cursor-pointer disabled:opacity-50"
-            title="Actualizar métricas"
-          >
-            <RefreshCw size={12} className={isFetching ? 'animate-spin text-uct-blue-primary' : ''} />
-            <span>Actualizar</span>
-          </button>
         </div>
 
         {isLoading ? (

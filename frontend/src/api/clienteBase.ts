@@ -20,7 +20,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
+    const isLoginEndpoint = error.config?.url?.includes('/auth/login')
+    if (error.response?.status === 401 && !isLoginEndpoint && typeof window !== 'undefined') {
       localStorage.removeItem('uct_auth_token')
       window.dispatchEvent(new Event('uct:auth-expired'))
     }

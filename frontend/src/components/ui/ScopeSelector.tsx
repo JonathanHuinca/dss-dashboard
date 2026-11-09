@@ -52,8 +52,12 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
   modulo = 'biblioteca',
   filters = {
     alcance: 'conformes',
-    regimen_horario: 'todos',
-    direccion: 'todos',
+    regimen_horario: 'dentro_horario,24h_delta',
+    direccion: 'completos',
+    sala: '',
+    carrera: '',
+    facultad: '',
+    cohorte: '',
     dias_semana: '',
     door: '',
     perfil_visita: 'todos',
@@ -261,7 +265,7 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     Object.values(temporizadoresRef.current).forEach(id => window.clearTimeout(id))
   }, [])
 
-  // Sincronizar automáticamente el régimen conforme si el rango de fechas cambia mientras se está en Datos Conformes
+  // Sincronizar automáticamente el régimen conforme y dirección al cambiar el período o al inicializar en Datos Conformes
   useEffect(() => {
     if (currentScope !== 'conformes' || !onChangeFilters) return
     const active24h = specialSchedules.filter(
@@ -275,10 +279,23 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
       filters.regimen_horario === 'dentro_horario' ||
       (filters.regimen_horario?.includes('dentro_horario') && (filters.regimen_horario?.includes('24h_delta') || filters.regimen_horario?.includes('horario_')))
 
-    if (esRegimenConformeActual && filters.regimen_horario !== expectedRegimen) {
-      updateFilter('regimen_horario', expectedRegimen)
+    let needsUpdate = false
+    const nextFilters: DataFilters = { ...filters }
+
+    if ((filters.regimen_horario === 'todos' || !filters.regimen_horario || esRegimenConformeActual) && filters.regimen_horario !== expectedRegimen) {
+      nextFilters.regimen_horario = expectedRegimen
+      needsUpdate = true
     }
-  }, [dateRange?.inicio, dateRange?.fin, specialSchedules, currentScope])
+
+    if (modulo === 'biblioteca' && (filters.direccion === 'todos' || !filters.direccion)) {
+      nextFilters.direccion = 'completos'
+      needsUpdate = true
+    }
+
+    if (needsUpdate) {
+      onChangeFilters(nextFilters)
+    }
+  }, [dateRange?.inicio, dateRange?.fin, specialSchedules, currentScope, modulo, filters.regimen_horario, filters.direccion])
 
   const allBaseRegimenes = ['dentro_horario', 'fuera_horario', 'dias_cierre', 'paro_federado', 'paro_carrera']
   const allSpecialRegimenes = useMemo(() => {
@@ -859,7 +876,7 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
 
         {/* Acciones del Extremo Derecho: Limpiar Filtros, Exportación/Visibilidad y Botón Ocultar/Mostrar Filtros */}
         <div className="flex flex-wrap items-center gap-2">
-          {activeCustomFiltersCount > 0 && (
+          {activeCustomFiltersCount > 0 && !isConformesPreset && (
             <button
               type="button"
               onClick={handleResetFilters}

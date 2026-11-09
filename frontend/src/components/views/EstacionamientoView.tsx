@@ -42,10 +42,10 @@ import {
   useVehicleKpis,
   useParkingOccupancy,
   useVehicleHourlyFlow,
+  useVehiclePresenceCurve,
   useFleetComposition,
   useForecastParking,
   useCameraStats,
-  useVehicleDailyEvolution,
   useVehicleAcademicMilestones,
   useIntercampusMobility,
   useBehavioralClusters,
@@ -57,7 +57,6 @@ const OccupancyAreaChart = memo(lazy(() => import('../charts/OccupancyAreaChart'
 const HourlyBarChart = memo(lazy(() => import('../charts/HourlyBarChart').then(m => ({ default: m.HourlyBarChart }))))
 const FleetDonutChart = memo(lazy(() => import('../charts/FleetDonutChart').then(m => ({ default: m.FleetDonutChart }))))
 const ForecastLineChart = memo(lazy(() => import('../charts/ForecastLineChart').then(m => ({ default: m.ForecastLineChart }))))
-const VehicleDailyPlotlyChart = memo(lazy(() => import('../charts/VehicleDailyPlotlyChart').then(m => ({ default: m.VehicleDailyPlotlyChart }))))
 const VehicleMilestonesPlotlyChart = memo(lazy(() => import('../charts/VehicleMilestonesPlotlyChart').then(m => ({ default: m.VehicleMilestonesPlotlyChart }))))
 const CameraStatsPlotlyChart = memo(lazy(() => import('../charts/CameraStatsPlotlyChart').then(m => ({ default: m.CameraStatsPlotlyChart }))))
 const IntercampusMobilityPlotlyChart = memo(lazy(() => import('../charts/IntercampusMobilityPlotlyChart').then(m => ({ default: m.IntercampusMobilityPlotlyChart }))))
@@ -113,8 +112,8 @@ const SECTORES_VEHICULARES: { codigo: string; nombre: string; capacidad: number;
 ]
 
 const SECCIONES_MODULO_ESTACIONAMIENTO: SeccionModuloItem[] = [
-  { id: 'seccion_1', numero: 1, titulo: '1. Aforo y Pronóstico', subtitulo: 'Concurrencia vs Plazas y Prophet', icono: Layers, cantidadGraficos: 2 },
-  { id: 'seccion_2', numero: 2, titulo: '2. Flujo Horario y Diario', subtitulo: 'Ingresos vs Salidas y Evolución', icono: TrendingUp, cantidadGraficos: 2 },
+  { id: 'seccion_1', numero: 1, titulo: '1. Aforo y Pronóstico', subtitulo: 'Concurrencia vs Plazas y Prophet', icono: Layers, cantidadGraficos: 3 },
+  { id: 'seccion_2', numero: 2, titulo: '2. Flujo Horario de Accesos', subtitulo: 'Ingresos vs Salidas por hora', icono: TrendingUp, cantidadGraficos: 1 },
   { id: 'seccion_3', numero: 3, titulo: '3. Flota y Cámaras ANPR', subtitulo: 'Tipos, Marcas y Control LPR', icono: Car, cantidadGraficos: 3 },
   { id: 'seccion_4', numero: 4, titulo: '4. Movilidad y Calendario', subtitulo: 'Matriz Inter-Campus e Hitos', icono: Navigation, cantidadGraficos: 2 },
   { id: 'seccion_5', numero: 5, titulo: '5. Machine Learning (K-Means)', subtitulo: 'Detección de Uso Indebido y Estadía', icono: BrainCircuit, cantidadGraficos: 2 },
@@ -252,9 +251,9 @@ export function EstacionamientoView({ dateRange }: Props) {
   const kpis = useVehicleKpis(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
   const live = useParkingOccupancy(sectorSeleccionado)
   const flow = useVehicleHourlyFlow(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
+  const presenceCurve = useVehiclePresenceCurve(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
   const forecast = useForecastParking({ enabled: esSeccionVisible('seccion_1') || precargaSilenciosaVehicular })
   const alerts = useAlerts()
-  const daily = useVehicleDailyEvolution(dateRange?.inicio, dateRange?.fin, sectorSeleccionado, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaVehicular })
   const fleet = useFleetComposition(dateRange?.inicio, dateRange?.fin, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
   const camera = useCameraStats(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
   const milestones = useVehicleAcademicMilestones({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
@@ -809,15 +808,16 @@ export function EstacionamientoView({ dateRange }: Props) {
             <ChartCard
               layout="full"
               minHeight={450}
-              title={`Curva de Concurrencia vs Capacidad (${capacidadActual} plazas) — ${sectorActivoObj.nombre}`}
+              contextoGrafico="presencia_vehicular_intervalos"
+              title={`Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad (${capacidadActual} plazas) — ${sectorActivoObj.nombre}`}
               action={<LiveBadge lastUpdated={lastTs} />}
-              isFetching={live.isFetching || flow.isFetching}
+              isFetching={live.isFetching || presenceCurve.isFetching}
             >
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
-                {flow.data && flow.data.length > 0 ? (
-                  <OccupancyAreaChart data={flow.data} capacidad={capacidadActual} unit="vehículos" />
+                {presenceCurve.data && presenceCurve.data.length > 0 ? (
+                  <OccupancyAreaChart data={presenceCurve.data} capacidad={capacidadActual} unit="vehículos" />
                 ) : (
-                  <EmptyState label="Sin datos de ocupación vehicular para este período o filtros seleccionados" />
+                  <EmptyState label="Sin datos de presencia vehicular para este período o filtros seleccionados" />
                 )}
               </Suspense>
             </ChartCard>
@@ -861,34 +861,24 @@ export function EstacionamientoView({ dateRange }: Props) {
         </div>
       )}
 
-      {/* SECCIÓN 2: Flujo Horario y Tendencia Diaria */}
+      {/* SECCIÓN 2: Flujo Horario de Accesos */}
       {seccionMontada('seccion_2') && (
         <div className={claseSeccion('seccion_2', 'space-y-3.5')}>
           <SectionHeader
             icon={TrendingUp}
             title="2. Dinámica de Accesos: Ingresos vs Salidas"
-            subtitle="Ingresos vs Salidas por hora y evolución diaria de vehículos"
+            subtitle="Ingresos vs Salidas por hora en el período seleccionado"
             badge="Flujo Vehicular"
           />
           <MetricasSeccion items={metricasSec2} cargando={flow.isLoading} />
 
           <div className="flex flex-wrap gap-4 items-start">
-            <ChartCard layout="half" title={`Flujo Horario de Ingresos vs Salidas — ${dateRange?.label ?? 'Período'}`} isFetching={flow.isFetching}>
+            <ChartCard layout="full" title={`Flujo Horario de Ingresos vs Salidas — ${dateRange?.label ?? 'Período'}`} isFetching={flow.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {flow.data && flow.data.length > 0 ? (
                   <HourlyBarChart data={flow.data} />
                 ) : (
                   <EmptyState label="Sin datos de flujo horario para este período" />
-                )}
-              </Suspense>
-            </ChartCard>
-
-            <ChartCard layout="half" title={`Evolución Diaria de Accesos Vehiculares — ${sectorActivoObj.nombre}`} isFetching={daily.isFetching}>
-              <Suspense fallback={<EsqueletoGraficoVehicular />}>
-                {daily.data && daily.data.length > 0 ? (
-                  <VehicleDailyPlotlyChart data={daily.data} />
-                ) : (
-                  <EmptyState label="Sin datos de serie diaria vehicular" />
                 )}
               </Suspense>
             </ChartCard>
@@ -908,7 +898,7 @@ export function EstacionamientoView({ dateRange }: Props) {
           <MetricasSeccion items={metricasSec3} cargando={fleet.isLoading} />
 
           <div className="flex flex-wrap gap-4 items-start">
-            <ChartCard layout="third" title={`Composición por Tipo de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
+            <ChartCard layout="half" title={`Composición por Tipo de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {fleet.data?.por_tipo && fleet.data.por_tipo.length > 0 ? (
                   <FleetDonutChart data={fleet.data.por_tipo} nameKey="tipo" />
@@ -918,7 +908,7 @@ export function EstacionamientoView({ dateRange }: Props) {
               </Suspense>
             </ChartCard>
 
-            <ChartCard layout="third" title={`Distribución por Marca de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
+            <ChartCard layout="half" title={`Distribución por Marca de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {fleet.data?.por_marca && fleet.data.por_marca.length > 0 ? (
                   <FleetDonutChart data={fleet.data.por_marca} nameKey="marca" />
@@ -928,7 +918,7 @@ export function EstacionamientoView({ dateRange }: Props) {
               </Suspense>
             </ChartCard>
 
-            <ChartCard layout="third" title="Capturas por Cámara ANPR y Calidad" isFetching={camera.isFetching}>
+            <ChartCard layout="full" title="Capturas por Cámara ANPR y Calidad" isFetching={camera.isFetching}>
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {camera.data && camera.data.length > 0 ? (
                   <CameraStatsPlotlyChart data={camera.data} />

@@ -89,7 +89,20 @@ function InteractiveChartComponent({
 
     observer.observe(el)
 
+    // Redimensionamiento forzado tras montaje inicial para asegurar cálculo exacto del contenedor
+    const mountRaf = window.requestAnimationFrame(() => {
+      const plotEl = el.querySelector('.js-plotly-plot') as HTMLElement | null
+      if (plotEl && plotEl.isConnected && (plotEl as any)._fullLayout && Plotly.Plots?.resize) {
+        try {
+          Plotly.Plots.resize(plotEl)
+        } catch {
+          // Silenciar
+        }
+      }
+    })
+
     return () => {
+      window.cancelAnimationFrame(mountRaf)
       if (timeoutId) window.clearTimeout(timeoutId)
       if (animationFrameId) window.cancelAnimationFrame(animationFrameId)
       observer.disconnect()

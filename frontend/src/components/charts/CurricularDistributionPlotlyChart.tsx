@@ -39,7 +39,7 @@ const PALETA_COLORES = [
 function CurricularDistributionPlotlyChartComponent({ data }: Props) {
   const [agrupacion, setAgrupacion] = useState<'carreras' | 'facultades' | 'cohortes'>('carreras')
   const [metrica, setMetrica] = useState<'visitas' | 'alumnos'>('visitas')
-  const [topN, setTopN] = useState<number | 'todas'>(10)
+  const [topN, setTopN] = useState<number | 'todas'>(15)
   const [rebanadaSeleccionada, setRebanadaSeleccionada] = useState<string | null>(null)
 
   // Restablecer selección al cambiar filtros internos
@@ -79,7 +79,7 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
       const seleccionadas =
         topN === 'todas'
           ? carrerasOrdenadasSegunMetrica
-          : carrerasOrdenadasSegunMetrica.slice(0, typeof topN === 'number' ? topN : 10)
+          : carrerasOrdenadasSegunMetrica.slice(0, typeof topN === 'number' ? topN : 15)
 
       return seleccionadas.map((c) => ({
         nombre: c.carrera,
@@ -230,8 +230,8 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
     return [
       {
         type: 'pie',
-        hole: 0.48,
-        domain: { x: [0, 1], y: [0.28, 1] },
+        hole: 0.52,
+        domain: { x: [0.10, 0.90], y: [0.35, 0.98] },
         labels,
         values: itemsDonut.map((e) =>
           metrica === 'visitas' ? e.visitas : e.alumnos
@@ -278,13 +278,13 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
       orientation: 'h' as const,
       x: 0.5,
       xanchor: 'center' as const,
-      y: 0.25,
+      y: 0.28,
       yanchor: 'top' as const,
-      font: { size: 9.5, color: '#334155' },
+      font: { size: 9, color: '#334155' },
       itemclick: false as const,
       itemdoubleclick: false as const,
     },
-    margin: { t: 35, r: 15, b: 15, l: 15 },
+    margin: { t: 32, r: 12, b: 15, l: 12 },
   }), [agrupacion, topN])
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
@@ -454,7 +454,7 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
             data={chartDonutData}
             layout={layoutDonut}
             filename={`porcentaje_${agrupacion}_${metrica}_uct`}
-            height={480}
+            height={500}
             onClick={handleDonutClick}
           />
         </div>
