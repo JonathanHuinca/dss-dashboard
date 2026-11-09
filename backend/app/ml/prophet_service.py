@@ -44,6 +44,12 @@ MODELOS_SALA = {
     "vehicular": "prophet_vehicular",
 }
 
+MODELOS_PRESENCIA = {
+    "sala1": "prophet_presencia_sala1",
+    "sala2": "prophet_presencia_sala2",
+    "todas": "prophet_presencia_todas",
+}
+
 TRAIN_RATIO = 0.85
 MIN_ROWS_REQUIRED = 100
 
@@ -364,8 +370,9 @@ def aplicar_mascara_anomalias_entrenamiento(df: pd.DataFrame) -> pd.DataFrame:
     return df_mod
 
 
-def _build_prophet() -> Prophet:
+def _build_prophet(growth: str = "linear") -> Prophet:
     model = Prophet(
+        growth=growth,
         seasonality_mode="additive",
         daily_seasonality=False,
         weekly_seasonality=False,
@@ -726,4 +733,250 @@ async def predict_next_7_days(session: AsyncSession, recinto: str = "biblioteca"
     """Función de retrocompatibilidad con la API anterior."""
     res = await predict_continuous(session, recinto=recinto)
     return res["pronostico_7d"], res["model_status"]
+
+
+# ---------------------------------------------------------------------------
+# Pronóstico Continuo de Presencia Física por Intervalos (Prophet Logístico Acotado)
+# ---------------------------------------------------------------------------
+
+async def train_presence_model(session: AsyncSession, modelo_key: str, sala: str = "todas") -> dict:
+    """
+    Entrena el modelo de presencia física en sala con crecimiento logístico acotado (growth='logistic').
+    """
+    from app.services.attendance_service import AttendanceService
+    logger.info(f"[Prophet Logístico Presencia] Entrenando modelo={modelo_key} (sala={sala})")
+
+    res_t = await session.execute(text("""
+        SELECT MIN(time), MAX(time) 
+        FROM eventos_asistencia 
+        WHERE espacio_id = 1 
+          AND alerta_coherencia_fechas = 0 
+          AND person_id_hash NOT LIKE 'TEST_HASH%'
+    """))
+    min_t, max_t = res_t.fetchone()
+    if not max_t:
+        raise ValueError("Sin eventos de asistencia para entrenar modelo de presencia.")
+
+    anchor_dt = max_t.replace(minute=0, second=0, microsecond=0)
+    f_fin = anchor_dt.date()
+    f_ini = max(min_t.date(), f_fin - timedelta(days=90))
+
+    raw_hist = await AttendanceService.get_realtime_presence_curve(
+        session=session,
+        fecha_inicio=f_ini,
+        fecha_fin=f_fin,
+        espacio_id=1,
+    )
+    if not raw_hist:
+        raise ValueError(f"Datos de presencia insuficientes para '{modelo_key}'.")
+
+    df_raw = pd.DataFrame(raw_hist)
+    df_raw["ds"] = pd.to_datetime(df_raw["bucket"]).dt.tz_localize(None)
+
+    col_y = "personas_unicas"
+    if sala == "sala1":
+        col_y = "personas_sala1"
+    elif sala == "sala2":
+        col_y = "personas_sala2"
+
+    df_series = pd.DataFrame({
+        "ds": df_raw["ds"],
+        "y": pd.to_numeric(df_raw[col_y], errors="coerce").fillna(0.0),
+    })
+
+    # Reindexar sobre grilla continua de 1h con relleno en 0
+    full_idx = pd.date_range(df_series["ds"].min(), df_series["ds"].max(), freq="1h")
+    df = df_series.set_index("ds").reindex(full_idx, fill_value=0.0).reset_index()
+    df.columns = ["ds", "y"]
+    df["y"] = pd.to_numeric(df["y"], errors="coerce").fillna(0.0).clip(lower=0.0)
+
+    capacidades = await _fetch_capacidades(session)
+    cap_val = float(capacidades.get(sala, capacidades.get("todas", 426)))
+
+    cal = await _fetch_calendar(session)
+    horarios_cfg = await _fetch_horarios_info(session, espacio_id=1)
+    contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=1)
+
+    df = _enrich_features(
+        df,
+        cal,
+        sala=sala,
+        horarios=horarios_cfg,
+        contingencias=contingencias_cfg,
+        espacio_id=1,
+    )
+    df["cap"] = cap_val
+    df["floor"] = 0.0
+
+    regressors = REGRESORES_PROPHET
+    fit_cols = ["ds", "y", "cap", "floor"] + [r for r in regressors if r in df.columns]
+
+    df_prod_fit = aplicar_mascara_anomalias_entrenamiento(df)
+    model_prod = _build_prophet(growth="logistic")
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model_prod.fit(df_prod_fit[fit_cols])
+
+    versioned_path = _save_model(model_prod, modelo_key)
+
+    meta_path = MODELS_DIR / f"{modelo_key}_metadata.json"
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f_meta:
+            json.dump({
+                "modelo": modelo_key,
+                "recinto": "biblioteca",
+                "sala": sala,
+                "capacidad_acotada": cap_val,
+                "growth": "logistic",
+                "train_rows": len(df),
+                "actualizado_en": datetime.now().isoformat(),
+            }, f_meta, indent=2)
+    except Exception as e_meta:
+        logger.warning(f"Error guardando metadatos para {modelo_key}: {e_meta}")
+
+    return {
+        "modelo": modelo_key,
+        "sala": sala,
+        "capacidad": cap_val,
+        "trained_at": datetime.now().isoformat(),
+        "path": str(versioned_path),
+    }
+
+
+async def predict_presence_continuous(
+    session: AsyncSession,
+    sala: str = "todas",
+) -> Dict[str, Any]:
+    """
+    Retorna 14 días continuos de presencia física en sala (168 h históricas reales + 168 h proyectadas)
+    mediante Prophet con saturación logística acotada (growth='logistic').
+    """
+    from app.services.attendance_service import AttendanceService
+    capacidades = await _fetch_capacidades(session)
+    cap_sala = capacidades.get(sala, capacidades.get("todas", 426))
+
+    res_t = await session.execute(text("""
+        SELECT MAX(time) 
+        FROM eventos_asistencia 
+        WHERE espacio_id = 1 
+          AND alerta_coherencia_fechas = 0 
+          AND person_id_hash NOT LIKE 'TEST_HASH%'
+    """))
+    max_time_val = res_t.scalar()
+    anchor_dt = (max_time_val or datetime.utcnow()).replace(minute=0, second=0, microsecond=0)
+
+    # 1. 7 días históricos reales de presencia física (168 horas hasta anchor_dt)
+    h_start = anchor_dt - timedelta(hours=167)
+
+    hist_raw = await AttendanceService.get_realtime_presence_curve(
+        session=session,
+        fecha_inicio=h_start.date() - timedelta(days=1),
+        fecha_fin=anchor_dt.date(),
+        espacio_id=1,
+    )
+
+    mapa_hist = {}
+    col_persona = "personas_unicas"
+    if sala == "sala1":
+        col_persona = "personas_sala1"
+    elif sala == "sala2":
+        col_persona = "personas_sala2"
+
+    for r in hist_raw:
+        dt_b = pd.to_datetime(r["bucket"]).tz_localize(None)
+        mapa_hist[dt_b] = float(r.get(col_persona, 0))
+
+    hist_idx = pd.date_range(h_start, anchor_dt, freq="1h")
+    puntos_historicos = []
+    for dt_h in hist_idx:
+        val = mapa_hist.get(dt_h, 0.0)
+        puntos_historicos.append({
+            "ds": dt_h.isoformat(),
+            "actual": val,
+            "yhat": val,
+            "yhat_lower": val,
+            "yhat_upper": val,
+            "es_abierto": int(val > 0),
+        })
+
+    # 2. 7 días proyectados a futuro (168 horas desde anchor_dt + 1h)
+    future_dates = [anchor_dt + timedelta(hours=h) for h in range(1, 169)]
+    df_fut_base = pd.DataFrame({"ds": future_dates})
+
+    cal = await _fetch_calendar(session)
+    horarios_cfg = await _fetch_horarios_info(session, espacio_id=1)
+    contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=1)
+
+    df_fut = _enrich_features(
+        df_fut_base,
+        cal,
+        sala=sala,
+        horarios=horarios_cfg,
+        contingencias=contingencias_cfg,
+        espacio_id=1,
+    )
+    df_fut["cap"] = float(cap_sala)
+    df_fut["floor"] = 0.0
+
+    modelo_key = MODELOS_PRESENCIA.get(sala, MODELOS_PRESENCIA["todas"])
+    m = load_active_model(modelo_key)
+    if not m:
+        try:
+            await train_presence_model(session, modelo_key=modelo_key, sala=sala)
+            m = load_active_model(modelo_key)
+        except Exception as e:
+            logger.error(f"[Prophet Presencia] Error auto-entrenando {modelo_key}: {e}", exc_info=True)
+
+    regressors = REGRESORES_PROPHET
+    cols = ["ds", "cap", "floor"] + [r for r in regressors if r in df_fut.columns]
+
+    if m:
+        pred = m.predict(df_fut[cols])
+        yhat = np.clip(pred["yhat"].values, 0, cap_sala)
+        lower = np.clip(pred["yhat_lower"].values, 0, cap_sala)
+        upper = np.clip(pred["yhat_upper"].values, 0, cap_sala)
+
+        cerrado_mask = df_fut["es_horario_abierto"].values == 0
+        yhat[cerrado_mask] = 0.0
+        lower[cerrado_mask] = 0.0
+        upper[cerrado_mask] = 0.0
+    else:
+        yhat = np.zeros(len(future_dates))
+        lower = np.zeros(len(future_dates))
+        upper = np.zeros(len(future_dates))
+
+    puntos_pronostico = []
+    for idx, row in df_fut.iterrows():
+        puntos_pronostico.append({
+            "ds": row["ds"].isoformat(),
+            "actual": None,
+            "yhat": round(float(yhat[idx]), 1),
+            "yhat_lower": round(float(lower[idx]), 1),
+            "yhat_upper": round(float(upper[idx]), 1),
+            "es_abierto": int(row["es_horario_abierto"]),
+        })
+
+    puntos_totales = puntos_historicos + puntos_pronostico
+    model_date = active_model_date(modelo_key)
+    status_str = "ok" if model_date else "fallback"
+
+    return {
+        "recinto": "biblioteca",
+        "sala": sala,
+        "capacidad_asientos": cap_sala,
+        "horizon_hours": len(puntos_pronostico),
+        "total_timeline_hours": len(puntos_totales),
+        "anchor_timestamp": anchor_dt.isoformat(),
+        "historico_7d": puntos_historicos,
+        "pronostico_7d": puntos_pronostico,
+        "forecast": puntos_totales,
+        "model_status": {
+            "status": status_str,
+            "model_type": "Prophet Logístico Acotado (Presencia Física en Sala)",
+            "model_date": model_date or "Sin calibración",
+        },
+    }
+
 

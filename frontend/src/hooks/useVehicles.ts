@@ -3,6 +3,7 @@ import {
   fetchVehicleKpis,
   fetchParkingOccupancy,
   fetchVehicleHourlyFlow,
+  fetchVehiclePresenceCurve,
   fetchFleetComposition,
   fetchForecastParking,
   fetchCameraStats,
@@ -42,6 +43,16 @@ export function useVehicleHourlyFlow(fechaInicio?: string, fechaFin?: string, fi
   return useQuery({
     queryKey: ['vehicle-hourly-flow', fechaInicio, fechaFin, filters, sector],
     queryFn: ({ signal }) => fetchVehicleHourlyFlow(fechaInicio, fechaFin, filters, sector, signal),
+    ...opcionesConsultaAnalitica(),
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+  })
+}
+
+export function useVehiclePresenceCurve(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, sector?: string) {
+  return useQuery({
+    queryKey: ['vehicle-presence-curve', fechaInicio, fechaFin, filters, sector],
+    queryFn: ({ signal }) => fetchVehiclePresenceCurve(fechaInicio, fechaFin, filters, sector, signal),
     ...opcionesConsultaAnalitica(),
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,

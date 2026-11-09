@@ -19,6 +19,15 @@ interface Props {
     personas_sala2?: number
     ingresos_sala1?: number
     ingresos_sala2?: number
+    vehiculos_csf11?: number
+    vehiculos_csf21?: number
+    vehiculos_chs01?: number
+    entradas_csf11?: number
+    salidas_csf11?: number
+    entradas_csf21?: number
+    salidas_csf21?: number
+    entradas_chs01?: number
+    salidas_chs01?: number
   }[]
   capacidad: number
   title?: string
@@ -42,6 +51,15 @@ function OccupancyAreaChartComponent({
   // Controles independientes para Sala 1 y Sala 2
   const [mostrarSala1, setMostrarSala1] = useState(true)
   const [mostrarSala2, setMostrarSala2] = useState(true)
+
+  // Controles independientes para Sectores de Estacionamiento (CSF11, CSF21, CHS01)
+  const [mostrarCSF11, setMostrarCSF11] = useState(true)
+  const [mostrarCSF21, setMostrarCSF21] = useState(true)
+  const [mostrarCHS01, setMostrarCHS01] = useState(true)
+
+  const capSector1 = 40
+  const capSector2 = 50
+  const capSector3 = 35
 
   // Estados para conmutar las categorías contextuales del calendario institucional y operacional
   const [mostrarFeriados, setMostrarFeriados] = useState(true)
@@ -182,6 +200,11 @@ function OccupancyAreaChartComponent({
   }, [sortedData])
   const esSuperponible = Boolean(!salaLabel && esBiblioteca && hasSalaData)
 
+  const hasSectorData = useMemo(() => {
+    return sortedData.some(d => (d.vehiculos_csf11 ?? 0) > 0 || (d.vehiculos_csf21 ?? 0) > 0 || (d.vehiculos_chs01 ?? 0) > 0)
+  }, [sortedData])
+  const esSuperponibleVehicular = Boolean(!salaLabel && !esBiblioteca && hasSectorData)
+
   const esSuspensionAplicable = (cal?: DiaCalendarioResumen) => {
     if (!cal?.suspension_actividades || cal.is_holiday || cal.is_break || cal.is_strike_federado) return false
     const esps = cal.espacios_suspendidos || []
@@ -259,8 +282,14 @@ function OccupancyAreaChartComponent({
   const yVals: number[] = []
   const yValsSala1: number[] = []
   const yValsSala2: number[] = []
+  const yValsCSF11: number[] = []
+  const yValsCSF21: number[] = []
+  const yValsCHS01: number[] = []
   const customDataListSala1: any[] = []
   const customDataListSala2: any[] = []
+  const customDataListCSF11: any[] = []
+  const customDataListCSF21: any[] = []
+  const customDataListCHS01: any[] = []
   const customDataListCombinado: any[] = []
 
   sortedData.forEach(d => {
@@ -298,6 +327,13 @@ function OccupancyAreaChartComponent({
     yValsSala1.push(valS1)
     yValsSala2.push(valS2)
 
+    const valCSF11 = d.vehiculos_csf11 ?? 0
+    const valCSF21 = d.vehiculos_csf21 ?? 0
+    const valCHS01 = d.vehiculos_chs01 ?? 0
+    yValsCSF11.push(valCSF11)
+    yValsCSF21.push(valCSF21)
+    yValsCHS01.push(valCHS01)
+
     // Contexto del día para hover
     const fechaIso = rawBucket ? String(rawBucket).slice(0, 10) : ''
     const cal = mapaFechas.get(fechaIso)
@@ -333,10 +369,16 @@ function OccupancyAreaChartComponent({
 
     const pctS1 = capSala1 > 0 ? Math.round((valS1 / capSala1) * 100) : 0
     const pctS2 = capSala2 > 0 ? Math.round((valS2 / capSala2) * 100) : 0
+    const pctCSF11 = capSector1 > 0 ? Math.round((valCSF11 / capSector1) * 100) : 0
+    const pctCSF21 = capSector2 > 0 ? Math.round((valCSF21 / capSector2) * 100) : 0
+    const pctCHS01 = capSector3 > 0 ? Math.round((valCHS01 / capSector3) * 100) : 0
     const pctComb = capacidad > 0 ? Math.round((aforo / capacidad) * 100) : 0
 
     customDataListSala1.push([fullDateHeader, pctS1, contextStr])
     customDataListSala2.push([fullDateHeader, pctS2, contextStr])
+    customDataListCSF11.push([fullDateHeader, pctCSF11, contextStr, d.entradas_csf11 ?? 0, d.salidas_csf11 ?? 0])
+    customDataListCSF21.push([fullDateHeader, pctCSF21, contextStr, d.entradas_csf21 ?? 0, d.salidas_csf21 ?? 0])
+    customDataListCHS01.push([fullDateHeader, pctCHS01, contextStr, d.entradas_chs01 ?? 0, d.salidas_chs01 ?? 0])
     customDataListCombinado.push([fullDateHeader, pctComb, contextStr, inCount, d.salidas ?? 0])
   })
 
@@ -613,6 +655,72 @@ function OccupancyAreaChartComponent({
       return traces
     }
 
+    if (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01)) {
+      const traces: Data[] = []
+
+      if (mostrarCSF11) {
+        traces.push({
+          x: xVals,
+          y: yValsCSF11,
+          customdata: customDataListCSF11,
+          type: 'scatter',
+          mode: 'lines',
+          name: `CSF11: Edificio 11 (${capSector1} pl.)`,
+          fill: 'tozeroy',
+          fillcolor: 'rgba(0, 43, 73, 0.12)',
+          line: { color: '#002B49', width: 2.5, shape: 'spline' },
+          hovertemplate:
+            `<b>%{customdata[0]}</b><br>` +
+            `<b>Vehículos presentes (CSF11 — Edificio 11):</b> %{y} vehículos<br>` +
+            `<b>Flujo horario:</b> %{customdata[3]} entradas | %{customdata[4]} salidas<br>` +
+            `Ocupación de sector: <b>%{customdata[1]}%</b> (Capacidad: ${capSector1} plazas)` +
+            `%{customdata[2]}<extra></extra>`,
+        })
+      }
+
+      if (mostrarCSF21) {
+        traces.push({
+          x: xVals,
+          y: yValsCSF21,
+          customdata: customDataListCSF21,
+          type: 'scatter',
+          mode: 'lines',
+          name: `CSF21: Edificio 21 (${capSector2} pl.)`,
+          fill: 'tozeroy',
+          fillcolor: 'rgba(217, 119, 6, 0.14)',
+          line: { color: '#D97706', width: 2.5, shape: 'spline' },
+          hovertemplate:
+            `<b>%{customdata[0]}</b><br>` +
+            `<b>Vehículos presentes (CSF21 — Edificio 21):</b> %{y} vehículos<br>` +
+            `<b>Flujo horario:</b> %{customdata[3]} entradas | %{customdata[4]} salidas<br>` +
+            `Ocupación de sector: <b>%{customdata[1]}%</b> (Capacidad: ${capSector2} plazas)` +
+            `%{customdata[2]}<extra></extra>`,
+        })
+      }
+
+      if (mostrarCHS01) {
+        traces.push({
+          x: xVals,
+          y: yValsCHS01,
+          customdata: customDataListCHS01,
+          type: 'scatter',
+          mode: 'lines',
+          name: `CHS01: Hosp. Simulación (${capSector3} pl.)`,
+          fill: 'tozeroy',
+          fillcolor: 'rgba(13, 148, 136, 0.14)',
+          line: { color: '#0D9488', width: 2.5, shape: 'spline' },
+          hovertemplate:
+            `<b>%{customdata[0]}</b><br>` +
+            `<b>Vehículos presentes (CHS01 — Hospital Simulación):</b> %{y} vehículos<br>` +
+            `<b>Flujo horario:</b> %{customdata[3]} entradas | %{customdata[4]} salidas<br>` +
+            `Ocupación de sector: <b>%{customdata[1]}%</b> (Capacidad: ${capSector3} plazas)` +
+            `%{customdata[2]}<extra></extra>`,
+        })
+      }
+
+      return traces
+    }
+
     const esVeh = unit === 'vehículos'
     return [
       {
@@ -687,6 +795,48 @@ function OccupancyAreaChartComponent({
       return lines
     }
 
+    if (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01)) {
+      const lines: any[] = []
+
+      if (mostrarCSF21) {
+        lines.push({
+          type: 'line' as const,
+          x0: 0,
+          x1: 1,
+          xref: 'paper' as const,
+          y0: capSector2,
+          y1: capSector2,
+          line: { color: '#D97706', width: 1.5, dash: 'dash' },
+        })
+      }
+
+      if (mostrarCSF11) {
+        lines.push({
+          type: 'line' as const,
+          x0: 0,
+          x1: 1,
+          xref: 'paper' as const,
+          y0: capSector1,
+          y1: capSector1,
+          line: { color: '#002B49', width: 1.5, dash: 'dash' },
+        })
+      }
+
+      if (mostrarCHS01) {
+        lines.push({
+          type: 'line' as const,
+          x0: 0,
+          x1: 1,
+          xref: 'paper' as const,
+          y0: capSector3,
+          y1: capSector3,
+          line: { color: '#0D9488', width: 1.5, dash: 'dash' },
+        })
+      }
+
+      return lines
+    }
+
     return [
       {
         type: 'line' as const,
@@ -716,7 +866,7 @@ function OccupancyAreaChartComponent({
         line: { color: '#16A34A', width: 1.2, dash: 'dot' },
       },
     ]
-  }, [esSuperponible, mostrarSala1, mostrarSala2, capSala1, capSala2, capacidad, alerta70, alerta85])
+  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capacidad, alerta70, alerta85])
 
   const annotations = useMemo(() => {
     if (esSuperponible && (mostrarSala1 || mostrarSala2)) {
@@ -742,6 +892,48 @@ function OccupancyAreaChartComponent({
           text: `Máx S1 (${capSala1})`,
           showarrow: false,
           font: { size: 9, color: '#002B49' },
+          xanchor: 'left' as const,
+        })
+      }
+
+      return ann
+    }
+
+    if (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01)) {
+      const ann: any[] = []
+
+      if (mostrarCSF21) {
+        ann.push({
+          xref: 'paper' as const,
+          x: 1.01,
+          y: capSector2,
+          text: `Máx CSF21 (${capSector2})`,
+          showarrow: false,
+          font: { size: 9, color: '#D97706' },
+          xanchor: 'left' as const,
+        })
+      }
+
+      if (mostrarCSF11) {
+        ann.push({
+          xref: 'paper' as const,
+          x: 1.01,
+          y: capSector1,
+          text: `Máx CSF11 (${capSector1})`,
+          showarrow: false,
+          font: { size: 9, color: '#002B49' },
+          xanchor: 'left' as const,
+        })
+      }
+
+      if (mostrarCHS01) {
+        ann.push({
+          xref: 'paper' as const,
+          x: 1.01,
+          y: capSector3,
+          text: `Máx CHS01 (${capSector3})`,
+          showarrow: false,
+          font: { size: 9, color: '#0D9488' },
           xanchor: 'left' as const,
         })
       }
@@ -778,7 +970,7 @@ function OccupancyAreaChartComponent({
         xanchor: 'left' as const,
       },
     ]
-  }, [esSuperponible, mostrarSala1, mostrarSala2, capSala1, capSala2, capacidad, alerta70, alerta85])
+  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capacidad, alerta70, alerta85])
 
   const maxY = useMemo(() => {
     if (esSuperponible && (mostrarSala1 || mostrarSala2)) {
@@ -794,14 +986,33 @@ function OccupancyAreaChartComponent({
       }
       return Math.max(maxCap + 15, maxVal + 10, 60)
     }
+
+    if (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01)) {
+      let maxVal = 0
+      let maxCap = 0
+      if (mostrarCSF11) {
+        maxVal = Math.max(maxVal, ...(yValsCSF11.length > 0 ? yValsCSF11 : [0]))
+        maxCap = Math.max(maxCap, capSector1)
+      }
+      if (mostrarCSF21) {
+        maxVal = Math.max(maxVal, ...(yValsCSF21.length > 0 ? yValsCSF21 : [0]))
+        maxCap = Math.max(maxCap, capSector2)
+      }
+      if (mostrarCHS01) {
+        maxVal = Math.max(maxVal, ...(yValsCHS01.length > 0 ? yValsCHS01 : [0]))
+        maxCap = Math.max(maxCap, capSector3)
+      }
+      return Math.max(maxCap + 15, maxVal + 10, 50)
+    }
+
     const maxVal = yVals.length > 0 ? Math.max(...yVals) : 0
     return Math.max(capacidad + 15, maxVal + 10, 60)
-  }, [esSuperponible, mostrarSala1, mostrarSala2, capSala1, capSala2, capacidad, yValsSala1, yValsSala2, yVals])
+  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capacidad, yValsSala1, yValsSala2, yValsCSF11, yValsCSF21, yValsCHS01, yVals])
 
   const layout: Partial<Layout> = {
     autosize: true,
     hovermode: 'closest',
-    uirevision: `${sortedData.length}_${capacidad}_${mostrarSala1}_${mostrarSala2}_${salaLabel || 'global'}_${contextShapes.length}`,
+    uirevision: `${sortedData.length}_${capacidad}_${mostrarSala1}_${mostrarSala2}_${mostrarCSF11}_${mostrarCSF21}_${mostrarCHS01}_${salaLabel || 'global'}_${contextShapes.length}`,
     margin: { t: 30, r: 75, b: isMultiDay ? 70 : 45, l: 45 },
     xaxis: {
       type: 'category',
@@ -815,7 +1026,7 @@ function OccupancyAreaChartComponent({
     },
     yaxis: {
       rangemode: 'tozero' as const,
-      range: [0, Math.max(maxY, 240)],
+      range: [0, Math.max(maxY, esBiblioteca ? 240 : 130)],
       zeroline: true,
       zerolinecolor: '#cbd5e1',
       zerolinewidth: 1.5,
@@ -827,7 +1038,7 @@ function OccupancyAreaChartComponent({
     },
     shapes: [...contextShapes, ...thresholdShapes],
     annotations,
-    showlegend: Boolean(esSuperponible && (mostrarSala1 || mostrarSala2)),
+    showlegend: Boolean((esSuperponible && (mostrarSala1 || mostrarSala2)) || (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01))),
     legend: {
       orientation: 'h' as const,
       y: 1.12,
@@ -842,7 +1053,7 @@ function OccupancyAreaChartComponent({
       {/* Controles de Capas Contextuales y Selector de Modo de Visualización */}
       <div className="flex flex-wrap items-center justify-between gap-2 p-1.5 px-2 bg-slate-50/90 rounded-xl border border-slate-200/80 text-[11px] shrink-0">
         <div className="flex items-center gap-2">
-          {/* Checkboxes independientes para Sala 1 y Sala 2 */}
+          {/* Checkboxes independientes para Salas (Biblioteca) o Sectores (Estacionamientos) */}
           {esSuperponible ? (
             <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
               <span className="text-[10.5px] font-bold text-slate-700 mr-0.5">Salas:</span>
@@ -867,9 +1078,43 @@ function OccupancyAreaChartComponent({
                 <span>Sala 2 (CSF04 Pecera)</span>
               </label>
             </div>
+          ) : esSuperponibleVehicular ? (
+            <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
+              <span className="text-[10.5px] font-bold text-slate-700 mr-0.5">Sectores:</span>
+              <label className="flex items-center gap-1.5 cursor-pointer font-semibold text-[#002B49] select-none hover:opacity-85">
+                <input
+                  type="checkbox"
+                  checked={mostrarCSF11}
+                  onChange={(e) => setMostrarCSF11(e.target.checked)}
+                  className="rounded text-[#002B49] focus:ring-[#002B49] h-3.5 w-3.5 cursor-pointer"
+                />
+                <span className="inline-block w-2.5 h-2.5 rounded-sm bg-[#002B49]" />
+                <span>CSF11 (40 pl.)</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer font-semibold text-[#D97706] select-none hover:opacity-85 ml-1.5">
+                <input
+                  type="checkbox"
+                  checked={mostrarCSF21}
+                  onChange={(e) => setMostrarCSF21(e.target.checked)}
+                  className="rounded text-[#D97706] focus:ring-[#D97706] h-3.5 w-3.5 cursor-pointer"
+                />
+                <span className="inline-block w-2.5 h-2.5 rounded-sm bg-[#D97706]" />
+                <span>CSF21 (50 pl.)</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer font-semibold text-[#0D9488] select-none hover:opacity-85 ml-1.5">
+                <input
+                  type="checkbox"
+                  checked={mostrarCHS01}
+                  onChange={(e) => setMostrarCHS01(e.target.checked)}
+                  className="rounded text-[#0D9488] focus:ring-[#0D9488] h-3.5 w-3.5 cursor-pointer"
+                />
+                <span className="inline-block w-2.5 h-2.5 rounded-sm bg-[#0D9488]" />
+                <span>CHS01 (35 pl.)</span>
+              </label>
+            </div>
           ) : salaLabel ? (
             <span className="text-[10.5px] font-bold px-2 py-0.5 rounded-md bg-blue-100 text-uct-blue-primary">
-              Filtrado por: {salaLabel} ({capacidad} asientos)
+              Filtrado por: {salaLabel} ({capacidad} {esBiblioteca ? 'asientos' : 'plazas'})
             </span>
           ) : null}
 
@@ -1000,6 +1245,30 @@ function OccupancyAreaChartComponent({
                 <span className="w-3.5 h-1 rounded-xs bg-[#D97706] inline-block" />
                 <span>Sala 2: CSF04 Pecera (1° Piso)</span>
                 <span className="text-slate-500 font-normal">| Capacidad: <b>{capSala2} as.</b></span>
+              </span>
+            )}
+          </div>
+        ) : esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01) ? (
+          <div className="flex flex-wrap items-center gap-4">
+            {mostrarCSF11 && (
+              <span className="flex items-center gap-1.5 font-medium text-slate-800">
+                <span className="w-3.5 h-1 rounded-xs bg-[#002B49] inline-block" />
+                <span>CSF11: Edificio 11</span>
+                <span className="text-slate-500 font-normal">| Capacidad: <b>{capSector1} pl.</b></span>
+              </span>
+            )}
+            {mostrarCSF21 && (
+              <span className="flex items-center gap-1.5 font-medium text-slate-800">
+                <span className="w-3.5 h-1 rounded-xs bg-[#D97706] inline-block" />
+                <span>CSF21: Edificio 21</span>
+                <span className="text-slate-500 font-normal">| Capacidad: <b>{capSector2} pl.</b></span>
+              </span>
+            )}
+            {mostrarCHS01 && (
+              <span className="flex items-center gap-1.5 font-medium text-slate-800">
+                <span className="w-3.5 h-1 rounded-xs bg-[#059669] inline-block" />
+                <span>CHS01: Hosp. Simulación</span>
+                <span className="text-slate-500 font-normal">| Capacidad: <b>{capSector3} pl.</b></span>
               </span>
             )}
           </div>

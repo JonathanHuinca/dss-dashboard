@@ -189,7 +189,7 @@ async def _handler_tarea_prueba() -> Dict[str, Any]:
 # Catálogo oficial de tareas administradas
 CATALOGO_TAREAS: Dict[str, Dict[str, Any]] = {
     "reentrenar_modelos_ml": {
-        "descripcion": "Reentrenamiento diario de modelos Prophet, GBR y KMeans (Campeón vs. Retador)",
+        "descripcion": "Reentrenamiento diario de modelos Prophet y KMeans (Campeón vs. Retador)",
         "cron_trigger": CronTrigger(hour=_hora_ml, minute=_minuto_ml, timezone=ZONA_HORARIA_CHILE),
         "cron_str": f"{_minuto_ml} {_hora_ml} * * * ({_hora_ml:02d}:{_minuto_ml:02d} AM en días hábiles operativos)",
         "handler": _handler_reentrenar_modelos_ml,

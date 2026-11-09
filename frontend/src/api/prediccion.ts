@@ -98,6 +98,9 @@ export const fetchVisitProfiles = (espacioId: number = 1, signal?: AbortSignal) 
 export const fetchForecastAttendance = (sala: string = 'todas', signal?: AbortSignal) =>
   api.get<ForecastResponse>('/predictions/forecast-attendance', { signal, params: { sala } }).then(r => r.data)
 
+export const fetchForecastPresence = (sala: string = 'todas', signal?: AbortSignal) =>
+  api.get<ForecastResponse>('/predictions/forecast-presence', { signal, params: { sala } }).then(r => r.data)
+
 export const fetchForecastParking = (signal?: AbortSignal) =>
   api.get<ForecastResponse>('/predictions/forecast-parking', { signal }).then(r => r.data)
 

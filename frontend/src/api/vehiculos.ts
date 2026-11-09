@@ -272,3 +272,50 @@ export const fetchRawVehicles = (params: {
 
 export const fetchSectoresEstacionamiento = () =>
   api.get<SectorEstacionamiento[]>('/admin/estacionamientos/sectores').then(r => r.data)
+
+export interface VehiclePresenceCurvePoint {
+  bucket: string
+  vehiculos_presentes: number
+  personas_unicas: number
+  entradas: number
+  salidas: number
+  ingresos: number
+  vehiculos_csf11: number
+  vehiculos_csf21: number
+  vehiculos_chs01: number
+  entradas_csf11: number
+  salidas_csf11: number
+  entradas_csf21: number
+  salidas_csf21: number
+  entradas_chs01: number
+  salidas_chs01: number
+  capacidad_total: number
+  capacidad_csf11: number
+  capacidad_csf21: number
+  capacidad_chs01: number
+}
+
+export const fetchVehiclePresenceCurve = (
+  fechaInicio?: string,
+  fechaFin?: string,
+  filters?: DataFilters | string,
+  sector?: string,
+  signal?: AbortSignal,
+) => {
+  const f = parseFilters(filters)
+  const sectorParam = sector && sector !== 'todos' ? sector : f.sector && f.sector !== 'todos' ? f.sector : undefined
+  const tipoVehiculoParam = (f as any).tipo_vehiculo && (f as any).tipo_vehiculo !== 'todos' ? (f as any).tipo_vehiculo : undefined
+  return api.get<VehiclePresenceCurvePoint[]>('/vehicles/realtime-presence-curve', { signal,
+    params: {
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      alcance: f.alcance,
+      regimen_horario: f.regimen_horario,
+      direccion: f.direccion,
+      dias_semana: f.dias_semana,
+      door: f.door,
+      sector: sectorParam,
+      tipo_vehiculo: tipoVehiculoParam,
+    },
+  }).then(r => r.data)
+}

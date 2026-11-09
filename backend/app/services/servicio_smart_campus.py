@@ -8,8 +8,10 @@ Implementa la arquitectura de Doble Pipeline:
    sesiones completas, calculando permanencias reales, imputando salidas no marcadas y actualizando rollups.
 """
 import asyncio
+import json
 import logging
 import statistics
+from decimal import Decimal
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -403,27 +405,164 @@ async def consolidar_dia_cerrado(
     """
     Consolida un día completo cerrado (por defecto ayer D-1).
     Al contar con el 100% de entradas y salidas ocurridas:
-    1. Empareja sesiones peatonales por persona para calcular permanencia_min exacta.
-    2. Imputa salidas a estudiantes que no registraron egreso (fijando hora de cierre de biblioteca).
-    3. Calcula totales y personas únicas para el rollup histórico diario.
+    1. Detecta dinámicamente si el día operó bajo régimen regular o campaña 24 Horas / turno extendido.
+    2. Determina la hora oficial de cierre según horarios_operacion (evitando horas fijas cableadas).
+    3. Si hubo régimen nocturno (cierre_dia_siguiente o 24h), extiende la ventana de búsqueda de salidas
+       hacia la madrugada siguiente (hasta 07:15 AM) para emparejar sesiones transnochadas (cross-midnight).
+    4. Imputa salidas a estudiantes que no registraron egreso usando la hora de cierre contextual
+       (diurna habitual o fin de turno nocturno en 24h).
+    5. Dispone de fallback directo a la base de datos local (eventos_asistencia y eventos_vehiculares)
+       si la API externa Smart Campus no responde o se opera sin conexión institucional.
+    6. Calcula totales, personas/vehículos únicos y mediana de permanencia para el rollup histórico diario.
     """
-    ayer = fecha_objetivo or (datetime.now().date() - timedelta(days=1))
+    from app.services.config_service import get_horarios_operacion
+
+    ayer_raw = fecha_objetivo or (datetime.now().date() - timedelta(days=1))
+    ayer: date = ayer_raw.date() if isinstance(ayer_raw, datetime) else ayer_raw
+    dia_siguiente = ayer + timedelta(days=1)
     adaptador = SmartCampusAdapter()
 
     resumen = {
         "fecha_consolidada": ayer.isoformat(),
+        "regimen_detectado": "regular",
         "sesiones_consolidadas": 0,
+        "sesiones_cruzadas_24h": 0,
         "salidas_imputadas": 0,
+        "hora_cierre_diurno": "20:30",
+        "hora_cierre_nocturno": None,
         "rollup_asistencia": None,
         "rollup_vehicular": None,
         "errores": [],
     }
 
-    # 1. Obtener todos los marcajes del día cerrado desde la API institucional
+    # 0. Inspección de reglas horarias vigentes para ayer (espacio_id_peatonal)
+    dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+    dia_nombre = dias_map[ayer.weekday()]
+
+    def _parse_iso_naive(val: Any) -> Optional[datetime]:
+        if not val:
+            return None
+        if isinstance(val, datetime):
+            return val.replace(tzinfo=None) if val.tzinfo is not None else val
+        try:
+            dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+            return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+        except Exception:
+            return None
+
+    horarios = await get_horarios_operacion(db, espacio_id=espacio_id_peatonal)
+    reglas_rango = [
+        h for h in horarios
+        if h.activo and h.fecha_inicio and h.fecha_fin and (h.fecha_inicio.date() <= ayer <= h.fecha_fin.date())
+    ]
+    reglas_a_evaluar = reglas_rango if reglas_rango else [
+        h for h in horarios if h.activo and (h.tipo_horario == "regular" or not h.fecha_inicio)
+    ]
+    if not reglas_a_evaluar and horarios:
+        reglas_a_evaluar = [h for h in horarios if h.activo]
+
+    tiene_campana_24h = False
+    tiene_cierre_dia_siguiente = False
+    hora_cierre_diurna_str = "20:30"
+    hora_cierre_nocturna_str = "07:00"
+
+    for r in reglas_a_evaluar:
+        if r.es_continuo_24h or getattr(r, "tipo_horario", "") == "extendido_24h":
+            tiene_campana_24h = True
+
+        cfg_dias = None
+        if r.configuracion_dias:
+            if isinstance(r.configuracion_dias, dict):
+                cfg_dias = r.configuracion_dias
+            elif isinstance(r.configuracion_dias, str) and r.configuracion_dias.strip():
+                try:
+                    cfg_dias = json.loads(r.configuracion_dias)
+                except Exception:
+                    cfg_dias = None
+
+        if cfg_dias and isinstance(cfg_dias, dict) and dia_nombre in cfg_dias:
+            d_info = cfg_dias[dia_nombre]
+            if d_info.get("cierre_dia_siguiente"):
+                tiene_cierre_dia_siguiente = True
+                hora_cierre_nocturna_str = d_info.get("cierre", "07:00")
+            elif d_info.get("abierto", True):
+                hora_cierre_diurna_str = d_info.get("cierre", r.hora_cierre or hora_cierre_diurna_str)
+        else:
+            if r.cierre_dia_siguiente:
+                tiene_cierre_dia_siguiente = True
+                hora_cierre_nocturna_str = r.hora_cierre or "07:00"
+            elif r.hora_cierre and not r.es_continuo_24h:
+                hora_cierre_diurna_str = r.hora_cierre
+
+    es_regimen_nocturno = tiene_campana_24h or tiene_cierre_dia_siguiente
+    resumen["regimen_detectado"] = "24h_extendido" if es_regimen_nocturno else "regular"
+    resumen["hora_cierre_diurno"] = hora_cierre_diurna_str
+    if es_regimen_nocturno:
+        resumen["hora_cierre_nocturno"] = hora_cierre_nocturna_str
+
     try:
-        raw_torniquetes = await adaptador.obtener_marcajes_torniquetes(desde=ayer, hasta=ayer)
+        p_d = hora_cierre_diurna_str.split(":")
+        t_cierre_d = time(int(p_d[0]), int(p_d[1]))
+    except Exception:
+        t_cierre_d = time(20, 30)
+    dt_cierre_diurno = datetime.combine(ayer, t_cierre_d)
+
+    try:
+        p_n = hora_cierre_nocturna_str.split(":")
+        t_cierre_n = time(int(p_n[0]), int(p_n[1]))
+    except Exception:
+        t_cierre_n = time(7, 0)
+    dt_cierre_nocturno = datetime.combine(dia_siguiente, t_cierre_n)
+
+    # 1. Obtener marcajes peatonales (con soporte para ventana de madrugada en 24h y fallback local)
+    raw_torniquetes: List[Dict[str, Any]] = []
+    hasta_consulta = dia_siguiente if es_regimen_nocturno else ayer
+
+    try:
+        raw_torniquetes = await adaptador.obtener_marcajes_torniquetes(desde=ayer, hasta=hasta_consulta)
+    except Exception as exc_api:
+        logger.warning(f"[SmartCampus] API externa no respondió para {ayer}: {exc_api}. Activando fallback a base de datos.")
+        resumen["errores"].append(f"Aviso API torniquetes: {str(exc_api)}")
+
+    if not raw_torniquetes:
+        try:
+            t_inicio_ea = datetime.combine(ayer, time(0, 0))
+            t_fin_ea = (dt_cierre_nocturno + timedelta(minutes=15)) if es_regimen_nocturno else datetime.combine(dia_siguiente, time(0, 0))
+            stmt_ea = (
+                select(EventoAsistencia)
+                .where(
+                    EventoAsistencia.espacio_id == espacio_id_peatonal,
+                    EventoAsistencia.time >= t_inicio_ea,
+                    EventoAsistencia.time < t_fin_ea,
+                    EventoAsistencia.alerta_coherencia_fechas == False,
+                    EventoAsistencia.person_id_hash.not_like("TEST_HASH%"),
+                )
+                .order_by(EventoAsistencia.time.asc())
+            )
+            res_ea = await db.execute(stmt_ea)
+            filas_ea = res_ea.scalars().all()
+
+            for ev in filas_ea:
+                sentido_local = "salida" if (ev.door_salida and not ev.door_entrada) else "entrada"
+                raw_torniquetes.append({
+                    "fecha": ev.time.isoformat(),
+                    "id_visitante": ev.person_id_hash,
+                    "sentido": sentido_local,
+                    "puerta": ev.door_entrada or ev.door_salida or "Torniquete",
+                })
+                if ev.ultima_salida and ev.ultima_salida != ev.time:
+                    raw_torniquetes.append({
+                        "fecha": ev.ultima_salida.isoformat(),
+                        "id_visitante": ev.person_id_hash,
+                        "sentido": "salida",
+                        "puerta": ev.door_salida or "Torniquete",
+                    })
+        except Exception as exc_db:
+            logger.error(f"[SmartCampus] Error en fallback local de torniquetes: {exc_db}")
+            resumen["errores"].append(f"BD local torniquetes: {str(exc_db)}")
+
+    try:
         if raw_torniquetes:
-            # Agrupar marcajes por persona
             eventos_por_persona: Dict[str, List[Dict[str, Any]]] = {}
             for r in raw_torniquetes:
                 raw_id = r.get("id_visitante") or r.get("matricula") or ""
@@ -434,39 +573,69 @@ async def consolidar_dia_cerrado(
             total_salidas = 0
             permanencias_lista: List[float] = []
             salidas_imputadas_conteo = 0
-
-            # Hora límite de cierre habitual para imputación
-            hora_cierre_defecto = datetime.combine(ayer, time(20, 30))
+            sesiones_cruzadas_conteo = 0
+            personas_unicas_set: Set[str] = set()
 
             for p_hash, eventos in eventos_por_persona.items():
-                # Ordenar por fecha del evento
-                eventos.sort(key=lambda x: x.get("fecha", ""))
+                eventos.sort(key=lambda x: str(x.get("fecha", "")))
 
-                entradas = [e for e in eventos if any(s in str(e.get("sentido", "")).lower() for s in ["entrada", "in", "ingreso"])]
-                salidas = [e for e in eventos if any(s in str(e.get("sentido", "")).lower() for s in ["salida", "out", "egreso"])]
+                entradas_d1: List[datetime] = []
+                for e in eventos:
+                    sent = str(e.get("sentido", "")).lower()
+                    if any(s in sent for s in ["entrada", "in", "ingreso"]):
+                        dt_in_cand = _parse_iso_naive(e.get("fecha"))
+                        if dt_in_cand and dt_in_cand.date() == ayer:
+                            entradas_d1.append(dt_in_cand)
 
-                total_ingresos += len(entradas)
-                total_salidas += len(salidas)
+                if not entradas_d1:
+                    continue
 
-                if entradas and salidas:
-                    dt_in = datetime.fromisoformat(entradas[0]["fecha"])
-                    dt_out = datetime.fromisoformat(salidas[-1]["fecha"])
+                dt_in = entradas_d1[0]
+                total_ingresos += len(entradas_d1)
+                personas_unicas_set.add(p_hash)
+
+                limite_salida = (
+                    (dt_cierre_nocturno + timedelta(minutes=15))
+                    if es_regimen_nocturno
+                    else (dt_cierre_diurno + timedelta(hours=2))
+                )
+
+                salidas_validas: List[datetime] = []
+                for e in eventos:
+                    sent = str(e.get("sentido", "")).lower()
+                    if any(s in sent for s in ["salida", "out", "egreso"]):
+                        dt_out_cand = _parse_iso_naive(e.get("fecha"))
+                        if dt_out_cand and dt_in < dt_out_cand <= limite_salida:
+                            salidas_validas.append(dt_out_cand)
+
+                total_salidas += len(salidas_validas)
+
+                if salidas_validas:
+                    dt_out = salidas_validas[-1]
                     if dt_out > dt_in:
                         minutos = round((dt_out - dt_in).total_seconds() / 60.0, 2)
                         permanencias_lista.append(minutos)
-                elif entradas and not salidas:
-                    # Persona entró y nunca marcó salida: imputación con hora de cierre
-                    dt_in = datetime.fromisoformat(entradas[0]["fecha"])
-                    dt_out = hora_cierre_defecto
+                        if dt_out.date() > ayer:
+                            sesiones_cruzadas_conteo += 1
+                else:
+                    es_ingreso_tardio = dt_in.time() >= time(21, 0)
+                    if es_regimen_nocturno and es_ingreso_tardio:
+                        dt_out = dt_cierre_nocturno
+                    else:
+                        dt_out = dt_cierre_diurno
+
                     if dt_out > dt_in:
                         minutos = round((dt_out - dt_in).total_seconds() / 60.0, 2)
                         permanencias_lista.append(minutos)
                         salidas_imputadas_conteo += 1
 
-            # Calcular mediana de permanencia
-            mediana_perm = Decimal(round(statistics.median(permanencias_lista), 2)) if permanencias_lista else None
+            mediana_perm = (
+                Decimal(f"{round(float(statistics.median(permanencias_lista)), 2):.2f}")
+                if permanencias_lista
+                else None
+            )
+            personas_unicas = len(personas_unicas_set)
 
-            # Actualizar o insertar en rollup_historico_diario
             stmt_rollup = select(RollupHistoricoDiario).where(
                 RollupHistoricoDiario.fecha == ayer,
                 RollupHistoricoDiario.espacio_id == espacio_id_peatonal,
@@ -474,8 +643,6 @@ async def consolidar_dia_cerrado(
             )
             res_r = await db.execute(stmt_rollup)
             rollup_row = res_r.scalar_one_or_none()
-
-            personas_unicas = len(eventos_por_persona)
 
             if not rollup_row:
                 rollup_row = RollupHistoricoDiario(
@@ -495,7 +662,8 @@ async def consolidar_dia_cerrado(
                 rollup_row.permanencia_mediana_min = mediana_perm
 
             await db.commit()
-            resumen["sesiones_consolidadas"] = len(eventos_por_persona)
+            resumen["sesiones_consolidadas"] = len(permanencias_lista)
+            resumen["sesiones_cruzadas_24h"] = sesiones_cruzadas_conteo
             resumen["salidas_imputadas"] = salidas_imputadas_conteo
             resumen["rollup_asistencia"] = {
                 "ingresos": total_ingresos,
@@ -503,13 +671,45 @@ async def consolidar_dia_cerrado(
                 "personas_unicas": personas_unicas,
                 "mediana_permanencia": float(mediana_perm) if mediana_perm else None,
             }
-    except Exception as exc:
-        logger.error(f"[SmartCampus] Error consolidando día cerrado peatonal: {exc}")
-        resumen["errores"].append(f"Torniquetes cerrado: {str(exc)}")
+    except Exception as exc_p:
+        await db.rollback()
+        logger.error(f"[SmartCampus] Error consolidando día cerrado peatonal: {exc_p}")
+        resumen["errores"].append(f"Torniquetes cerrado: {str(exc_p)}")
 
     # 2. Consolidar Vehicular
     try:
-        raw_vehiculos = await adaptador.obtener_pasos_estacionamientos(desde=ayer, hasta=ayer, solo_completas=True)
+        raw_vehiculos: List[Dict[str, Any]] = []
+        try:
+            raw_vehiculos = await adaptador.obtener_pasos_estacionamientos(desde=ayer, hasta=ayer, solo_completas=True)
+        except Exception as exc_v_api:
+            logger.warning(f"[SmartCampus] API vehicular no respondió para {ayer}: {exc_v_api}. Fallback local.")
+            resumen["errores"].append(f"Aviso API vehicular: {str(exc_v_api)}")
+
+        if not raw_vehiculos:
+            try:
+                t_ini_v = datetime.combine(ayer, time(0, 0))
+                t_fin_v = datetime.combine(dia_siguiente, time(0, 0))
+                stmt_ev = (
+                    select(EventoVehicular)
+                    .where(
+                        EventoVehicular.espacio_id == espacio_id_vehicular,
+                        EventoVehicular.time >= t_ini_v,
+                        EventoVehicular.time < t_fin_v,
+                    )
+                    .order_by(EventoVehicular.time.asc())
+                )
+                res_ev = await db.execute(stmt_ev)
+                filas_ev = res_ev.scalars().all()
+                for v in filas_ev:
+                    raw_vehiculos.append({
+                        "fecha": v.time.isoformat(),
+                        "patente": v.patente_hash,
+                        "sentido": v.direccion,
+                    })
+            except Exception as exc_v_db:
+                logger.error(f"[SmartCampus] Error en fallback local vehicular: {exc_v_db}")
+                resumen["errores"].append(f"BD local vehicular: {str(exc_v_db)}")
+
         if raw_vehiculos:
             v_entradas = 0
             v_salidas = 0
@@ -557,6 +757,7 @@ async def consolidar_dia_cerrado(
                 "vehiculos_unicos": len(patentes_unicas_set),
             }
     except Exception as exc:
+        await db.rollback()
         logger.error(f"[SmartCampus] Error consolidando día cerrado vehicular: {exc}")
         resumen["errores"].append(f"Estacionamientos cerrado: {str(exc)}")
 

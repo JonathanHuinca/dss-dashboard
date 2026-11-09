@@ -27,3 +27,4 @@ def downgrade() -> None:
         SET espacio_id = 1
         WHERE email = 'directivo@uct.cl';
     """)
+

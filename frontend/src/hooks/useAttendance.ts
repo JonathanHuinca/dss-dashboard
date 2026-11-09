@@ -3,8 +3,10 @@ import {
   fetchAttendanceKpis,
   fetchOccupancyRealtime,
   fetchAttendanceHourlyFlow,
+  fetchAttendancePresenceCurve,
   fetchHeatmap,
   fetchForecastAttendance,
+  fetchForecastPresence,
   fetchAlerts,
   fetchPeakValley,
   fetchWeeklyEvolution,
@@ -57,6 +59,16 @@ export function useAttendanceHourlyFlow(fechaInicio?: string, fechaFin?: string,
   })
 }
 
+export function useAttendancePresenceCurve(fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string) {
+  return useQuery({
+    queryKey: ['attendance-presence-curve', fechaInicio, fechaFin, filters],
+    queryFn: ({ signal }) => fetchAttendancePresenceCurve(fechaInicio, fechaFin, filters, signal),
+    ...opcionesConsultaAnalitica(),
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+  })
+}
+
 
 export function useHeatmap(
   fechaInicio?: string,
@@ -78,6 +90,15 @@ export function useForecastAttendance(sala: string = 'todas') {
     queryKey: ['forecast-attendance', sala],
     queryFn: ({ signal }) => fetchForecastAttendance(sala, signal),
     ...opcionesConsultaAnalitica(60 * 60_000),
+  })
+}
+
+export function useForecastPresence(sala: string = 'todas', opts?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ['forecast-presence', sala],
+    queryFn: ({ signal }) => fetchForecastPresence(sala, signal),
+    ...opcionesConsultaAnalitica(60 * 60_000),
+    ...opts,
   })
 }
 

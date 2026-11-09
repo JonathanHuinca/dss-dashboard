@@ -17,10 +17,6 @@ RUTA_SNAPSHOT = Path(__file__).resolve().parents[1] / "seed_snapshot" / "snapsho
 DIRECTORIO_MODELOS = Path("/app/models") if Path("/app/models").exists() else Path(__file__).resolve().parents[1] / "models"
 
 MODELOS_ACTIVOS = [
-    "gbr_demand_biblioteca.joblib",
-    "gbr_demand_biblioteca_metadata.json",
-    "gbr_demand_vehicular.joblib",
-    "gbr_demand_vehicular_metadata.json",
     "kmeans_parking.joblib",
     "kmeans_parking_metadata.json",
     "prophet_biblioteca_active.joblib",

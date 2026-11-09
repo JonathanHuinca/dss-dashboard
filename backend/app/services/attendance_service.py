@@ -619,6 +619,241 @@ class AttendanceService:
             for r in rows
         ]
 
+    @staticmethod
+    async def get_realtime_presence_curve(
+        session: AsyncSession,
+        fecha_inicio: Optional[date],
+        fecha_fin: Optional[date],
+        espacio_id: int = 1,
+        alcance: str = "conformes",
+        regimen_horario: Optional[str] = "todos",
+        direccion: Optional[str] = "todos",
+        dias_semana: Optional[str] = None,
+        door: Optional[str] = None,
+        perfil_visita: Optional[str] = "todos",
+        marcajes: Optional[str] = "todos",
+        sala: Optional[str] = None,
+        carrera: Optional[str] = None,
+        facultad: Optional[str] = None,
+        cohorte: Optional[str] = None,
+        incluir_pausas_bano: bool = True,
+        desduplicar_rafagas: bool = True,
+    ) -> list[dict]:
+        if fecha_inicio is None or fecha_fin is None:
+            sql_max = text("""
+                SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+                FROM aforo_horario_biblioteca WITH (NOEXPAND)
+                WHERE espacio_id = :espacio_id
+            """)
+            max_date = (await session.execute(sql_max, {"espacio_id": espacio_id})).scalar() or date.today()
+            if fecha_fin is None:
+                fecha_fin = max_date
+            if fecha_inicio is None:
+                fecha_inicio = max_date - timedelta(days=6)
+
+        # Para emparejar intervalos [entrada, salida] preservamos ambas direcciones y desduplicamos ráfagas en ventana SQL
+        where_sql, params = await AttendanceService._build_attendance_filters(
+            session=session,
+            espacio_id=espacio_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            alcance="anomalias" if alcance == "anomalias" else "todos",
+            regimen_horario=regimen_horario,
+            direccion="todos",
+            dias_semana=dias_semana,
+            door=door,
+            perfil_visita="todos",
+            marcajes="todos",
+            sala=sala,
+            carrera=carrera,
+            facultad=facultad,
+            cohorte=cohorte,
+            incluir_pausas_bano=incluir_pausas_bano,
+            desduplicar_rafagas=False,
+        )
+
+        if (alcance or "conformes") == "conformes":
+            where_sql = f"{where_sql} AND alerta_coherencia_fechas = 0 AND person_id_hash NOT LIKE '{PREFIJO_HASH_PRUEBA_EXCLUIDO}'"
+
+        filtro_perfil_sesion = ""
+        if perfil_visita and perfil_visita != "todos":
+            p_list = [p.strip() for p in perfil_visita.split(",") if p.strip()]
+            p_clauses = []
+            for p in p_list:
+                if p == "rebote":
+                    p_clauses.append("DATEDIFF(MINUTE, t_entrada, t_salida) < 15")
+                elif p == "estandar":
+                    p_clauses.append("(DATEDIFF(MINUTE, t_entrada, t_salida) >= 15 AND DATEDIFF(MINUTE, t_entrada, t_salida) <= 120)")
+                elif p == "profundo":
+                    p_clauses.append("DATEDIFF(MINUTE, t_entrada, t_salida) > 120")
+            if p_clauses and len(p_clauses) < 3:
+                filtro_perfil_sesion = f"WHERE ({' OR '.join(p_clauses)})"
+
+        sql = text(f"""
+            WITH EventosConContexto AS (
+                SELECT
+                    person_id_hash,
+                    time,
+                    CAST(time AS DATE) AS fecha,
+                    CASE WHEN door_salida IS NOT NULL OR ultima_salida IS NOT NULL OR salida_imputada = 1 THEN 1 ELSE 0 END AS es_salida,
+                    CASE
+                        WHEN door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%' THEN 1
+                        WHEN door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%' THEN 2
+                        ELSE 0
+                    END AS sala_num,
+                    LAG(CASE WHEN door_salida IS NOT NULL OR ultima_salida IS NOT NULL OR salida_imputada = 1 THEN 1 ELSE 0 END)
+                        OVER (PARTITION BY CAST(time AS DATE), person_id_hash ORDER BY time) AS prev_es_salida,
+                    LAG(time)
+                        OVER (PARTITION BY CAST(time AS DATE), person_id_hash ORDER BY time) AS prev_time,
+                    LEAD(CASE WHEN door_salida IS NOT NULL OR ultima_salida IS NOT NULL OR salida_imputada = 1 THEN 1 ELSE 0 END)
+                        OVER (PARTITION BY CAST(time AS DATE), person_id_hash ORDER BY time) AS raw_next_es_salida
+                FROM eventos_asistencia
+                WHERE {where_sql}
+            ),
+            EventosLimpios AS (
+                SELECT
+                    person_id_hash,
+                    time,
+                    fecha,
+                    es_salida,
+                    sala_num,
+                    LEAD(time) OVER (PARTITION BY fecha, person_id_hash ORDER BY time) AS next_time
+                FROM EventosConContexto
+                WHERE (
+                    prev_es_salida IS NULL
+                    OR prev_es_salida <> es_salida
+                    OR DATEDIFF(MINUTE, prev_time, time) > 120
+                )
+                AND NOT (
+                    es_salida = 0
+                    AND COALESCE(prev_es_salida, -1) = 1
+                    AND DATEDIFF(SECOND, COALESCE(prev_time, time), time) <= 60
+                    AND raw_next_es_salida IS NULL
+                )
+            ),
+            SesionesBase AS (
+                SELECT
+                    e.fecha,
+                    e.sala_num,
+                    e.time AS t_entrada,
+                    CASE
+                        WHEN e.next_time IS NOT NULL THEN e.next_time
+                        ELSE DATEADD(MINUTE, 90, e.time)
+                    END AS t_salida
+                FROM EventosLimpios e
+                WHERE e.es_salida = 0
+            ),
+            Sesiones AS (
+                SELECT fecha, sala_num, t_entrada, t_salida
+                FROM SesionesBase
+                {filtro_perfil_sesion}
+            ),
+            SesionesAgrupadas AS (
+                SELECT
+                    fecha,
+                    sala_num,
+                    CASE
+                        WHEN DATEPART(minute, t_entrada) = 0 AND DATEPART(second, t_entrada) = 0
+                        THEN DATEPART(hour, t_entrada)
+                        ELSE DATEPART(hour, t_entrada) + 1
+                    END AS h_in_ini,
+                    DATEPART(hour, t_salida) AS h_out_ini,
+                    DATEPART(hour, t_entrada) AS h_in_fin,
+                    CASE
+                        WHEN DATEPART(minute, t_salida) = 59
+                        THEN DATEPART(hour, t_salida)
+                        ELSE DATEPART(hour, t_salida) - 1
+                    END AS h_out_fin,
+                    COUNT(*) AS cant
+                FROM Sesiones
+                GROUP BY
+                    fecha,
+                    sala_num,
+                    CASE
+                        WHEN DATEPART(minute, t_entrada) = 0 AND DATEPART(second, t_entrada) = 0
+                        THEN DATEPART(hour, t_entrada)
+                        ELSE DATEPART(hour, t_entrada) + 1
+                    END,
+                    DATEPART(hour, t_salida),
+                    DATEPART(hour, t_entrada),
+                    CASE
+                        WHEN DATEPART(minute, t_salida) = 59
+                        THEN DATEPART(hour, t_salida)
+                        ELSE DATEPART(hour, t_salida) - 1
+                    END
+            ),
+            ConteoPorHora AS (
+                SELECT
+                    DATEADD(hour, h.hora, CAST(g.fecha AS DATETIME)) AS bucket,
+                    g.fecha,
+                    SUM(CASE WHEN h.hora BETWEEN g.h_in_ini AND g.h_out_ini THEN g.cant ELSE 0 END) AS c_inicio,
+                    SUM(CASE WHEN h.hora BETWEEN g.h_in_ini AND g.h_out_ini AND g.sala_num = 1 THEN g.cant ELSE 0 END) AS s1_inicio,
+                    SUM(CASE WHEN h.hora BETWEEN g.h_in_ini AND g.h_out_ini AND g.sala_num = 2 THEN g.cant ELSE 0 END) AS s2_inicio,
+                    SUM(CASE WHEN h.hora BETWEEN g.h_in_fin AND g.h_out_fin THEN g.cant ELSE 0 END) AS c_fin,
+                    SUM(CASE WHEN h.hora BETWEEN g.h_in_fin AND g.h_out_fin AND g.sala_num = 1 THEN g.cant ELSE 0 END) AS s1_fin,
+                    SUM(CASE WHEN h.hora BETWEEN g.h_in_fin AND g.h_out_fin AND g.sala_num = 2 THEN g.cant ELSE 0 END) AS s2_fin
+                FROM SesionesAgrupadas g
+                JOIN (
+                    VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),
+                           (12),(13),(14),(15),(16),(17),(18),(19),(20),(21),(22),(23)
+                ) AS h(hora)
+                  ON h.hora BETWEEN g.h_in_fin AND g.h_out_ini
+                GROUP BY DATEADD(hour, h.hora, CAST(g.fecha AS DATETIME)), g.fecha
+            ),
+            FlujoBruto AS (
+                SELECT
+                    DATEADD(hour, DATEDIFF(hour, 0, time), 0) AS bucket,
+                    CAST(time AS DATE) AS fecha,
+                    SUM(CASE WHEN door_salida IS NULL AND ultima_salida IS NULL AND COALESCE(salida_imputada, 0) = 0 THEN 1 ELSE 0 END) AS ingresos,
+                    SUM(CASE WHEN door_salida IS NOT NULL OR ultima_salida IS NOT NULL OR salida_imputada = 1 THEN 1 ELSE 0 END) AS salidas,
+                    SUM(CASE WHEN (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%') AND (door_salida IS NULL AND ultima_salida IS NULL AND COALESCE(salida_imputada, 0) = 0) THEN 1 ELSE 0 END) AS ingresos_sala1,
+                    SUM(CASE WHEN (door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%') AND (door_salida IS NULL AND ultima_salida IS NULL AND COALESCE(salida_imputada, 0) = 0) THEN 1 ELSE 0 END) AS ingresos_sala2
+                FROM eventos_asistencia
+                WHERE {where_sql}
+                GROUP BY DATEADD(hour, DATEDIFF(hour, 0, time), 0), CAST(time AS DATE)
+            ),
+            LimitesDia AS (
+                SELECT fecha, MAX(bucket) AS max_bucket_dia
+                FROM FlujoBruto
+                GROUP BY fecha
+            )
+            SELECT
+                COALESCE(f.bucket, c.bucket) AS bucket,
+                COALESCE(f.ingresos, 0) AS ingresos,
+                COALESCE(f.salidas, 0) AS salidas,
+                COALESCE(CASE WHEN c.c_inicio > 0 THEN c.c_inicio ELSE c.c_fin END, 0) AS personas_unicas,
+                COALESCE(CASE WHEN c.c_inicio > 0 THEN c.s1_inicio ELSE c.s1_fin END, 0) AS personas_sala1,
+                COALESCE(CASE WHEN c.c_inicio > 0 THEN c.s2_inicio ELSE c.s2_fin END, 0) AS personas_sala2,
+                COALESCE(f.ingresos_sala1, 0) AS ingresos_sala1,
+                COALESCE(f.ingresos_sala2, 0) AS ingresos_sala2
+            FROM FlujoBruto f
+            FULL OUTER JOIN ConteoPorHora c ON c.bucket = f.bucket
+            JOIN LimitesDia l ON l.fecha = COALESCE(f.fecha, c.fecha)
+            WHERE COALESCE(f.bucket, c.bucket) <= l.max_bucket_dia
+              AND (
+                  COALESCE(f.ingresos, 0) > 0
+                  OR COALESCE(f.salidas, 0) > 0
+                  OR COALESCE(CASE WHEN c.c_inicio > 0 THEN c.c_inicio ELSE c.c_fin END, 0) > 0
+              )
+            ORDER BY bucket ASC
+        """)
+
+        rows = (await session.execute(sql, params)).fetchall()
+
+        return [
+            {
+                "bucket":          r.bucket.isoformat(),
+                "ingresos":        int(r.ingresos or 0),
+                "salidas":         int(r.salidas or 0),
+                "personas_unicas": int(r.personas_unicas or 0),
+                "personas_sala1":  int(r.personas_sala1 or 0),
+                "personas_sala2":  int(r.personas_sala2 or 0),
+                "ingresos_sala1":  int(r.ingresos_sala1 or 0),
+                "ingresos_sala2":  int(r.ingresos_sala2 or 0),
+            }
+            for r in rows
+        ]
+
 
     # ------------------------------------------------------------------
     # Heatmap semanal

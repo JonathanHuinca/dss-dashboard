@@ -3,7 +3,7 @@ from typing import Dict, Any
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.config_service import get_espacios_activos_capacidades
-from app.ml.prophet_service import predict_continuous, predict_next_7_days
+from app.ml.prophet_service import predict_continuous, predict_next_7_days, predict_presence_continuous
 from app.ml.train_gbr_demand import predict_next_14_days
 from app.services.attendance_service import AttendanceService
 
@@ -28,6 +28,27 @@ async def get_prophet_forecast(db: AsyncSession, recinto: str, sala: str = "toda
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al procesar el modelo predictivo"
+        )
+
+async def get_prophet_presence_forecast(db: AsyncSession, sala: str = "todas") -> Dict[str, Any]:
+    try:
+        resultado = await predict_presence_continuous(db, sala=sala)
+        model_status = resultado.get("model_status", {})
+        if model_status.get("status") == "unavailable":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=model_status.get("message", "Modelo de presencia no disponible"),
+                headers={"X-Model-Status": "unavailable"},
+            )
+        return resultado
+    except HTTPException as e:
+        logger.error(f"HTTPException en get_prophet_presence_forecast (sala={sala}): {e.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"Error getting prophet presence forecast (sala={sala}): {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al procesar el modelo predictivo de presencia"
         )
 
 async def get_gbr_forecast_14days(db: AsyncSession, espacio_id: int) -> Dict[str, Any]:

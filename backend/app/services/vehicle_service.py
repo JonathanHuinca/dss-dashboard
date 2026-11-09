@@ -706,6 +706,215 @@ class VehicleService:
         ]
 
     # ------------------------------------------------------------------
+    # Curva de Presencia Vehicular por Intervalos de Sesión (Multi-Sector)
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def get_realtime_presence_curve(
+        session: AsyncSession,
+        fecha_inicio: Optional[date],
+        fecha_fin: Optional[date],
+        espacio_id: int = 2,
+        alcance: str = "conformes",
+        regimen_horario: Optional[str] = "todos",
+        direccion: Optional[str] = "todos",
+        dias_semana: Optional[str] = None,
+        door: Optional[str] = None,
+        sector: Optional[str] = None,
+        tipo_vehiculo: Optional[str] = None,
+    ) -> list[dict]:
+        if fecha_inicio is None or fecha_fin is None:
+            sql_max = text("""
+                SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+                FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+                WHERE espacio_id = :espacio_id
+            """)
+            max_date = (await session.execute(sql_max, {"espacio_id": espacio_id})).scalar() or date.today()
+            if fecha_fin is None:
+                fecha_fin = max_date
+            if fecha_inicio is None:
+                fecha_inicio = max_date - timedelta(days=6)
+
+        where_sql, params = await VehicleService._build_vehicle_filters(
+            session=session,
+            espacio_id=espacio_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            alcance=alcance,
+            regimen_horario=regimen_horario,
+            direccion="todos",
+            dias_semana=dias_semana,
+            door=door,
+            sector=sector,
+            tipo_vehiculo=tipo_vehiculo,
+        )
+
+        capacidad_total = 125
+        if sector and sector != "todos":
+            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
+            sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
+            try:
+                sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
+                cap_sec = (await session.execute(sql_sec_cap)).scalar()
+                if cap_sec and cap_sec > 0:
+                    capacidad_total = int(cap_sec)
+            except Exception:
+                pass
+
+        sql = text(f"""
+            WITH FechasDistintas AS (
+                SELECT DISTINCT CAST(time AS DATE) AS fecha
+                FROM eventos_vehiculares
+                WHERE {where_sql}
+            ),
+            HorasExpansion AS (
+                SELECT
+                    d.fecha,
+                    v.hora,
+                    DATEADD(hour, v.hora, CAST(d.fecha AS DATETIME2)) AS bucket_start,
+                    DATEADD(minute, 59, DATEADD(second, 59, DATEADD(hour, v.hora, CAST(d.fecha AS DATETIME2)))) AS bucket_end
+                FROM FechasDistintas d
+                CROSS JOIN (
+                    VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(14),(15),(16),(17),(18),(19),(20),(21),(22),(23)
+                ) v(hora)
+            ),
+            EventosConContexto AS (
+                SELECT
+                    patente_hash,
+                    time,
+                    CAST(time AS DATE) AS fecha,
+                    CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END AS es_salida,
+                    CASE
+                        WHEN camara LIKE '%CSF11%' THEN 1
+                        WHEN camara LIKE '%CSF21%' THEN 2
+                        WHEN camara LIKE '%CHS01%' THEN 3
+                        ELSE 0
+                    END AS sector_num,
+                    LAG(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END)
+                        OVER (PARTITION BY CAST(time AS DATE), patente_hash ORDER BY time) AS prev_es_salida,
+                    LAG(time)
+                        OVER (PARTITION BY CAST(time AS DATE), patente_hash ORDER BY time) AS prev_time,
+                    LEAD(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END)
+                        OVER (PARTITION BY CAST(time AS DATE), patente_hash ORDER BY time) AS raw_next_es_salida
+                FROM eventos_vehiculares
+                WHERE {where_sql}
+                  AND patente_hash != 'unknown'
+            ),
+            EventosLimpios AS (
+                SELECT
+                    patente_hash,
+                    time,
+                    fecha,
+                    es_salida,
+                    sector_num,
+                    LEAD(time) OVER (PARTITION BY fecha, patente_hash ORDER BY time) AS next_time
+                FROM EventosConContexto
+                WHERE (
+                    prev_es_salida IS NULL
+                    OR prev_es_salida <> es_salida
+                    OR DATEDIFF(MINUTE, prev_time, time) > 15
+                )
+                AND NOT (
+                    es_salida = 0
+                    AND COALESCE(prev_es_salida, -1) = 1
+                    AND DATEDIFF(SECOND, COALESCE(prev_time, time), time) <= 60
+                    AND raw_next_es_salida IS NULL
+                )
+            ),
+            SesionesBase AS (
+                SELECT
+                    e.patente_hash,
+                    e.fecha,
+                    e.sector_num,
+                    e.time AS t_entrada,
+                    CASE
+                        WHEN e.next_time IS NOT NULL THEN e.next_time
+                        ELSE DATEADD(MINUTE, 120, e.time)
+                    END AS t_salida
+                FROM EventosLimpios e
+                WHERE e.es_salida = 0
+            ),
+            SesionesAgrupadas AS (
+                SELECT fecha, sector_num, t_entrada, t_salida, patente_hash
+                FROM SesionesBase
+            ),
+            PresenciaCalculada AS (
+                SELECT
+                    h.fecha,
+                    h.hora,
+                    h.bucket_start,
+                    COUNT(DISTINCT s.patente_hash) AS vehiculos_presentes,
+                    COUNT(DISTINCT CASE WHEN s.sector_num = 1 THEN s.patente_hash END) AS vehiculos_csf11,
+                    COUNT(DISTINCT CASE WHEN s.sector_num = 2 THEN s.patente_hash END) AS vehiculos_csf21,
+                    COUNT(DISTINCT CASE WHEN s.sector_num = 3 THEN s.patente_hash END) AS vehiculos_chs01
+                FROM HorasExpansion h
+                LEFT JOIN SesionesAgrupadas s
+                    ON s.fecha = h.fecha
+                   AND s.t_entrada <= h.bucket_end
+                   AND s.t_salida >= h.bucket_start
+                GROUP BY h.fecha, h.hora, h.bucket_start
+            ),
+            FlujosPorHora AS (
+                SELECT
+                    CAST(time AS DATE) AS fecha,
+                    DATEPART(HOUR, time) AS hora,
+                    SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END) AS entradas,
+                    SUM(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END) AS salidas,
+                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS entradas_csf11,
+                    SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS salidas_csf11,
+                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS entradas_csf21,
+                    SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS salidas_csf21,
+                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS entradas_chs01,
+                    SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS salidas_chs01
+                FROM eventos_vehiculares
+                WHERE {where_sql}
+                GROUP BY CAST(time AS DATE), DATEPART(HOUR, time)
+            )
+            SELECT
+                p.bucket_start,
+                p.vehiculos_presentes,
+                p.vehiculos_csf11,
+                p.vehiculos_csf21,
+                p.vehiculos_chs01,
+                COALESCE(f.entradas, 0) AS entradas,
+                COALESCE(f.salidas, 0) AS salidas,
+                COALESCE(f.entradas_csf11, 0) AS entradas_csf11,
+                COALESCE(f.salidas_csf11, 0) AS salidas_csf11,
+                COALESCE(f.entradas_csf21, 0) AS entradas_csf21,
+                COALESCE(f.salidas_csf21, 0) AS salidas_csf21,
+                COALESCE(f.entradas_chs01, 0) AS entradas_chs01,
+                COALESCE(f.salidas_chs01, 0) AS salidas_chs01
+            FROM PresenciaCalculada p
+            LEFT JOIN FlujosPorHora f ON f.fecha = p.fecha AND f.hora = p.hora
+            ORDER BY p.bucket_start ASC
+        """)
+        rows = (await session.execute(sql, params)).fetchall()
+
+        return [
+            {
+                "bucket":              r.bucket_start.isoformat(),
+                "vehiculos_presentes": min(capacidad_total, max(0, int(r.vehiculos_presentes or 0))),
+                "personas_unicas":     min(capacidad_total, max(0, int(r.vehiculos_presentes or 0))),
+                "entradas":            int(r.entradas or 0),
+                "salidas":             int(r.salidas or 0),
+                "ingresos":            int(r.entradas or 0),
+                "vehiculos_csf11":     min(40, max(0, int(r.vehiculos_csf11 or 0))),
+                "vehiculos_csf21":     min(50, max(0, int(r.vehiculos_csf21 or 0))),
+                "vehiculos_chs01":     min(35, max(0, int(r.vehiculos_chs01 or 0))),
+                "entradas_csf11":      int(r.entradas_csf11 or 0),
+                "salidas_csf11":       int(r.salidas_csf11 or 0),
+                "entradas_csf21":      int(r.entradas_csf21 or 0),
+                "salidas_csf21":       int(r.salidas_csf21 or 0),
+                "entradas_chs01":      int(r.entradas_chs01 or 0),
+                "salidas_chs01":       int(r.salidas_chs01 or 0),
+                "capacidad_total":     capacidad_total,
+                "capacidad_csf11":     40,
+                "capacidad_csf21":     50,
+                "capacidad_chs01":     35,
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
     # Composición de flota (donut chart)
     # ------------------------------------------------------------------
     @staticmethod

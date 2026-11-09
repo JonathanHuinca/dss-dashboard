@@ -283,6 +283,29 @@ export const fetchAttendanceHourlyFlow = (fechaInicio?: string, fechaFin?: strin
   }).then(r => r.data)
 }
 
+export const fetchAttendancePresenceCurve = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, signal?: AbortSignal) => {
+  const f = parseFilters(filters)
+  return api.get<HourlyFlowPoint[]>('/attendance/realtime-presence-curve', { signal,
+    params: {
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      alcance: f.alcance,
+      regimen_horario: f.regimen_horario,
+      direccion: f.direccion,
+      dias_semana: f.dias_semana,
+      door: f.door,
+      perfil_visita: f.perfil_visita,
+      marcajes: f.marcajes,
+      sala: f.sala,
+      carrera: f.carrera,
+      facultad: f.facultad,
+      cohorte: f.cohorte,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+    },
+  }).then(r => r.data)
+}
+
 export const fetchHeatmap = (
   fechaInicio?: string,
   fechaFin?: string,

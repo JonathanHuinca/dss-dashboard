@@ -204,6 +204,7 @@ export const TareasProgramadasSection: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin-tareas-resumen'] })
       queryClient.invalidateQueries({ queryKey: ['admin-modelos-estado'] })
       queryClient.invalidateQueries({ queryKey: ['forecast-attendance'] })
+      queryClient.invalidateQueries({ queryKey: ['forecast-presence'] })
       queryClient.invalidateQueries({ queryKey: ['forecast-parking'] })
       queryClient.invalidateQueries({ queryKey: ['forecast-14days'] })
       setTimeout(() => setMensajeModelos(null), 8000)
@@ -286,7 +287,7 @@ export const TareasProgramadasSection: React.FC = () => {
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-800">
-                Modelos Predictivos (Prophet 14 Días, GBR Demanda y K-Means)
+                Modelos Predictivos (Prophet Presencia Física, GBR Demanda y K-Means)
               </h3>
               <p className="text-[11px] text-slate-500">
                 Actualización automática diaria a las 06:00 AM (solo en días operativos de cada módulo según horario y calendario académico) o ejecución manual bajo demanda.

@@ -141,6 +141,51 @@ async def get_hourly_flow(
     )
 
 
+@router.get("/realtime-presence-curve", summary="Curva de presencia física en sala por intervalos de sesión")
+@cachear_respuesta(ttl_segundos=TTL_KPIS_DIA, categoria="kpis")
+async def get_realtime_presence_curve(
+    response:            Response,
+    fecha_inicio:        Optional[date] = Query(None, description="YYYY-MM-DD"),
+    fecha_fin:           Optional[date] = Query(None, description="YYYY-MM-DD"),
+    espacio_id:          int            = Query(1),
+    alcance:             Optional[str]  = Query("conformes", description="conformes | todos | anomalias"),
+    regimen_horario:     Optional[str]  = Query("todos", description="todos | dentro_horario | fuera_horario"),
+    direccion:           Optional[str]  = Query("todos", description="todos | solo_ingreso | solo_salida"),
+    dias_semana:         Optional[str]  = Query(None, description="lunes,martes..."),
+    door:                Optional[str]  = Query(None),
+    perfil_visita:       Optional[str]  = Query("todos", description="todos | rebote | estandar | profundo"),
+    marcajes:            Optional[str]  = Query("todos", description="todos | 1 | 2 | 3-4 | 5+"),
+    sala:                Optional[str]  = Query(None, description="sala_1 | sala_2 | todas"),
+    carrera:             Optional[str]  = Query(None),
+    facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
+    incluir_pausas_bano: bool           = Query(True, description="Incluir pausas de baño (3-15 min) en conformes"),
+    desduplicar_rafagas: bool           = Query(True, description="Desduplicar ráfagas mecánicas de sensor < 1 min"),
+    current_user:        Usuario        = Depends(get_current_user),
+    db:                  AsyncSession   = Depends(get_db),
+):
+    validar_acceso_espacio(espacio_id, current_user)
+    return await AttendanceService.get_realtime_presence_curve(
+        session=db,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        espacio_id=espacio_id,
+        alcance=alcance or "conformes",
+        regimen_horario=regimen_horario or "todos",
+        direccion=direccion or "todos",
+        dias_semana=dias_semana,
+        door=door,
+        perfil_visita=perfil_visita or "todos",
+        marcajes=marcajes or "todos",
+        sala=sala,
+        carrera=carrera,
+        facultad=facultad,
+        cohorte=cohorte,
+        incluir_pausas_bano=incluir_pausas_bano,
+        desduplicar_rafagas=desduplicar_rafagas,
+    )
+
+
 @router.get("/heatmap", summary="Matriz de ocupación: día semana × hora")
 @cachear_respuesta(ttl_segundos=TTL_HISTORICOS, categoria="historicos")
 async def get_heatmap(
