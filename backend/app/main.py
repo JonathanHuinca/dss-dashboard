@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.core.config import settings
+from app.core.config import settings, contexto_url_frontend
 from app.core.database import AsyncSessionLocal
 from app.core.security import ip_whitelist_middleware, get_current_user
 from app.core.startup_seed import run_startup_seed
@@ -24,15 +24,16 @@ logger = logging.getLogger("uvicorn.error")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY.strip():
-        logger.critical("Error crítico: GEMINI_API_KEY no está configurada o se encuentra vacía en las variables de entorno.")
-        raise RuntimeError("Error crítico de configuración: GEMINI_API_KEY no está configurada o se encuentra vacía en las variables de entorno.")
+        logger.warning("Aviso: GEMINI_API_KEY no está configurada en el entorno; el asistente de IA operará en modo limitado.")
 
-    # Aprovisionamiento idempotente de uct_dashboard y login uct_app
-    try:
-        from scripts.inicializar_base_datos import inicializar_base_y_permisos
-        inicializar_base_y_permisos()
-    except Exception as exc_init:
-        logger.warning(f"[startup] Inicialización de base de datos omitida o previa: {exc_init}")
+    # Aprovisionamiento idempotente de uct_dashboard y login uct_app (si no se ejecuto ya en entrypoint.sh)
+    import os
+    if os.environ.get("UCT_ENTRYPOINT_INIT") != "1":
+        try:
+            from scripts.inicializar_base_datos import inicializar_base_y_permisos
+            inicializar_base_y_permisos()
+        except Exception as exc_init:
+            logger.warning(f"[startup] Inicialización de base de datos omitida o previa: {exc_init}")
 
     await run_startup_seed()
 
@@ -49,8 +50,22 @@ async def lifespan(app: FastAPI):
 
     try:
         import asyncio
-        from app.core.cache import precalentar_cache_modulos
-        asyncio.create_task(precalentar_cache_modulos())
+        import sys
+        from app.core.cache import precalentar_cache_modulos, limpiar_toda_la_cache
+
+        async def _restaurar_hechos_y_precalentar():
+            try:
+                await asyncio.sleep(5)
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "scripts.sincronizar_snapshot_local", "--restaurar-hechos"
+                )
+                await proc.wait()
+                await limpiar_toda_la_cache()
+            except Exception as exc_snap:
+                logger.warning(f"[startup] Carga en segundo plano de hechos con aviso: {exc_snap}")
+            await precalentar_cache_modulos()
+
+        asyncio.create_task(_restaurar_hechos_y_precalentar())
     except Exception as exc_cache:
         logger.warning(f"[startup] No se pudo iniciar precalentamiento de caché: {exc_cache}")
 
@@ -96,6 +111,42 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+URL_DEV_UCT_HTTPS = "https://indicadoreshikcentral.dev.uct.cl"
+URL_DEV_UCT_HTTP = "http://indicadoreshikcentral.dev.uct.cl"
+
+
+@app.middleware("http")
+async def sincronizar_url_frontend_middleware(request: Request, call_next):
+    from urllib.parse import urlparse
+    base_detectada = None
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+
+    if origin and origin.startswith(("http://", "https://")):
+        base_detectada = origin.rstrip("/")
+    elif referer and referer.startswith(("http://", "https://")):
+        parsed = urlparse(referer)
+        if parsed.scheme and parsed.netloc:
+            base_detectada = f"{parsed.scheme}://{parsed.netloc}"
+    elif host and not host.startswith(("api:", "indicadoreshikcentral-api-dev", "127.0.0.1:8000", "localhost:8000")):
+        esquema = "https" if "uct.cl" in host else proto
+        base_detectada = f"{esquema}://{host}".rstrip("/")
+
+    if base_detectada:
+        if "indicadoreshikcentral.dev.uct.cl" in base_detectada:
+            base_detectada = URL_DEV_UCT_HTTPS
+        settings.FRONTEND_URL = base_detectada
+        token_ctx = contexto_url_frontend.set(base_detectada)
+        try:
+            return await call_next(request)
+        finally:
+            contexto_url_frontend.reset(token_ctx)
+
+    return await call_next(request)
+
+
 app.middleware("http")(ip_whitelist_middleware)
 
 # ---------------------------------------------------------------------------
@@ -108,9 +159,18 @@ CORS_ORIGINS = [
     "http://127.0.0.1:5174",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    URL_DEV_UCT_HTTP,
+    URL_DEV_UCT_HTTPS,
 ]
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in CORS_ORIGINS:
+    CORS_ORIGINS.append(settings.FRONTEND_URL)
 if settings.is_production:
-    CORS_ORIGINS = ["https://dashboard.uct.cl", settings.FRONTEND_URL]
+    CORS_ORIGINS = [
+        "https://dashboard.uct.cl",
+        URL_DEV_UCT_HTTP,
+        URL_DEV_UCT_HTTPS,
+        settings.FRONTEND_URL,
+    ]
 
 app.add_middleware(
     CORSMiddleware,

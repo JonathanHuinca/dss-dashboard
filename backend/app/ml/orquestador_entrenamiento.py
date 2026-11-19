@@ -8,7 +8,7 @@ import logging
 import os
 import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,31 +32,31 @@ DIRECTORIO_MODELOS.mkdir(parents=True, exist_ok=True)
 # Catálogo oficial de modelos predictivos y analíticos
 MODELOS_CATALOGO = [
     {
-        "clave": "prophet_biblioteca_sala1",
+        "clave": "prophet_presencia_sala1",
         "familia": "Prophet",
         "recinto": "biblioteca",
         "sala": "sala1",
-        "archivo_activo": "prophet_biblioteca_sala1_active.joblib",
-        "wape_referencia": 18.5,
-        "mae_referencia": 3.8,
+        "archivo_activo": "prophet_presencia_sala1_active.joblib",
+        "wape_referencia": 16.5,
+        "mae_referencia": 3.2,
     },
     {
-        "clave": "prophet_biblioteca_sala2",
+        "clave": "prophet_presencia_sala2",
         "familia": "Prophet",
         "recinto": "biblioteca",
         "sala": "sala2",
-        "archivo_activo": "prophet_biblioteca_sala2_active.joblib",
-        "wape_referencia": 19.2,
-        "mae_referencia": 4.1,
+        "archivo_activo": "prophet_presencia_sala2_active.joblib",
+        "wape_referencia": 17.0,
+        "mae_referencia": 3.5,
     },
     {
-        "clave": "prophet_biblioteca_todas",
+        "clave": "prophet_presencia_todas",
         "familia": "Prophet",
         "recinto": "biblioteca",
         "sala": "todas",
-        "archivo_activo": "prophet_biblioteca_todas_active.joblib",
-        "wape_referencia": 16.8,
-        "mae_referencia": 6.5,
+        "archivo_activo": "prophet_presencia_todas_active.joblib",
+        "wape_referencia": 15.5,
+        "mae_referencia": 5.0,
     },
     {
         "clave": "prophet_vehicular",
@@ -66,24 +66,6 @@ MODELOS_CATALOGO = [
         "archivo_activo": "prophet_vehicular_active.joblib",
         "wape_referencia": 17.4,
         "mae_referencia": 5.2,
-    },
-    {
-        "clave": "gbr_demand_biblioteca",
-        "familia": "HistGradientBoosting",
-        "recinto": "biblioteca",
-        "espacio_id": 1,
-        "archivo_activo": "gbr_demand_biblioteca.joblib",
-        "wape_referencia": 15.0,
-        "mae_referencia": 18.0,
-    },
-    {
-        "clave": "gbr_demand_vehicular",
-        "familia": "HistGradientBoosting",
-        "recinto": "vehicular",
-        "espacio_id": 2,
-        "archivo_activo": "gbr_demand_vehicular.joblib",
-        "wape_referencia": 14.5,
-        "mae_referencia": 12.0,
     },
     {
         "clave": "kmeans_parking",
@@ -171,7 +153,8 @@ def _evaluar_campeon_existente(
 
         if familia == "Prophet":
             regressors = [r for r in getattr(obj, "extra_regressors", {}).keys() if r in test_features.columns]
-            cols = ["ds"] + regressors
+            growth_mode = getattr(obj, "growth", "linear")
+            cols = ["ds"] + (["cap", "floor"] if growth_mode == "logistic" and "cap" in test_features.columns else []) + regressors
             forecast = obj.predict(test_features[cols])
             y_pred = forecast["yhat"].values
             if cap_val is not None:
@@ -216,11 +199,12 @@ async def _entrenar_retador_prophet(
         _fetch_calendar,
         _fetch_hourly_data,
         _fetch_capacidades,
+        _fetch_horarios_info,
+        _fetch_contingencias_info,
+        aplicar_mascara_anomalias_entrenamiento,
     )
 
-    df = await _fetch_hourly_data(session, recinto=recinto, sala=sala)
-    if len(df) < MIN_ROWS_REQUIRED:
-        raise ValueError(f"Datos insuficientes para '{clave_modelo}': {len(df)} filas encontradas (requiere >= {MIN_ROWS_REQUIRED}).")
+    es_presencia = "presencia" in clave_modelo
 
     cal = await _fetch_calendar(session)
     capacidades = await _fetch_capacidades(session)
@@ -228,7 +212,67 @@ async def _entrenar_retador_prophet(
     if recinto == "vehicular":
         cap_val = float(capacidades.get("vehicular", 150))
 
-    df = _enrich_features(df, cal, sala=sala)
+    if es_presencia:
+        from app.services.attendance_service import AttendanceService
+        res_t = await session.execute(text("""
+            SELECT MIN(time), MAX(time) 
+            FROM eventos_asistencia 
+            WHERE espacio_id = 1 
+              AND alerta_coherencia_fechas = 0 
+              AND person_id_hash NOT LIKE 'TEST_HASH%'
+        """))
+        min_t, max_t = res_t.fetchone()
+        if not max_t:
+            raise ValueError(f"Sin eventos de asistencia para entrenar '{clave_modelo}'.")
+
+        anchor_dt = max_t.replace(minute=0, second=0, microsecond=0)
+        f_fin = anchor_dt.date()
+        f_ini = max(min_t.date(), f_fin - timedelta(days=90))
+
+        raw_hist = await AttendanceService.get_realtime_presence_curve(
+            session=session,
+            fecha_inicio=f_ini,
+            fecha_fin=f_fin,
+            espacio_id=1,
+        )
+        if not raw_hist:
+            raise ValueError(f"Datos de presencia insuficientes para '{clave_modelo}'.")
+
+        df_raw = pd.DataFrame(raw_hist)
+        df_raw["ds"] = pd.to_datetime(df_raw["bucket"]).dt.tz_localize(None)
+
+        col_y = "personas_unicas"
+        if sala == "sala1":
+            col_y = "personas_sala1"
+        elif sala == "sala2":
+            col_y = "personas_sala2"
+
+        df_series = pd.DataFrame({
+            "ds": df_raw["ds"],
+            "y": pd.to_numeric(df_raw[col_y], errors="coerce").fillna(0.0),
+        })
+
+        full_idx = pd.date_range(df_series["ds"].min(), df_series["ds"].max(), freq="1h")
+        df = df_series.set_index("ds").reindex(full_idx, fill_value=0.0).reset_index()
+        df.columns = ["ds", "y"]
+        df["y"] = pd.to_numeric(df["y"], errors="coerce").fillna(0.0).clip(lower=0.0)
+
+        horarios_cfg = await _fetch_horarios_info(session, espacio_id=1)
+        contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=1)
+        df = _enrich_features(
+            df,
+            cal,
+            sala=sala,
+            horarios=horarios_cfg,
+            contingencias=contingencias_cfg,
+            espacio_id=1,
+        )
+    else:
+        df = await _fetch_hourly_data(session, recinto=recinto, sala=sala)
+        if len(df) < MIN_ROWS_REQUIRED:
+            raise ValueError(f"Datos insuficientes para '{clave_modelo}': {len(df)} filas encontradas (requiere >= {MIN_ROWS_REQUIRED}).")
+        df = _enrich_features(df, cal, sala=sala)
+
     df["cap"] = cap_val
     df["floor"] = 0.0
 
@@ -236,16 +280,22 @@ async def _entrenar_retador_prophet(
     train_df = df.iloc[:split_idx].copy()
     test_df = df.iloc[split_idx:].copy()
 
-    regressors = REGRESORES_PROPHET
-    model = _build_prophet()
+    regressors = [r for r in REGRESORES_PROPHET if r in df.columns]
+    train_df_fit = aplicar_mascara_anomalias_entrenamiento(train_df)
+
+    growth_mode = "logistic" if es_presencia else "linear"
+    model = _build_prophet(growth=growth_mode)
+
+    fit_cols = ["ds", "y"] + (["cap", "floor"] if growth_mode == "logistic" else []) + regressors
 
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model.fit(train_df[["ds", "y"] + regressors])
+        model.fit(train_df_fit[fit_cols])
 
     # Evaluación sobre la ventana de validación
-    test_features = test_df[["ds"] + regressors].copy()
+    test_cols = ["ds"] + (["cap", "floor"] if growth_mode == "logistic" else []) + regressors
+    test_features = test_df[test_cols].copy()
     forecast_test = model.predict(test_features)
 
     y_true = test_df["y"].values
@@ -785,10 +835,14 @@ async def entrenar_todos_los_modelos(
                         "version": ts,
                     })
                 else:
-                    # Retador no superó al campeón actual: se descarta
+                    # Retador no superó al campeón actual: se descarta y se registra la auditoría del campeón
                     logger.warning(
                         f"[orquestador] Retador descartado para {clave}: WAPE={wape_retador}% no superó al campeón ({desc_benchmark})."
                     )
+                    meta_campeon_existente = _leer_metadatos_campeon(clave, config_m)
+                    meta_campeon_existente["ultima_auditoria_en"] = datetime.utcnow().isoformat()
+                    meta_campeon_existente["ultimo_resultado_auditoria"] = f"Campeón validado (WAPE={wape_benchmark}% vs retador {wape_retador}%)"
+                    _guardar_metadatos_campeon(clave, meta_campeon_existente)
                     resultados.append({
                         "modelo": clave,
                         "familia": config_m["familia"],

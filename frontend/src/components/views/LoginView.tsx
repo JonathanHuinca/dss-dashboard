@@ -10,8 +10,6 @@ import {
   KeyRound,
   X,
   CheckCircle2,
-  Copy,
-  ExternalLink,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { api, forgotPassword, ForgotPasswordResponse } from '../../api/client'
@@ -30,7 +28,6 @@ export function LoginView() {
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotLoading, setForgotLoading] = useState(false)
   const [forgotResult, setForgotResult] = useState<ForgotPasswordResponse | null>(null)
-  const [copiedLink, setCopiedLink] = useState(false)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -48,9 +45,17 @@ export function LoginView() {
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status?: number; data?: { detail?: string } } }
       const status = axiosErr.response?.status
-      const message =
-        axiosErr.response?.data?.detail || 'Credenciales inválidas. Por favor intente nuevamente.'
-      setError(message)
+      if (status && status >= 500) {
+        setError(
+          `El servidor de autenticación se está iniciando o no responde temporalmente (HTTP ${status}). Reintente en unos segundos.`
+        )
+      } else if (!status) {
+        setError('No se pudo conectar con el servidor de autenticación. Verifique su conexión.')
+      } else {
+        const message =
+          axiosErr.response?.data?.detail || 'Credenciales inválidas. Por favor intente nuevamente.'
+        setError(message)
+      }
       if (status === 423) {
         setIsBlocked(true)
       }
@@ -78,16 +83,9 @@ export function LoginView() {
     }
   }
 
-  const handleCopyLink = (enlace: string) => {
-    const fullUrl = `${window.location.origin}${enlace}`
-    navigator.clipboard.writeText(fullUrl)
-    setCopiedLink(true)
-    setTimeout(() => setCopiedLink(false), 3000)
-  }
-
   const demoEnv = (import.meta as any).env ?? {}
-  const demoAdminPass: string = demoEnv.VITE_DEMO_ADMIN_PASSWORD ?? ''
-  const demoUserPass: string = demoEnv.VITE_DEMO_USER_PASSWORD ?? ''
+  const demoAdminPass: string = demoEnv.VITE_DEMO_ADMIN_PASSWORD || 'AdminUCT2026!'
+  const demoUserPass: string = demoEnv.VITE_DEMO_USER_PASSWORD || 'UCTdemo2026!'
 
   const setPresetUser = (roleEmail: string, rolePass: string) => {
     setEmail(roleEmail)
@@ -338,54 +336,18 @@ export function LoginView() {
                 </form>
               ) : (
                 <div className="space-y-4">
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-2.5 text-xs text-emerald-900">
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3 text-xs text-emerald-900">
                     <CheckCircle2 size={18} className="text-emerald-600 shrink-0 mt-0.5" />
                     <div className="space-y-1">
-                      <p className="font-semibold">Solicitud Procesada</p>
+                      <p className="font-semibold text-emerald-950">Solicitud Procesada</p>
                       <p className="text-[11.5px] leading-relaxed text-emerald-800">
                         {forgotResult.mensaje}
                       </p>
+                      <p className="text-[11px] text-emerald-700 pt-1">
+                        Por motivos de seguridad institucional (OWASP ASVS), las instrucciones solo se enviarán si la cuenta se encuentra activa en el sistema. Revise su bandeja de entrada.
+                      </p>
                     </div>
                   </div>
-
-                  {forgotResult.enlace_recuperacion && (
-                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                      <div className="flex items-center justify-between text-[11px] font-semibold text-slate-700">
-                        <span>Enlace de Recuperación Directo:</span>
-                        {forgotResult.expira_en && (
-                          <span className="text-[10px] text-amber-700 font-normal">
-                            Válido por 15 min
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          readOnly
-                          value={`${window.location.origin}${forgotResult.enlace_recuperacion}`}
-                          className="w-full text-xs font-mono bg-white border border-slate-200 rounded px-2 py-1.5 text-slate-600 truncate select-all"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleCopyLink(forgotResult.enlace_recuperacion!)}
-                          className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-xs font-semibold flex items-center gap-1 shrink-0 transition cursor-pointer"
-                        >
-                          <Copy size={12} />
-                          <span>{copiedLink ? 'Copiado' : 'Copiar'}</span>
-                        </button>
-                      </div>
-
-                      <div className="pt-1">
-                        <a
-                          href={forgotResult.enlace_recuperacion}
-                          className="inline-flex items-center gap-1.5 text-xs font-bold text-[#002B49] hover:underline"
-                        >
-                          <span>Ir directamente a restablecer contraseña</span>
-                          <ExternalLink size={12} />
-                        </a>
-                      </div>
-                    </div>
-                  )}
 
                   <div className="flex items-center justify-end pt-2">
                     <button

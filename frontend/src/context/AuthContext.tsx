@@ -104,6 +104,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCanUseAi(false)
     setCanExport(false)
     setCanIngest(false)
+    setCurrentEspacioId(1)
   }
 
   const processToken = (jwtToken: string | null) => {
@@ -135,6 +136,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCanUseAi(Boolean(decoded.can_use_ai))
     setCanExport(Boolean(decoded.can_export))
     setCanIngest(Boolean(decoded.can_ingest))
+
+    if (decoded.espacio_id) {
+      setCurrentEspacioId(decoded.espacio_id)
+    } else if (!datasets.includes('biblioteca') && datasets.includes('estacionamiento')) {
+      setCurrentEspacioId(2)
+    } else {
+      setCurrentEspacioId(1)
+    }
 
     // Configurar temporizador exacto para el instante de expiración del token
     if (decoded.exp) {
@@ -195,16 +204,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const loginWithCredentials = async (email: string, password: string): Promise<boolean> => {
-    try {
-      const res = await api.post('/auth/login', { email, password })
-      if (res.data?.access_token) {
-        login(res.data.access_token)
-        return true
-      }
-      return false
-    } catch {
-      return false
+    const res = await api.post('/auth/login', { email: email.trim(), password })
+    if (res.data?.access_token) {
+      login(res.data.access_token)
+      return true
     }
+    return false
   }
 
   const isAuthenticated = Boolean(token && userRole)

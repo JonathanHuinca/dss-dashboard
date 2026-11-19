@@ -126,6 +126,14 @@ async def _handler_reentrenar_modelos_ml(disparador: str = "manual") -> Dict[str
             except Exception:
                 pass
 
+    # Invalidar caché de predicciones y analítica para reflejar inmediatamente los modelos y pronósticos actualizados
+    try:
+        from app.core.cache import limpiar_toda_la_cache
+        await limpiar_toda_la_cache()
+        logger.info("[planificador] Caché global invalidada exitosamente tras reentrenamiento matutino.")
+    except Exception as e_cache:
+        logger.warning(f"[planificador] Error invalidando caché tras reentrenamiento: {e_cache}")
+
     return {
         "resultado": "entrenamiento_completado",
         "salida_resumen": stdout_str[-800:] if len(stdout_str) > 800 else stdout_str,
@@ -181,7 +189,7 @@ async def _handler_tarea_prueba() -> Dict[str, Any]:
 # Catálogo oficial de tareas administradas
 CATALOGO_TAREAS: Dict[str, Dict[str, Any]] = {
     "reentrenar_modelos_ml": {
-        "descripcion": "Reentrenamiento diario de modelos Prophet, GBR y KMeans (Campeón vs. Retador)",
+        "descripcion": "Reentrenamiento diario de modelos Prophet y KMeans (Campeón vs. Retador)",
         "cron_trigger": CronTrigger(hour=_hora_ml, minute=_minuto_ml, timezone=ZONA_HORARIA_CHILE),
         "cron_str": f"{_minuto_ml} {_hora_ml} * * * ({_hora_ml:02d}:{_minuto_ml:02d} AM en días hábiles operativos)",
         "handler": _handler_reentrenar_modelos_ml,

@@ -1,7 +1,7 @@
-import { memo, useState } from 'react'
+import { memo, useState, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { VisitProfilesDonutResponse } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data  } from 'plotly.js-dist-min'
 import { Info, AlertCircle, CheckCircle2, Clock } from 'lucide-react'
 
 interface Props {
@@ -12,73 +12,51 @@ interface Props {
 export const VisitProfilesPlotlyChart = memo(function VisitProfilesPlotlyChart({ data, height = 340 }: Props) {
   const [rebanadaSeleccionada, setRebanadaSeleccionada] = useState<string | null>(null)
 
-  if (!data || !data.items || data.items.length === 0 || (data.total_visitas_analizadas === 0 && (data.total_eventos ?? 0) === 0)) {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-slate-400 space-y-2">
-        <Clock className="w-8 h-8 text-slate-300 animate-pulse" />
-        <p className="text-xs font-medium">Sin registros físicos de torniquetes para el período seleccionado</p>
-      </div>
-    )
-  }
+  const items = useMemo(() => data?.items || [], [data?.items])
+  const totalAnalizadas = data?.total_visitas_analizadas || 0
+  const totalEventos = data?.total_eventos ?? 0
+  const tasaRebote = data?.tasa_rebote_pct ?? 0
 
-  if (data.total_visitas_analizadas === 0 && (data.total_eventos ?? 0) > 0) {
-    return (
-      <div className="space-y-3 p-4 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900">
-        <div className="flex items-center gap-2 font-bold text-amber-800">
-          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-          <span>Datos Asimétricos Omitidos — Sin Ciclos Completos de Entrada y Salida</span>
-        </div>
-        <p className="text-[11px] text-amber-800/90 leading-relaxed">
-          Se identificaron <b>{data.total_eventos.toLocaleString('es-CL')} eventos físicos</b> en el período ({data.entradas_sin_salida.toLocaleString('es-CL')} entradas sin salida y {data.salidas_sin_entrada.toLocaleString('es-CL')} salidas sin entrada), pero ninguno completó un ciclo cerrado consecutivo para calcular la permanencia en minutos.
-        </p>
-        <div className="flex items-center gap-3 pt-1 text-[10.5px] font-semibold">
-          <span className="px-2 py-0.5 bg-amber-200/60 rounded">Total Bruto: {data.total_eventos.toLocaleString('es-CL')}</span>
-          <span className="px-2 py-0.5 bg-amber-200/60 rounded">Asimétricos: {data.total_no_analizados.toLocaleString('es-CL')}</span>
-        </div>
-      </div>
-    )
-  }
+  const { labels, baseColors } = useMemo(() => ({
+    labels: items.map(d => d.perfil),
+    baseColors: items.map(d => d.color || '#003865'),
+  }), [items])
 
-  const items = data.items
-  const totalAnalizadas = data.total_visitas_analizadas || 1
-  const tasaRebote = data.tasa_rebote_pct ?? 0
-
-  const labels = items.map(d => d.perfil)
-  const pullArray = labels.map(l => (l === rebanadaSeleccionada ? 0.14 : 0))
-  const baseColors = items.map(d => d.color || '#003865')
-
-  // Configuración del Donut Plotly con colores normativos UCT
-  const chartData: Data[] = [
-    {
-      labels,
-      values: items.map(d => d.total),
-      type: 'pie',
-      hole: 0.58,
-      sort: false,
-      pull: pullArray,
-      marker: {
-        colors: rebanadaSeleccionada
-          ? labels.map((l, idx) => (l === rebanadaSeleccionada ? baseColors[idx] : '#E2E8F0'))
-          : baseColors,
-        line: {
-          color: rebanadaSeleccionada
-            ? labels.map(l => (l === rebanadaSeleccionada ? '#002B49' : '#FFFFFF'))
-            : '#FFFFFF',
-          width: rebanadaSeleccionada ? labels.map(l => (l === rebanadaSeleccionada ? 2.5 : 1)) : 2.5,
+  // Configuración del Donut Plotly con colores normativos UCT memoizada
+  const chartData = useMemo<Data[]>(() => {
+    const pullArray = labels.map(l => (l === rebanadaSeleccionada ? 0.14 : 0))
+    return [
+      {
+        labels,
+        values: items.map(d => d.total),
+        type: 'pie',
+        hole: 0.58,
+        sort: false,
+        pull: pullArray,
+        marker: {
+          colors: rebanadaSeleccionada
+            ? labels.map((l, idx) => (l === rebanadaSeleccionada ? baseColors[idx] : '#E2E8F0'))
+            : baseColors,
+          line: {
+            color: rebanadaSeleccionada
+              ? labels.map(l => (l === rebanadaSeleccionada ? '#002B49' : '#FFFFFF'))
+              : '#FFFFFF',
+            width: rebanadaSeleccionada ? labels.map(l => (l === rebanadaSeleccionada ? 2.5 : 1)) : 2.5,
+          },
         },
+        textinfo: 'percent',
+        textposition: 'inside',
+        insidetextfont: { color: '#FFFFFF', size: 12, family: 'Inter, sans-serif' },
+        hovertemplate:
+          '<b>%{label}</b><br>' +
+          'Visitas: <b>%{value:,}</b><br>' +
+          'Proporción: <b>%{percent}</b><br>' +
+          '<extra></extra>',
       },
-      textinfo: 'percent',
-      textposition: 'inside',
-      insidetextfont: { color: '#FFFFFF', size: 12, family: 'Inter, sans-serif' },
-      hovertemplate:
-        '<b>%{label}</b><br>' +
-        'Visitas: <b>%{value:,}</b><br>' +
-        'Proporción: <b>%{percent}</b><br>' +
-        '<extra></extra>',
-    },
-  ]
+    ]
+  }, [items, labels, baseColors, rebanadaSeleccionada])
 
-  const layout = {
+  const layout = useMemo(() => ({
     showlegend: true,
     legend: {
       orientation: 'h' as const,
@@ -106,6 +84,34 @@ export const VisitProfilesPlotlyChart = memo(function VisitProfilesPlotlyChart({
         y: 0.44,
       },
     ],
+  }), [tasaRebote])
+
+  // Early returns ubicados estrictamente después de todos los hooks de React
+  if (!data || items.length === 0 || (totalAnalizadas === 0 && totalEventos === 0)) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-slate-400 space-y-2">
+        <Clock className="w-8 h-8 text-slate-300 animate-pulse" />
+        <p className="text-xs font-medium">Sin registros físicos de torniquetes para el período seleccionado</p>
+      </div>
+    )
+  }
+
+  if (totalAnalizadas === 0 && totalEventos > 0) {
+    return (
+      <div className="space-y-3 p-4 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-900">
+        <div className="flex items-center gap-2 font-bold text-amber-800">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>Datos Asimétricos Omitidos — Sin Ciclos Completos de Entrada y Salida</span>
+        </div>
+        <p className="text-[11px] text-amber-800/90 leading-relaxed">
+          Se identificaron <b>{totalEventos.toLocaleString('es-CL')} eventos físicos</b> en el período ({(data.entradas_sin_salida ?? 0).toLocaleString('es-CL')} entradas sin salida y {(data.salidas_sin_entrada ?? 0).toLocaleString('es-CL')} salidas sin entrada), pero ninguno completó un ciclo cerrado consecutivo para calcular la permanencia en minutos.
+        </p>
+        <div className="flex items-center gap-3 pt-1 text-[10.5px] font-semibold">
+          <span className="px-2 py-0.5 bg-amber-200/60 rounded">Total Bruto: {totalEventos.toLocaleString('es-CL')}</span>
+          <span className="px-2 py-0.5 bg-amber-200/60 rounded">Asimétricos: {(data.total_no_analizados ?? 0).toLocaleString('es-CL')}</span>
+        </div>
+      </div>
+    )
   }
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {

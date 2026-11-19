@@ -21,6 +21,10 @@ import {
   Mail,
   Calendar,
   KeyRound,
+  Link2,
+  Search,
+  Building2,
+  CheckCircle2,
 } from 'lucide-react'
 import {
   DataFilters,
@@ -28,6 +32,7 @@ import {
   DestinatarioReporteInfo,
   NotaItemReporte,
   CatalogoItemReporte,
+  UsuarioCandidatoConsultor,
   fetchReportesCompartidos,
   crearReporteCompartido,
   actualizarReporteCompartido,
@@ -35,6 +40,8 @@ import {
   actualizarEstadoDestinatario,
   eliminarDestinatarioReporte,
   registrarConsultorReporte,
+  fetchUsuariosCandidatosConsultor,
+  vincularUsuarioExistenteConsultor,
 } from '../../api/client'
 
 interface CompartirReporteModalProps {
@@ -55,8 +62,8 @@ const CATALOGO_POR_DEFECTO: Record<
 > = {
   1: {
     graficos: [
-      { id: 'aforo_curva', titulo: 'Curva de Aforo Concurrente vs Capacidad' },
-      { id: 'prophet_diario', titulo: 'Pronóstico Continuo Prophet (7 Días)' },
+      { id: 'aforo_presencia_intervalos', titulo: 'Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima' },
+      { id: 'prophet_presencia_14dias', titulo: 'Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado)' },
       { id: 'flujo_horario', titulo: 'Flujo Horario de Ingresos y Salidas' },
       { id: 'mapa_calor', titulo: 'Mapa de Calor (Día de Semana x Hora)' },
       { id: 'comparativa_salas', titulo: 'Comparativa Sala 1 vs Sala 2 (Pecera)' },
@@ -68,7 +75,7 @@ const CATALOGO_POR_DEFECTO: Record<
       { id: 'hitos_academicos', titulo: 'Comparativa por Hito del Calendario Académico' },
       { id: 'distribucion_curricular', titulo: 'Distribución por Carrera y Facultad (Ley 21.719)' },
       { id: 'perfiles_visita', titulo: 'Perfiles de Estadía y Permanencia (Donut)' },
-      { id: 'campana_24_horas', titulo: '8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno' },
+      { id: 'campana_24_horas', titulo: 'Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno' },
     ],
     indicadores: [
       { id: 'dias_operativos', titulo: 'Días Operativos' },
@@ -84,10 +91,9 @@ const CATALOGO_POR_DEFECTO: Record<
   },
   2: {
     graficos: [
-      { id: 'aforo_vehicular_curva', titulo: 'Curva de Concurrencia vs Capacidad Vehicular' },
+      { id: 'presencia_vehicular_intervalos', titulo: 'Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad' },
       { id: 'prophet_vehicular', titulo: 'Pronóstico Continuo Prophet Vehicular' },
       { id: 'flujo_horario_vehicular', titulo: 'Flujo Horario de Ingresos y Salidas Vehiculares' },
-      { id: 'evolucion_diaria_vehicular', titulo: 'Serie Temporal de Accesos Diarios' },
       { id: 'composicion_flota', titulo: 'Composición por Tipo de Vehículo' },
       { id: 'distribucion_marcas', titulo: 'Distribución por Marca de Vehículo' },
       { id: 'estadisticas_camaras', titulo: 'Distribución por Pórtico y Cámara ANPR' },
@@ -185,15 +191,27 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
   const [destinatarios, setDestinatarios] = useState<DestinatarioReporteInfo[]>([])
   const [catalogos, setCatalogos] = useState(CATALOGO_POR_DEFECTO)
 
-  // Selección o alta de usuario Consultor_Reporte en Pestaña 1
-  const [modoConsultor, setModoConsultor] = useState<'seleccionar' | 'nuevo'>('seleccionar')
+  // Selección, vinculación o alta de usuario Consultor_Reporte en Pestaña 1
+  const [modoConsultor, setModoConsultor] = useState<'seleccionar' | 'vincular_existente' | 'nuevo'>('seleccionar')
   const [consultorSeleccionadoId, setConsultorSeleccionadoId] = useState<string>('')
   const [destinatarioNombre, setDestinatarioNombre] = useState('')
   const [destinatarioEmail, setDestinatarioEmail] = useState('')
   const [destinatarioCargo, setDestinatarioCargo] = useState('')
   const [destinatarioUnidad, setDestinatarioUnidad] = useState('')
 
-  // Formulario independiente para alta de nuevo Consultor_Reporte en Pestaña 2
+  // Gestión de usuarios institucionales candidatos del campus
+  const [usuariosCandidatos, setUsuariosCandidatos] = useState<UsuarioCandidatoConsultor[]>([])
+  const [candidatoSeleccionadoId, setCandidatoSeleccionadoId] = useState<string>('')
+  const [candidatoFiltroTexto, setCandidatoFiltroTexto] = useState<string>('')
+  const [vinculandoCandidato, setVinculandoCandidato] = useState<boolean>(false)
+
+  // Subpestaña en Pestaña 2 (Consultores): 'vincular' o 'nuevo'
+  const [subpestanaConsultor, setSubpestanaConsultor] = useState<'vincular' | 'nuevo'>('vincular')
+  const [vincularP2UsuarioId, setVincularP2UsuarioId] = useState<string>('')
+  const [vincularP2Cargo, setVincularP2Cargo] = useState<string>('')
+  const [vincularP2Unidad, setVincularP2Unidad] = useState<string>('')
+
+  // Formulario independiente para alta de nuevo Consultor_Reporte externo en Pestaña 2
   const [nuevoConsultorNombre, setNuevoConsultorNombre] = useState('')
   const [nuevoConsultorEmail, setNuevoConsultorEmail] = useState('')
   const [nuevoConsultorCargo, setNuevoConsultorCargo] = useState('')
@@ -202,7 +220,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
   // Datos del reporte basados en los filtros actuales de la vista
   const [tituloReporte, setTituloReporte] = useState('')
   const [finalidadReporte, setFinalidadReporte] = useState('')
-  const [modoDatos, setModoDatos] = useState<'dinamico_acotado' | 'instantanea_fija'>('dinamico_acotado')
+  const [modoDatos] = useState<'instantanea_fija'>('instantanea_fija')
   const [tipoVigencia, setTipoVigencia] = useState<'indefinido' | '7d' | '30d' | 'semestre' | 'custom'>('30d')
   const [fechaExpiracionCustom, setFechaExpiracionCustom] = useState('')
 
@@ -385,16 +403,24 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
     setCargando(true)
     setErrorMsg(null)
     try {
-      const resp = await fetchReportesCompartidos()
+      const [resp, candidatos] = await Promise.all([
+        fetchReportesCompartidos(),
+        fetchUsuariosCandidatosConsultor().catch(() => []),
+      ])
       setReportesEmitidos(resp.reportes || [])
       const listaDest: DestinatarioReporteInfo[] = resp.destinatarios || []
       setDestinatarios(listaDest)
+      setUsuariosCandidatos(candidatos || [])
 
       const idBusqueda = idPreferido !== undefined ? idPreferido : consultorSeleccionadoId
       const encontrado = listaDest.find((d) => String(d.id) === String(idBusqueda))
 
       if (listaDest.length === 0) {
-        limpiarCamposConsultor()
+        if (candidatos && candidatos.length > 0) {
+          seleccionarCandidatoParaReporte(candidatos[0])
+        } else {
+          limpiarCamposConsultor()
+        }
       } else if (encontrado) {
         seleccionarConsultorExistente(encontrado)
       } else if (listaDest[0]) {
@@ -423,6 +449,15 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
     setModoConsultor('seleccionar')
   }
 
+  const seleccionarCandidatoParaReporte = (cand: UsuarioCandidatoConsultor) => {
+    setCandidatoSeleccionadoId(String(cand.id))
+    setDestinatarioNombre(cand.nombre_completo)
+    setDestinatarioEmail(cand.email)
+    setDestinatarioCargo(cand.cargo_sugerido)
+    setDestinatarioUnidad(cand.unidad_sugerida)
+    setModoConsultor('vincular_existente')
+  }
+
   const limpiarCamposConsultor = () => {
     setConsultorSeleccionadoId('')
     setDestinatarioNombre('')
@@ -430,6 +465,67 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
     setDestinatarioCargo('')
     setDestinatarioUnidad('')
     setModoConsultor('nuevo')
+  }
+
+  const handleVincularCandidatoDirecto = async () => {
+    if (!candidatoSeleccionadoId) {
+      setErrorMsg('Seleccione un usuario institucional del campus.')
+      return
+    }
+    const cand = usuariosCandidatos.find((u) => String(u.id) === String(candidatoSeleccionadoId))
+    if (!cand) return
+
+    setVinculandoCandidato(true)
+    setErrorMsg(null)
+    setExitoMsg(null)
+    try {
+      const resp = await vincularUsuarioExistenteConsultor({
+        usuario_id: cand.id,
+        cargo: destinatarioCargo.trim() || cand.cargo_sugerido,
+        unidad_academica: destinatarioUnidad.trim() || cand.unidad_sugerida,
+      })
+      setExitoMsg(
+        `Usuario institucional ${resp.nombre_completo} (${resp.email}) vinculado al rol Consultor de Reportes con éxito. Mantendrá su contraseña actual.`
+      )
+      await cargarListado(String(resp.id))
+      setModoConsultor('seleccionar')
+    } catch (err: any) {
+      setErrorMsg(err?.response?.data?.detail || 'No se pudo vincular el usuario al rol consultor.')
+    } finally {
+      setVinculandoCandidato(false)
+    }
+  }
+
+  const handleVincularEnPestana2 = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!vincularP2UsuarioId) {
+      setErrorMsg('Seleccione un usuario institucional para vincular.')
+      return
+    }
+    const cand = usuariosCandidatos.find((u) => String(u.id) === String(vincularP2UsuarioId))
+    if (!cand) return
+
+    setGuardando(true)
+    setErrorMsg(null)
+    setExitoMsg(null)
+    try {
+      const resp = await vincularUsuarioExistenteConsultor({
+        usuario_id: cand.id,
+        cargo: vincularP2Cargo.trim() || cand.cargo_sugerido,
+        unidad_academica: vincularP2Unidad.trim() || cand.unidad_sugerida,
+      })
+      setExitoMsg(
+        `Usuario ${resp.nombre_completo} (${resp.email}) vinculado al rol Consultor_Reporte con éxito. Sus credenciales actuales se preservan intactas.`
+      )
+      setVincularP2UsuarioId('')
+      setVincularP2Cargo('')
+      setVincularP2Unidad('')
+      await cargarListado(String(resp.id))
+    } catch (err: any) {
+      setErrorMsg(err?.response?.data?.detail || 'No se pudo vincular el usuario institucional.')
+    } finally {
+      setGuardando(false)
+    }
   }
 
   const handleRegistrarConsultorDirecto = async (e: React.FormEvent) => {
@@ -563,6 +659,17 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
 
     setGuardando(true)
     try {
+      if (modoConsultor === 'vincular_existente' && candidatoSeleccionadoId) {
+        const cand = usuariosCandidatos.find((u) => String(u.id) === String(candidatoSeleccionadoId))
+        if (cand && (!cand.es_consultor || !cand.destinatario_id)) {
+          await vincularUsuarioExistenteConsultor({
+            usuario_id: cand.id,
+            cargo: destinatarioCargo.trim() || cand.cargo_sugerido,
+            unidad_academica: destinatarioUnidad.trim() || cand.unidad_sugerida,
+          })
+        }
+      }
+
       const creado = await crearReporteCompartido({
         espacio_id: espacioIdInicial,
         destinatario_nombre: destinatarioNombre,
@@ -932,7 +1039,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                       Destinatario: Usuario Consultor de Reporte
                     </h3>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     {destinatarios.length > 0 && (
                       <button
                         type="button"
@@ -951,6 +1058,23 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                     )}
                     <button
                       type="button"
+                      onClick={() => {
+                        setModoConsultor('vincular_existente')
+                        if (usuariosCandidatos.length > 0 && !candidatoSeleccionadoId) {
+                          seleccionarCandidatoParaReporte(usuariosCandidatos[0])
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold border flex items-center gap-1.5 cursor-pointer ${
+                        modoConsultor === 'vincular_existente'
+                          ? 'bg-uct-blue-primary text-white border-uct-blue-primary'
+                          : 'bg-blue-50 text-uct-blue-primary border-blue-200 hover:bg-blue-100'
+                      }`}
+                    >
+                      <Link2 className="w-3.5 h-3.5 text-uct-gold" />
+                      Vincular Usuario del Campus ({usuariosCandidatos.length})
+                    </button>
+                    <button
+                      type="button"
                       onClick={limpiarCamposConsultor}
                       className={`px-3 py-1 rounded-lg text-xs font-semibold border flex items-center gap-1 cursor-pointer ${
                         modoConsultor === 'nuevo'
@@ -959,7 +1083,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                       }`}
                     >
                       <UserPlus className="w-3.5 h-3.5" />
-                      Nuevo Usuario Consultor
+                      Nuevo Consultor Externo
                     </button>
                   </div>
                 </div>
@@ -1000,6 +1124,139 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                         <span className="text-slate-500">Carrera / Unidad:</span>{' '}
                         <strong className="text-slate-800">{destinatarioUnidad}</strong>
                       </div>
+                    </div>
+                  </div>
+                ) : modoConsultor === 'vincular_existente' ? (
+                  <div className="space-y-3.5">
+                    <div className="p-3 rounded-xl bg-blue-50/80 border border-blue-200 text-xs text-slate-700 space-y-1">
+                      <div className="flex items-center gap-2 font-bold text-uct-blue-primary">
+                        <ShieldCheck className="w-4 h-4 text-uct-gold" />
+                        <span>Vinculación de Usuario del Campus (Sin cambio de contraseña)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Seleccione una persona ya registrada en la plataforma institucional del Campus. Se le otorgará el rol{' '}
+                        <strong>Consultor de Reportes</strong> manteniendo sus credenciales vigentes. Podrá ingresar directamente al
+                        reporte si ya tiene una sesión activa (SSO) o autenticarse con su contraseña institucional habitual.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          Usuario Activo del Campus UCT *
+                        </label>
+                        <select
+                          value={candidatoSeleccionadoId}
+                          onChange={(e) => {
+                            const cand = usuariosCandidatos.find((u) => String(u.id) === e.target.value)
+                            if (cand) seleccionarCandidatoParaReporte(cand)
+                          }}
+                          className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:border-uct-blue-primary"
+                        >
+                          <option value="">-- Seleccione un usuario institucional --</option>
+                          {usuariosCandidatos
+                            .filter((u) => {
+                              if (!candidatoFiltroTexto.trim()) return true
+                              const q = candidatoFiltroTexto.toLowerCase()
+                              return (
+                                u.nombre_completo.toLowerCase().includes(q) ||
+                                u.email.toLowerCase().includes(q) ||
+                                u.cargo_sugerido.toLowerCase().includes(q)
+                              )
+                            })
+                            .map((u) => (
+                              <option key={u.id} value={u.id}>
+                                {u.nombre_completo} ({u.email}) — [{u.roles.join(', ')}]{' '}
+                                {u.es_consultor ? '• [Rol Consultor Activo]' : '• [Vincular Rol]'}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                          Filtrar por Nombre, Cargo o Correo
+                        </label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="Buscar en usuarios del campus..."
+                            value={candidatoFiltroTexto}
+                            onChange={(e) => setCandidatoFiltroTexto(e.target.value)}
+                            className="w-full bg-white border border-slate-300 rounded-xl pl-8 pr-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-uct-blue-primary"
+                          />
+                          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
+                          Nombre Completo
+                        </label>
+                        <input
+                          type="text"
+                          readOnly
+                          value={destinatarioNombre}
+                          className="w-full bg-slate-100 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium cursor-not-allowed"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
+                          Correo Institucional
+                        </label>
+                        <input
+                          type="email"
+                          readOnly
+                          value={destinatarioEmail}
+                          className="w-full bg-slate-100 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium cursor-not-allowed"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 mb-1 uppercase tracking-wider">
+                          Cargo Institucional *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={destinatarioCargo}
+                          onChange={(e) => setDestinatarioCargo(e.target.value)}
+                          placeholder="Ej. Directora / Jefe de Carrera"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 mb-1 uppercase tracking-wider">
+                          Carrera / Unidad Académica *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={destinatarioUnidad}
+                          onChange={(e) => setDestinatarioUnidad(e.target.value)}
+                          placeholder="Ej. Vicerrectoría / Facultad"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Se asociará automáticamente a la cuenta del usuario sin pedir cambio de contraseña.</span>
+                      </div>
+                      {candidatoSeleccionadoId && (
+                        <button
+                          type="button"
+                          onClick={handleVincularCandidatoDirecto}
+                          disabled={vinculandoCandidato}
+                          className="px-3 py-1.5 rounded-lg bg-white border border-uct-blue-primary text-uct-blue-primary hover:bg-blue-50 text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          <Link2 className="w-3.5 h-3.5 text-uct-gold" />
+                          {vinculandoCandidato ? 'Vinculando...' : 'Confirmar Vinculación de Rol Ahora'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -1280,8 +1537,8 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                   )}
                 </div>
 
-                {/* Vigencia, Modo y Permisos */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-slate-100">
+                {/* Vigencia y Permisos */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-100">
                   <div>
                     <label className="block text-[11px] font-bold text-slate-700 mb-1">
                       Vigencia del Reporte
@@ -1307,26 +1564,8 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                         />
                       )}
                     </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                      Actualización de Cifras (Filtros siempre bloqueados)
-                    </label>
-                    <select
-                      value={modoDatos}
-                      onChange={(e) => setModoDatos(e.target.value as any)}
-                      className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
-                    >
-                      <option value="dinamico_acotado">
-                        Actualizar cifras si entran nuevos registros en este período
-                      </option>
-                      <option value="instantanea_fija">
-                        Congelar cifras exactas del momento del envío (Foto fija)
-                      </option>
-                    </select>
                     <p className="text-[10px] text-slate-500 mt-1">
-                      El destinatario nunca puede modificar los filtros ni cambiar fechas.
+                      Período institucional sellado e inmutable para auditoría.
                     </p>
                   </div>
 
@@ -1379,62 +1618,175 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
 
           {pestanaActiva === 'consultores' && (
             <div className="space-y-5">
-              {/* Formulario para dar de alta un usuario Consultor_Reporte y enviarle correo de contraseña */}
-              <form
-                onSubmit={handleRegistrarConsultorDirecto}
-                className="p-4 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-3"
-              >
-                <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
-                  <UserPlus className="w-4 h-4 text-uct-blue-primary" />
-                  <h3 className="text-xs sm:text-sm font-bold text-uct-blue-primary">
-                    Crear Nuevo Usuario Consultor de Reportes (Envía invitación para definir contraseña)
-                  </h3>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <input
-                    type="text"
-                    required
-                    placeholder="Nombre completo *"
-                    value={nuevoConsultorNombre}
-                    onChange={(e) => setNuevoConsultorNombre(e.target.value)}
-                    className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
-                  />
-                  <input
-                    type="email"
-                    required
-                    placeholder="Correo institucional (@uct.cl) *"
-                    value={nuevoConsultorEmail}
-                    onChange={(e) => setNuevoConsultorEmail(e.target.value)}
-                    className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
-                  />
-                  <input
-                    type="text"
-                    required
-                    placeholder="Cargo (ej. Jefe de Carrera) *"
-                    value={nuevoConsultorCargo}
-                    onChange={(e) => setNuevoConsultorCargo(e.target.value)}
-                    className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
-                  />
-                  <input
-                    type="text"
-                    required
-                    placeholder="Carrera o Unidad Académica *"
-                    value={nuevoConsultorUnidad}
-                    onChange={(e) => setNuevoConsultorUnidad(e.target.value)}
-                    className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
-                  />
-                </div>
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    disabled={guardando}
-                    className="px-4 py-2 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-secondary text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <KeyRound className="w-3.5 h-3.5 text-uct-gold" />
-                    {guardando ? 'Registrando y enviando correo...' : 'Crear Cuenta Consultor y Enviar Enlace de Contraseña'}
-                  </button>
-                </div>
-              </form>
+              {/* Selector de modo para alta o vinculación de Consultores */}
+              <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+                <button
+                  type="button"
+                  onClick={() => setSubpestanaConsultor('vincular')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
+                    subpestanaConsultor === 'vincular'
+                      ? 'bg-uct-blue-primary text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <Link2 className="w-3.5 h-3.5 text-uct-gold" />
+                  Vincular Usuario del Campus ({usuariosCandidatos.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubpestanaConsultor('nuevo')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
+                    subpestanaConsultor === 'nuevo'
+                      ? 'bg-uct-blue-primary text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  Crear Nuevo Consultor Externo (Con Invitación)
+                </button>
+              </div>
+
+              {subpestanaConsultor === 'vincular' ? (
+                /* Formulario para vincular usuario institucional existente */
+                <form
+                  onSubmit={handleVincularEnPestana2}
+                  className="p-4 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-3"
+                >
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                    <Link2 className="w-4 h-4 text-uct-blue-primary" />
+                    <h3 className="text-xs sm:text-sm font-bold text-uct-blue-primary">
+                      Vincular Usuario Existente del Campus UCT (Conserva su contraseña habitual)
+                    </h3>
+                  </div>
+                  <p className="text-[11px] text-slate-600">
+                    Asigna el rol <strong>Consultor de Reportes</strong> a un integrante del campus ya registrado en el
+                    sistema. No se generará enlace de cambio de contraseña; el usuario ingresará con su sesión activa (SSO)
+                    o sus credenciales habituales.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Usuario Institucional UCT *
+                      </label>
+                      <select
+                        required
+                        value={vincularP2UsuarioId}
+                        onChange={(e) => {
+                          const id = e.target.value
+                          setVincularP2UsuarioId(id)
+                          const c = usuariosCandidatos.find((u) => String(u.id) === id)
+                          if (c) {
+                            setVincularP2Cargo(c.cargo_sugerido)
+                            setVincularP2Unidad(c.unidad_sugerida)
+                          }
+                        }}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                      >
+                        <option value="">-- Seleccionar usuario activo --</option>
+                        {usuariosCandidatos.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.nombre_completo} ({u.email}) — [{u.roles.join(', ')}]{' '}
+                            {u.es_consultor ? '• [Rol Consultor Activo]' : '• [Vincular]'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Cargo Institucional *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej. Directivo UCT / Jefe de Carrera"
+                        value={vincularP2Cargo}
+                        onChange={(e) => setVincularP2Cargo(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Carrera / Unidad Académica *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej. Vicerrectoría Académica / Ingeniería"
+                        value={vincularP2Unidad}
+                        onChange={(e) => setVincularP2Unidad(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="submit"
+                      disabled={guardando || !vincularP2UsuarioId}
+                      className="px-4 py-2 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-secondary text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Link2 className="w-3.5 h-3.5 text-uct-gold" />
+                      {guardando ? 'Vinculando al rol...' : 'Vincular Usuario al Rol Consultor_Reporte'}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                /* Formulario para dar de alta un usuario Consultor_Reporte externo y enviarle correo de contraseña */
+                <form
+                  onSubmit={handleRegistrarConsultorDirecto}
+                  className="p-4 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-3"
+                >
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                    <UserPlus className="w-4 h-4 text-uct-blue-primary" />
+                    <h3 className="text-xs sm:text-sm font-bold text-uct-blue-primary">
+                      Crear Nuevo Usuario Consultor de Reportes (Envía invitación para definir contraseña)
+                    </h3>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Nombre completo *"
+                      value={nuevoConsultorNombre}
+                      onChange={(e) => setNuevoConsultorNombre(e.target.value)}
+                      className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                    />
+                    <input
+                      type="email"
+                      required
+                      placeholder="Correo institucional (@uct.cl) *"
+                      value={nuevoConsultorEmail}
+                      onChange={(e) => setNuevoConsultorEmail(e.target.value)}
+                      className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                    />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Cargo (ej. Jefe de Carrera) *"
+                      value={nuevoConsultorCargo}
+                      onChange={(e) => setNuevoConsultorCargo(e.target.value)}
+                      className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                    />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Carrera o Unidad Académica *"
+                      value={nuevoConsultorUnidad}
+                      onChange={(e) => setNuevoConsultorUnidad(e.target.value)}
+                      className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800"
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={guardando}
+                      className="px-4 py-2 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-secondary text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <KeyRound className="w-3.5 h-3.5 text-uct-gold" />
+                      {guardando ? 'Registrando y enviando correo...' : 'Crear Cuenta Consultor y Enviar Enlace de Contraseña'}
+                    </button>
+                  </div>
+                </form>
+              )}
 
               <div className="space-y-2.5">
                 {destinatarios.length === 0 ? (

@@ -49,10 +49,8 @@ RUN mkdir -p /app/models /app/datos_ingesta /tmp/pycache && \
 # Copiar código fuente
 COPY --chown=appuser:appgroup . /app
 
-# Asegurar permisos de ejecución en scripts
-RUN chmod +x /app/entrypoint.sh 2>/dev/null || true
-
-USER appuser
+# Normalizar saltos de línea LF y asegurar permisos de ejecución en scripts
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 EXPOSE 8000
 

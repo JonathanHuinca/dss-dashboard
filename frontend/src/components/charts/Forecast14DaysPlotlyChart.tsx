@@ -1,6 +1,7 @@
+import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { Forecast14DayItem } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data } from 'plotly.js-dist-min'
 import { formatDayMonthSpanish } from '../../types/dateRange'
 
 interface Props {
@@ -8,8 +9,8 @@ interface Props {
   title?: string
 }
 
-export function Forecast14DaysPlotlyChart({ data, title = 'Proyección Cuantitativa de Demanda (Próximos 14 Días)' }: Props) {
-  const chartData: Data[] = [
+function Forecast14DaysPlotlyChartComponent({ data, title = 'Proyección Cuantitativa de Demanda (Próximos 14 Días)' }: Props) {
+  const chartData = useMemo<Data[]>(() => [
     {
       x: data.map(d => `${formatDayMonthSpanish(d.fecha)} (${d.dia_nombre.substring(0, 3)})`),
       y: data.map(d => d.demanda_estimada),
@@ -23,9 +24,9 @@ export function Forecast14DaysPlotlyChart({ data, title = 'Proyección Cuantitat
       customdata: data.map(d => d.hito),
       hovertemplate: '<b>%{x}</b><br>Estimación: %{y:,} personas<br>Hito: %{customdata}<extra></extra>',
     },
-  ]
+  ], [data])
 
-  const layout = {
+  const layout = useMemo(() => ({
     title: { text: title },
     margin: { t: 40, r: 25, b: 85, l: 55 },
     xaxis: {
@@ -38,7 +39,7 @@ export function Forecast14DaysPlotlyChart({ data, title = 'Proyección Cuantitat
       title: { text: 'Demanda Proyectada (HistGradientBoosting)' },
       automargin: true,
     },
-  }
+  }), [title])
 
   return (
     <div>
@@ -57,3 +58,6 @@ export function Forecast14DaysPlotlyChart({ data, title = 'Proyección Cuantitat
     </div>
   )
 }
+
+export const Forecast14DaysPlotlyChart = memo(Forecast14DaysPlotlyChartComponent)
+export default Forecast14DaysPlotlyChart

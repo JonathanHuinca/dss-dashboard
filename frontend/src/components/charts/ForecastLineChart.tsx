@@ -1,7 +1,7 @@
-import { useState, useMemo } from 'react'
+import {  useState, useMemo , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { ForecastPoint, obtenerResumenAnualCalendario, DiaCalendarioResumen, fetchHorarios, HorarioOperacion } from '../../api/client'
-import { Data, Layout, Shape, Annotations } from 'plotly.js-dist-min'
+import type { Data, Layout, Shape, Annotations  } from 'plotly.js-dist-min'
 import { Activity, Users, RotateCw, Calendar } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -28,6 +28,8 @@ const DIAS_SEMANA_COMPLETOS = [
   'Viernes',
   'Sábado',
 ]
+
+const DIAS_CORTOS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 
 const MESES_COMPLETOS = [
   'enero',
@@ -58,7 +60,7 @@ function formatearFechaHoraPronosticoEspanol(isoStr: string): string {
   return `${diaSemana} ${diaMes} de ${mesNombre} de ${anioNum} — ${hh}:${mm} hrs`
 }
 
-export function ForecastLineChart({
+function ForecastLineChartComponent({
   actual,
   forecast = [],
   historico7d,
@@ -358,8 +360,7 @@ export function ForecastLineChart({
     // 1. Serie Histórica (Últimos 7 días): timestamps ISO exactos
     const xHist = filteredHist.map(p => p.ds)
     const yHist = filteredHist.map(p => Math.max(0, Math.round(p.actual ?? p.yhat ?? 0)))
-    const customHist = filteredHist.map(p => {
-      const fechaIso = p.ds.slice(0, 10)
+    const contextoDia = (fechaIso: string): string => {
       const cal = mapaFechas.get(fechaIso)
       const ctx: string[] = []
       if (cal?.is_holiday) ctx.push('Feriado Oficial UCT')
@@ -370,10 +371,12 @@ export function ForecastLineChart({
       if (cal?.is_strike_federado) ctx.push('Paro Federado FEUCT')
       if (cal?.is_strike_carrera) ctx.push('Paro por Carrera')
       if (mostrar24h && es24hFecha(fechaIso)) ctx.push('Campaña 24 Horas')
-      const ctxStr = ctx.length > 0 ? `<br><b>Contexto:</b> ${ctx.join(', ')}` : ''
-      const fechaLegible = formatearFechaHoraPronosticoEspanol(p.ds)
-      return [fechaLegible, ctxStr]
-    })
+      return ctx.length > 0 ? `<br><b>Contexto:</b> ${ctx.join(', ')}` : ''
+    }
+    const customHist = filteredHist.map(p => [
+      formatearFechaHoraPronosticoEspanol(p.ds),
+      contextoDia(p.ds.slice(0, 10)),
+    ])
 
     // 2. Serie Futura (Próximos 7 días): conectada al último punto histórico
     const ultimoHist = filteredHist[filteredHist.length - 1]
@@ -396,21 +399,32 @@ export function ForecastLineChart({
     const yFut = futConConexion.map(p => Math.max(0, Math.round(p.yhat)))
     const lowerFut = futConConexion.map(p => Math.max(0, Math.round(p.yhat_lower ?? p.yhat * 0.8)))
     const upperFut = futConConexion.map(p => Math.max(0, Math.round(p.yhat_upper ?? p.yhat * 1.2)))
-    const customFut = futConConexion.map((_, i) => {
-      const fechaIso = futConConexion[i].ds.slice(0, 10)
-      const cal = mapaFechas.get(fechaIso)
-      const ctx: string[] = []
-      if (cal?.is_holiday) ctx.push('Feriado Oficial UCT')
-      if (cal?.is_break) ctx.push('Receso / Vacaciones')
-      if (cal?.is_exam_period) ctx.push('Exámenes / Solemnes')
-      if (cal?.is_class_milestone) ctx.push('Hito de Clases')
-      if (esSuspensionAplicableASala(cal)) ctx.push('Suspensión Actividades')
-      if (cal?.is_strike_federado) ctx.push('Paro Federado FEUCT')
-      if (cal?.is_strike_carrera) ctx.push('Paro por Carrera')
-      if (mostrar24h && es24hFecha(fechaIso)) ctx.push('Campaña 24 Horas')
-      const ctxStr = ctx.length > 0 ? `<br><b>Contexto:</b> ${ctx.join(', ')}` : ''
-      const fechaLegible = formatearFechaHoraPronosticoEspanol(futConConexion[i].ds)
-      return [yFut[i], upperFut[i], lowerFut[i], ctxStr, fechaLegible]
+    const customFut = futConConexion.map((p, i) => [
+      yFut[i],
+      upperFut[i],
+      lowerFut[i],
+      contextoDia(p.ds.slice(0, 10)),
+      formatearFechaHoraPronosticoEspanol(p.ds),
+    ])
+
+    // Pico diario proyectado: un marcador por día con valor visible
+    const picosPorDia = new Map<string, ForecastPoint>()
+    filteredFut.forEach(p => {
+      const dia = p.ds.slice(0, 10)
+      const previo = picosPorDia.get(dia)
+      if (!previo || p.yhat > previo.yhat) picosPorDia.set(dia, p)
+    })
+    const picos = Array.from(picosPorDia.values()).filter(p => Math.round(p.yhat) > 0)
+
+    // Marcas diarias en español sobre el eje temporal (medianoche de cada día)
+    const diasEje = Array.from(new Set([
+      ...filteredHist.map(p => p.ds.slice(0, 10)),
+      ...filteredFut.map(p => p.ds.slice(0, 10)),
+    ])).sort()
+    const tickvals = diasEje.map(d => `${d} 00:00:00`)
+    const ticktext = diasEje.map(d => {
+      const dt = new Date(`${d}T12:00:00`)
+      return `${DIAS_CORTOS[dt.getDay()]} ${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`
     })
 
     const unidad = recinto === 'vehicular' ? 'vehículos/h' : 'personas/h'
@@ -427,6 +441,8 @@ export function ForecastLineChart({
         mode: 'lines',
         name: `${etiquetaReal} (Última Semana)`,
         line: { color: '#002855', width: 2.8 },
+        fill: 'tozeroy',
+        fillcolor: 'rgba(0, 40, 85, 0.07)',
         hovertemplate: `<b>%{customdata[0]}</b><br>${etiquetaReal}: <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
       },
       // 2. Banda inferior de incertidumbre (transparente)
@@ -475,6 +491,28 @@ export function ForecastLineChart({
       },
     ]
 
+    if (picos.length > 0) {
+      data.push({
+        x: picos.map(p => p.ds),
+        y: picos.map(p => Math.round(p.yhat)),
+        customdata: picos.map(p => [formatearFechaHoraPronosticoEspanol(p.ds), contextoDia(p.ds.slice(0, 10))]),
+        type: 'scatter',
+        mode: 'text+markers',
+        text: picos.map(p => String(Math.round(p.yhat))),
+        textposition: 'top center',
+        textfont: { size: 10, color: '#92400E' },
+        marker: {
+          symbol: 'diamond',
+          size: 9,
+          color: '#D97706',
+          line: { color: '#ffffff', width: 1.5 },
+        },
+        cliponaxis: false,
+        name: 'Pico diario proyectado',
+        hovertemplate: `<b>%{customdata[0]}</b><br><b>Pico diario:</b> %{y} ${unidad}%{customdata[1]}<extra></extra>`,
+      })
+    }
+
     // Formas de referencia: Capacidad Máxima y Separador Temporal
     const shapes: Partial<Shape>[] = []
     const annotations: Partial<Annotations>[] = []
@@ -499,7 +537,7 @@ export function ForecastLineChart({
         yref: 'y',
         x: 0.01,
         y: capacidad * 1.03,
-        text: `Capacidad Máx: ${capacidad} asientos`,
+        text: `Capacidad Máx: ${capacidad} ${recinto === 'vehicular' ? 'plazas' : 'asientos'}`,
         showarrow: false,
         font: { size: 9, color: '#DC2626' },
         bgcolor: 'rgba(254, 242, 242, 0.85)',
@@ -511,6 +549,19 @@ export function ForecastLineChart({
 
     // Línea vertical que divide el histórico empírico del pronóstico futuro
     if (anchorDateStr) {
+      const finPronostico = filteredFut.length > 0 ? filteredFut[filteredFut.length - 1].ds : anchorDateStr
+      shapes.push({
+        type: 'rect',
+        xref: 'x',
+        yref: 'paper',
+        x0: anchorDateStr,
+        x1: finPronostico,
+        y0: 0,
+        y1: 1,
+        fillcolor: 'rgba(217, 119, 6, 0.04)',
+        line: { width: 0 },
+        layer: 'below',
+      })
       shapes.push({
         type: 'line',
         xref: 'x',
@@ -549,7 +600,7 @@ export function ForecastLineChart({
 
     const chartLayout: Partial<Layout> = {
       height: 320,
-      margin: { t: 30, r: 25, b: 50, l: 45 },
+      margin: { t: 30, r: 25, b: 40, l: 45 },
       shapes: [
         ...contextShapes,
         ...shapes,
@@ -557,13 +608,14 @@ export function ForecastLineChart({
       annotations,
       xaxis: {
         type: 'date',
-        tickformat: '%d/%m %H:%M',
+        tickmode: 'array',
+        tickvals,
+        ticktext,
         showgrid: true,
         automargin: true,
         gridcolor: 'rgba(226, 232, 240, 0.6)',
-        tickfont: { size: 9.5, color: '#64748B' },
-        tickangle: -45,
-        nticks: 16,
+        tickfont: { size: 10, color: '#64748B' },
+        tickangle: 0,
       },
       yaxis: {
         showgrid: true,
@@ -586,7 +638,7 @@ export function ForecastLineChart({
     }
 
     return { chartData: data, layout: chartLayout }
-  }, [filteredHist, filteredFut, soloAtencion, capacidad, anchorDateStr, recinto, contextShapes, mapaFechas, mostrar24h])
+  }, [filteredHist, filteredFut, soloAtencion, capacidad, anchorDateStr, recinto, salaNombre, contextShapes, mapaFechas, mostrar24h, periodos24h])
 
   return (
     <div className="space-y-3">
@@ -683,12 +735,12 @@ export function ForecastLineChart({
         <div className="flex items-center gap-3 text-slate-600 dark:text-slate-300">
           <span className="flex items-center gap-1 font-medium text-uct-navy dark:text-sky-300">
             <Activity className="w-3.5 h-3.5" />
-            Máximo Histórico: <strong className="font-semibold">{stats.maxHist} p/h</strong>
+            Máximo Histórico: <strong className="font-semibold">{stats.maxHist} {recinto === 'vehicular' ? 'veh/h' : 'p/h'}</strong>
           </span>
           <span className="text-gray-300 dark:text-gray-700">|</span>
           <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-400">
             <Users className="w-3.5 h-3.5" />
-            Máximo Proyectado: <strong className="font-semibold">{stats.maxFut} p/h</strong>
+            Máximo Proyectado: <strong className="font-semibold">{stats.maxFut} {recinto === 'vehicular' ? 'veh/h' : 'p/h'}</strong>
           </span>
           {capacidad && (
             <>
@@ -741,5 +793,5 @@ export function ForecastLineChart({
   )
 }
 
+export const ForecastLineChart = memo(ForecastLineChartComponent)
 export default ForecastLineChart
-

@@ -8,6 +8,7 @@ from app.core.security import require_role, get_current_user, validar_acceso_esp
 from app.domain.auth_models import Usuario
 from app.services.prediction_service import (
     get_prophet_forecast,
+    get_prophet_presence_forecast,
     get_gbr_forecast_14days,
     get_visit_profiles,
     get_active_alerts,
@@ -26,6 +27,18 @@ async def get_forecast_attendance(
 ):
     validar_acceso_espacio(1, current_user)
     return await get_prophet_forecast(db, recinto="biblioteca", sala=sala)
+
+
+@router.get("/forecast-presence", summary="Pronóstico continuo de presencia física en sala con Prophet Logístico — 14 días")
+@cachear_respuesta(ttl_segundos=TTL_HISTORICOS, categoria="predicciones")
+async def get_forecast_presence_endpoint(
+    response: Response,
+    sala: str = "todas",
+    db: AsyncSession = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    validar_acceso_espacio(1, current_user)
+    return await get_prophet_presence_forecast(db, sala=sala)
 
 
 @router.get("/forecast-parking", summary="Pronóstico horario de ocupación de estacionamientos — 7 días")

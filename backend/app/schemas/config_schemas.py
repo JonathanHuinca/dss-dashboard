@@ -9,7 +9,7 @@ class ConfiguracionEspaciosResponse(BaseModel):
     espacio_id: int
     ia_asistente_activo: bool
     active_provider: Optional[str] = "gemini"
-    default_model: Optional[str] = "gemini-3.5-flash-lite"
+    default_model: Optional[str] = "gemini-3.1-flash-lite"
     has_api_key: bool = False
     masked_api_key: Optional[str] = None
     updated_at: Optional[datetime] = None

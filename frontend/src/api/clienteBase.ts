@@ -20,7 +20,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && typeof window !== 'undefined') {
+    const isLoginEndpoint = error.config?.url?.includes('/auth/login')
+    if (error.response?.status === 401 && !isLoginEndpoint && typeof window !== 'undefined') {
       localStorage.removeItem('uct_auth_token')
       window.dispatchEvent(new Event('uct:auth-expired'))
     }
@@ -67,8 +68,8 @@ export interface DateBoundsResponse {
   meses_disponibles: MonthInfo[]
 }
 
-export const fetchDateBounds = (espacioId?: number) =>
-  api.get<DateBoundsResponse>('/metrics/date-bounds', {
+export const fetchDateBounds = (espacioId?: number, signal?: AbortSignal) =>
+  api.get<DateBoundsResponse>('/metrics/date-bounds', { signal,
     params: { espacio_id: espacioId || undefined },
   }).then(r => r.data)
 

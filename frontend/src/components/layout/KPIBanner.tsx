@@ -1,12 +1,11 @@
 import React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import {
   CalendarDays,
   GraduationCap,
   Repeat,
   Flame,
   Users,
-  RefreshCw,
   TrendingUp,
   Building2,
   Car,
@@ -24,18 +23,19 @@ interface Props {
 export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filters }) => {
   const isEstacionamiento = espacioId === 2
 
-  const { data, isLoading, isFetching, isError, refetch } = useQuery<KPISummary>({
+  const { data, isLoading, isFetching, isError } = useQuery<KPISummary>({
     queryKey: ['kpi-summary', espacioId, selectedRange?.inicio, selectedRange?.fin, filters],
     queryFn: () => fetchKpiSummary(espacioId, selectedRange?.inicio, selectedRange?.fin, filters),
-    staleTime: 60_000,
+    staleTime: 5 * 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
   })
 
   const activePeriodLabel = selectedRange?.label || data?.periodo_label || 'Historial Semestre Completo'
 
   return (
-    <section className="px-6 pt-5 pb-3">
+    <section className="w-full">
       <div className="bg-white/90 backdrop-blur-md rounded-2xl p-4.5 border border-slate-200/80 shadow-xs mb-1">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5 pb-2.5 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
@@ -77,19 +77,9 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
               </p>
             </div>
           </div>
-
-          <button
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-uct-blue-primary bg-slate-50 hover:bg-slate-100/80 border border-slate-200 transition-all cursor-pointer disabled:opacity-50"
-            title="Actualizar métricas"
-          >
-            <RefreshCw size={12} className={isFetching ? 'animate-spin text-uct-blue-primary' : ''} />
-            <span>Actualizar</span>
-          </button>
         </div>
 
-        {isLoading ? (
+        {!data && isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             {[1, 2, 3, 4, 5].map((i) => (
               <div
@@ -105,12 +95,12 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
               </div>
             ))}
           </div>
-        ) : isError ? (
+        ) : !data && isError ? (
           <div className="py-4 text-center text-xs text-rose-600 bg-rose-50/50 rounded-xl border border-rose-200/60">
             No fue posible cargar las métricas gerenciales.
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 transition-opacity duration-150 ${isFetching ? 'opacity-90' : 'opacity-100'}`}>
             {/* Card 1: Días Operativos */}
             <div className="relative overflow-hidden bg-white rounded-xl p-3.5 border border-slate-200/80 shadow-2xs hover:shadow-xs transition-all hover:border-emerald-300 group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-400 to-teal-500"></div>

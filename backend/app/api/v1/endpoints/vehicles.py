@@ -99,6 +99,39 @@ async def get_hourly_flow(
     )
 
 
+@router.get("/realtime-presence-curve", summary="Curva de presencia física vehicular por intervalos de sesión vs capacidad")
+@cachear_respuesta(ttl_segundos=TTL_KPIS_DIA, categoria="kpis")
+async def get_realtime_presence_curve(
+    response:        Response,
+    fecha_inicio:    Optional[date] = Query(None, description="YYYY-MM-DD"),
+    fecha_fin:       Optional[date] = Query(None, description="YYYY-MM-DD"),
+    espacio_id:      int            = Query(2),
+    alcance:         Optional[str]  = Query("conformes"),
+    regimen_horario: Optional[str]  = Query("todos"),
+    direccion:       Optional[str]  = Query("todos"),
+    dias_semana:     Optional[str]  = Query(None),
+    door:            Optional[str]  = Query(None),
+    sector:          Optional[str]  = Query(None),
+    tipo_vehiculo:   Optional[str]  = Query(None),
+    current_user:    Usuario        = Depends(get_current_user),
+    db:              AsyncSession   = Depends(get_db),
+):
+    validar_acceso_espacio(espacio_id, current_user)
+    return await VehicleService.get_realtime_presence_curve(
+        session=db,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        espacio_id=espacio_id,
+        alcance=alcance or "conformes",
+        regimen_horario=regimen_horario or "todos",
+        direccion=direccion or "todos",
+        dias_semana=dias_semana,
+        door=door,
+        sector=sector,
+        tipo_vehiculo=tipo_vehiculo,
+    )
+
+
 @router.get("/stay-distribution", summary="Histograma de tiempos de permanencia vehicular")
 @cachear_respuesta(ttl_segundos=TTL_HISTORICOS, categoria="historicos")
 async def get_stay_distribution(

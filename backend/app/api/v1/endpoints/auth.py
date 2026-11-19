@@ -5,7 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.config import settings, obtener_url_frontend
 from app.core.database import get_db
 from app.core.security import (
     get_current_user,
@@ -261,7 +261,8 @@ async def resend_invitation_endpoint(
         user_id=user_id,
         creator=current_user,
     )
-    enlace_activacion = f"{settings.FRONTEND_URL}/activar-cuenta?token={token_plano}"
+    base_url = obtener_url_frontend()
+    enlace_activacion = f"{base_url}/activar-cuenta?token={token_plano}"
 
     if token_obj.tipo_token == "RECUPERACION_PASSWORD":
         background_tasks.add_task(
@@ -312,8 +313,9 @@ async def invite_user(
         creator=current_user,
     )
 
+    base_url = obtener_url_frontend()
     enlace = f"/activar-cuenta?token={token_plano}"
-    enlace_completo = f"{settings.FRONTEND_URL}/activar-cuenta?token={token_plano}"
+    enlace_completo = f"{base_url}/activar-cuenta?token={token_plano}"
     user_resp = map_usuario_response(user)
 
     # Despacho en segundo plano del correo de activación institucional
@@ -396,7 +398,8 @@ async def forgot_password_endpoint(
     )
 
     if existe and token_plano:
-        enlace_completo = f"{settings.FRONTEND_URL}/recuperar-password?token={token_plano}"
+        base_url = obtener_url_frontend()
+        enlace_completo = f"{base_url}/recuperar-password?token={token_plano}"
         background_tasks.add_task(
             enviar_correo_recuperacion,
             payload.email,
@@ -404,19 +407,17 @@ async def forgot_password_endpoint(
             enlace_completo,
         )
 
-    # Respuesta neutral OWASP ASVS: nunca revelar si el correo existe o no
+    # Respuesta neutral OWASP ASVS: nunca revelar si el correo existe o no ni exponer tokens
     mensaje_neutral = (
         "Si el correo institucional se encuentra registrado en la plataforma DSS, "
         "recibirá un enlace con las instrucciones para restablecer su contraseña (validez: 15 minutos)."
     )
 
-    enlace = f"/recuperar-password?token={token_plano}" if token_plano else None
-
     return ForgotPasswordResponse(
         mensaje=mensaje_neutral,
-        enlace_recuperacion=enlace,
-        token_temporal=token_plano,
-        expira_en=expira_en,
+        enlace_recuperacion=None,
+        token_temporal=None,
+        expira_en=None,
     )
 
 

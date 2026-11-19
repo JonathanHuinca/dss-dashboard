@@ -19,7 +19,7 @@ async def get_configuracion_espacio(db: AsyncSession, espacio_id: int) -> Config
             espacio_id=espacio_id,
             ia_asistente_activo=True,
             active_provider="gemini",
-            default_model="gemini-3.5-flash-lite",
+            default_model="gemini-3.1-flash-lite",
         )
         db.add(config)
         await db.commit()

@@ -1,14 +1,11 @@
-import { useState, useEffect } from 'react'
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { useState, useEffect, useCallback, Suspense, lazy } from 'react'
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { fetchAttendanceKpis } from './api/asistencia'
+import { fetchVehicleKpis } from './api/vehiculos'
 import { Header, Tab } from './components/layout/Header'
-import { KPIBanner } from './components/layout/KPIBanner'
-import { BibliotecaView } from './components/views/BibliotecaView'
-import { EstacionamientoView } from './components/views/EstacionamientoView'
-import { AdminDashboard } from './components/views/AdminDashboard'
 import { LoginView } from './components/views/LoginView'
 import { ActivateAccountView } from './components/views/ActivateAccountView'
 import { ResetPasswordView } from './components/views/ResetPasswordView'
-import { ReporteCompartidoView } from './components/views/ReporteCompartidoView'
 import { AssistantDrawer } from './components/assistant/AssistantDrawer'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { AssistantProvider, useAssistant } from './context/AssistantContext'
@@ -17,6 +14,17 @@ import { DownloadProgressModal } from './components/ui/DownloadProgressModal'
 import { DateRange, DATE_PRESETS, buildLatestWeekPreset } from './types/dateRange'
 import { fetchDateBounds, DateBoundsResponse, DataFilters } from './api/client'
 import './index.css'
+
+const BibliotecaView = lazy(() => import('./components/views/BibliotecaView').then(m => ({ default: m.BibliotecaView })))
+const EstacionamientoView = lazy(() => import('./components/views/EstacionamientoView').then(m => ({ default: m.EstacionamientoView })))
+const AdminDashboard = lazy(() => import('./components/views/AdminDashboard').then(m => ({ default: m.AdminDashboard })))
+const ReporteCompartidoView = lazy(() => import('./components/views/ReporteCompartidoView').then(m => ({ default: m.ReporteCompartidoView })))
+
+const VistaCargando = () => (
+  <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-8">
+    <div className="h-32 w-full rounded-2xl bg-slate-100 animate-pulse" />
+  </div>
+)
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -46,6 +54,7 @@ function guardarRangoInicialCache(espacioId: number | undefined, fechaMax: strin
 }
 
 function AppRouter() {
+  const queryClient = useQueryClient()
   const { isAuthenticated, userRole, roles, hasDatasetAccess, isSuperAdmin, canAccessAdmin, setCurrentEspacioId } = useAuth()
   const esConsultorReporte = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
   const esSoloConsultor = esConsultorReporte && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
@@ -56,6 +65,25 @@ function AppRouter() {
     }
     return 'biblioteca'
   })
+  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(() => new Set([
+    userRole === 'Consultor_Reporte' && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
+      ? 'reportes'
+      : 'biblioteca'
+  ]))
+
+  useEffect(() => {
+    setVisitedTabs(prev => {
+      if (prev.has(tab)) return prev
+      const next = new Set(prev)
+      next.add(tab)
+      return next
+    })
+    const timer = setTimeout(() => {
+      window.dispatchEvent(new Event('resize'))
+    }, 20)
+    return () => clearTimeout(timer)
+  }, [tab])
+
   const currentEspacioId = tab === 'biblioteca' ? 1 : tab === 'estacionamiento' ? 2 : undefined
 
   const fechaMaxCacheada = obtenerFechaMaxCacheada(currentEspacioId)
@@ -63,27 +91,98 @@ function AppRouter() {
   // Consulta dinámica de límites cronológicos y última fecha registrada
   const { data: dateBounds, isError: errorLimitesFechas } = useQuery<DateBoundsResponse>({
     queryKey: ['date-bounds', currentEspacioId],
-    queryFn: () => fetchDateBounds(currentEspacioId),
+    queryFn: ({ signal }) => fetchDateBounds(currentEspacioId, signal),
     staleTime: 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
     enabled: isAuthenticated && currentEspacioId !== undefined,
   })
 
   const [range, setRange] = useState<DateRange>(() =>
     buildLatestWeekPreset(fechaMaxCacheada || '2026-10-14')
   )
+  const [lastBibRange, setLastBibRange] = useState<DateRange>(range)
+  const [lastEstRange, setLastEstRange] = useState<DateRange>(range)
+
+  useEffect(() => {
+    if (tab === 'biblioteca') setLastBibRange(range)
+    else if (tab === 'estacionamiento') setLastEstRange(range)
+  }, [tab, range])
+
+  const bibliotecaRange = tab === 'biblioteca' ? range : lastBibRange
+  const estacionamientoRange = tab === 'estacionamiento' ? range : lastEstRange
   const [bibliotecaFilters, setBibliotecaFilters] = useState<DataFilters>({
     alcance: 'conformes',
-    regimen_horario: 'todos',
-    direccion: 'todos',
+    regimen_horario: 'dentro_horario,24h_delta',
+    direccion: 'completos',
     dias_semana: '',
     door: '',
     perfil_visita: 'todos',
     marcajes: 'todos',
+    sala: '',
+    carrera: '',
+    facultad: '',
+    cohorte: '',
     incluir_pausas_bano: true,
     desduplicar_rafagas: true,
   })
+  const [estacionamientoFilters] = useState<Record<string, any>>({
+    calidad: 'conformes',
+    tipo_dia: 'todos',
+    rango_horario: 'todos',
+    sentido: 'todos',
+  })
+
+  const filtrosActivos = tab === 'estacionamiento' ? estacionamientoFilters : bibliotecaFilters
+
+  // Prefetching predictivo ante cambio de semana (semana anterior y posterior)
+  const handleRangeChange = useCallback((newRange: DateRange) => {
+    setRange(newRange)
+
+    if (newRange.inicio && newRange.fin) {
+      const dIni = new Date(newRange.inicio + 'T00:00:00')
+      const dFin = new Date(newRange.fin + 'T00:00:00')
+      const diffDias = Math.round((dFin.getTime() - dIni.getTime()) / 86400000)
+
+      if (diffDias >= 5 && diffDias <= 8) {
+        const dIniAnt = new Date(dIni.getTime() - 7 * 86400000)
+        const dFinAnt = new Date(dFin.getTime() - 7 * 86400000)
+        const isoIniAnt = dIniAnt.toISOString().slice(0, 10)
+        const isoFinAnt = dFinAnt.toISOString().slice(0, 10)
+
+        const dIniPost = new Date(dIni.getTime() + 7 * 86400000)
+        const dFinPost = new Date(dFin.getTime() + 7 * 86400000)
+        const isoIniPost = dIniPost.toISOString().slice(0, 10)
+        const isoFinPost = dFinPost.toISOString().slice(0, 10)
+
+        const stale = 1000 * 60 * 5
+        if (tab === 'biblioteca') {
+          queryClient.prefetchQuery({
+            queryKey: ['attendance-kpis', isoIniAnt, isoFinAnt, bibliotecaFilters],
+            queryFn: ({ signal }) => fetchAttendanceKpis(isoIniAnt, isoFinAnt, bibliotecaFilters, signal),
+            staleTime: stale,
+          })
+          queryClient.prefetchQuery({
+            queryKey: ['attendance-kpis', isoIniPost, isoFinPost, bibliotecaFilters],
+            queryFn: ({ signal }) => fetchAttendanceKpis(isoIniPost, isoFinPost, bibliotecaFilters, signal),
+            staleTime: stale,
+          })
+        } else if (tab === 'estacionamiento') {
+          queryClient.prefetchQuery({
+            queryKey: ['vehicle-kpis', isoIniAnt, isoFinAnt, undefined, 'todos'],
+            queryFn: ({ signal }) => fetchVehicleKpis(isoIniAnt, isoFinAnt, undefined, 'todos', signal),
+            staleTime: stale,
+          })
+          queryClient.prefetchQuery({
+            queryKey: ['vehicle-kpis', isoIniPost, isoFinPost, undefined, 'todos'],
+            queryFn: ({ signal }) => fetchVehicleKpis(isoIniPost, isoFinPost, undefined, 'todos', signal),
+            staleTime: stale,
+          })
+        }
+      }
+    }
+  }, [tab, bibliotecaFilters, queryClient])
   const rango_fechas_listo = Boolean(fechaMaxCacheada || dateBounds?.fecha_max || errorLimitesFechas || tab === 'admin')
   const { isOpen, openAssistant, closeAssistant, contextoGrafico } = useAssistant()
 
@@ -172,18 +271,13 @@ function AppRouter() {
         active={tab}
         onChange={setTab}
         selectedRange={range}
-        onRangeChange={setRange}
+        onRangeChange={handleRangeChange}
         onOpenAssistant={() => openAssistant()}
+        filters={filtrosActivos}
       />
-      {tab !== 'admin' && tab !== 'reportes' && rango_fechas_listo && (
-        <KPIBanner
-          espacioId={tab === 'biblioteca' ? 1 : 2}
-          selectedRange={range}
-          filters={tab === 'biblioteca' ? bibliotecaFilters : undefined}
-        />
-      )}
       <main>
-        {tab === 'reportes' ? (
+          <Suspense fallback={<VistaCargando />}>
+            {tab === 'reportes' ? (
           <ReporteCompartidoView modoRuta="consultor" />
         ) : !rango_fechas_listo ? (
           <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-8">
@@ -195,18 +289,29 @@ function AppRouter() {
           </div>
         ) : (
           <>
-            {tab === 'biblioteca' && (
-              <BibliotecaView
-                dateRange={range}
-                onRangeChange={setRange}
-                filters={bibliotecaFilters}
-                onFiltersChange={setBibliotecaFilters}
-              />
+            {hasDatasetAccess('biblioteca') && visitedTabs.has('biblioteca') && (
+              <div className={tab === 'biblioteca' ? 'block' : 'hidden'}>
+                <BibliotecaView
+                  dateRange={bibliotecaRange}
+                  onRangeChange={handleRangeChange}
+                  filters={bibliotecaFilters}
+                  onFiltersChange={setBibliotecaFilters}
+                />
+              </div>
             )}
-            {tab === 'estacionamiento' && <EstacionamientoView dateRange={range} onRangeChange={setRange} />}
-            {tab === 'admin' && <AdminDashboard />}
+            {hasDatasetAccess('estacionamiento') && visitedTabs.has('estacionamiento') && (
+              <div className={tab === 'estacionamiento' ? 'block' : 'hidden'}>
+                <EstacionamientoView dateRange={estacionamientoRange} onRangeChange={handleRangeChange} />
+              </div>
+            )}
+            {canAccessAdmin && visitedTabs.has('admin') && (
+              <div className={tab === 'admin' ? 'block' : 'hidden'}>
+                <AdminDashboard />
+              </div>
+            )}
           </>
-        )}
+          )}
+          </Suspense>
       </main>
 
       <AssistantDrawer
@@ -215,6 +320,7 @@ function AppRouter() {
         contexto_grafico={contextoGrafico}
         dateRange={range}
         dataset_tipo={tab === 'estacionamiento' ? 'estacionamiento' : 'biblioteca'}
+        filtros={filtrosActivos}
       />
     </div>
   )
@@ -226,7 +332,9 @@ export default function App() {
       <AuthProvider>
         <AssistantProvider>
           <DownloadProgressProvider>
-            <AppRouter />
+            <Suspense fallback={<VistaCargando />}>
+              <AppRouter />
+            </Suspense>
             <DownloadProgressModal />
           </DownloadProgressProvider>
         </AssistantProvider>

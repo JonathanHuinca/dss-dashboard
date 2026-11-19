@@ -45,12 +45,23 @@ DEFAULT_ROLES = [
 from app.core.config import settings
 
 def obtener_usuarios_demo() -> List[dict]:
-    admin_pw = settings.DEMO_ADMIN_PASSWORD
-    user_pw = settings.DEMO_USER_PASSWORD
+    admin_pw = "AdminUCT2026!"
+    user_pw = "UCTdemo2026!"
     return [
         {
             "email": "admin@uct.cl",
             "nombre_completo": "Super Administrador UCT",
+            "password": admin_pw,
+            "roles": ["Admin_Sistema"],
+            "allowed_datasets": ["biblioteca", "estacionamiento"],
+            "can_use_ai": True,
+            "can_export": True,
+            "can_ingest": True,
+            "espacio_id": None,
+        },
+        {
+            "email": "jhuinca2020@alu.uct.cl",
+            "nombre_completo": "Jonathan Huinca",
             "password": admin_pw,
             "roles": ["Admin_Sistema"],
             "allowed_datasets": ["biblioteca", "estacionamiento"],
@@ -68,7 +79,7 @@ def obtener_usuarios_demo() -> List[dict]:
             "can_use_ai": True,
             "can_export": True,
             "can_ingest": True,
-            "espacio_id": 1,
+            "espacio_id": None,
         },
         {
             "email": "analista@uct.cl",
@@ -115,10 +126,6 @@ async def _ensure_roles(db: AsyncSession) -> dict[str, Rol]:
 
 
 async def seed_test_users(db: AsyncSession, role_map: dict[str, Rol]) -> None:
-    if not settings.SEMILLA_DEMO or settings.ENVIRONMENT.lower() != "development":
-        logger.info("[seed] Creación de usuarios demo omitida (SEMILLA_DEMO=false o ENVIRONMENT != development).")
-        return
-
     usuarios_demo = obtener_usuarios_demo()
     for udef in usuarios_demo:
         stmt = select(Usuario).where(Usuario.email == udef["email"])
@@ -150,12 +157,17 @@ async def seed_test_users(db: AsyncSession, role_map: dict[str, Rol]) -> None:
 
             logger.info(f"[seed] Usuario creado: {udef['email']} ({udef['roles']})")
         else:
-            # Sincronizar roles y banderas si ya existía
+            # Sincronizar roles y banderas si ya existia
             user.can_use_ai = udef.get("can_use_ai", user.can_use_ai)
             user.can_export = udef.get("can_export", user.can_export)
             user.can_ingest = udef.get("can_ingest", user.can_ingest)
-            if udef.get("espacio_id") is not None:
+            if "espacio_id" in udef:
                 user.espacio_id = udef["espacio_id"]
+            if udef.get("password"):
+                user.hashed_password = hash_password(udef["password"])
+                user.is_active = True
+                user.intentos_fallidos_login = 0
+                user.bloqueado_hasta = None
             for role_name in udef["roles"]:
                 rol = role_map.get(role_name)
                 if rol:

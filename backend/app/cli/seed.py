@@ -215,6 +215,10 @@ async def seed() -> None:
         n_calendar = await _insert_calendar(session, adapter)
         await session.commit()
 
+        # 5. Roles y Usuarios Demo
+        from app.core.startup_seed import run_startup_seed
+        await run_startup_seed()
+
     elapsed = time.perf_counter() - t0
 
     print("\n+-------------------------------------+")

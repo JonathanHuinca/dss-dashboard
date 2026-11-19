@@ -1,14 +1,15 @@
+import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { DoorUsagePoint } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data } from 'plotly.js-dist-min'
 import { DoorClosed, ArrowDownRight, ArrowUpRight } from 'lucide-react'
 
 interface Props {
   data: DoorUsagePoint[]
 }
 
-export function DoorUsagePlotlyChart({ data }: Props) {
-  const chartData: Data[] = [
+function DoorUsagePlotlyChartComponent({ data }: Props) {
+  const chartData = useMemo<Data[]>(() => [
     {
       x: data.map(d => d.puerta),
       y: data.map(d => d.entradas),
@@ -37,9 +38,9 @@ export function DoorUsagePlotlyChart({ data }: Props) {
         `Total Salidas: <b>%{y:,}</b><extra></extra>`
       ),
     },
-  ]
+  ], [data])
 
-  const layout = {
+  const layout = useMemo(() => ({
     title: { 
       text: 'Distribución de Flujo por Torniquetes y Accesos Universales — Salas Biblioteca CSF',
       font: { size: 12.5, color: '#1E293B' },
@@ -73,7 +74,7 @@ export function DoorUsagePlotlyChart({ data }: Props) {
       yanchor: 'bottom' as const,
       font: { size: 11, color: '#334155' },
     },
-  }
+  }), [])
 
   return (
     <div className="w-full space-y-3">
@@ -100,46 +101,22 @@ export function DoorUsagePlotlyChart({ data }: Props) {
                   <DoorClosed size={13} className={isUniversal ? 'text-amber-600' : 'text-uct-blue-primary'} />
                   <span className="truncate">{d.puerta}</span>
                 </span>
-                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                  isUniversal ? 'bg-amber-100 text-amber-800' : 'bg-blue-100/70 text-uct-blue-primary'
-                }`}>
-                  {d.tipo_acceso || (isUniversal ? 'Universal' : 'Principal')}
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold bg-white border border-slate-200 text-slate-600">
+                  {d.tipo_acceso}
                 </span>
               </div>
-
-              <div className="text-[10px] text-slate-500 font-medium">
-                {d.sala || 'Biblioteca CSF'}
-              </div>
-
-              <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-600 bg-white p-1.5 rounded-lg border border-slate-200/60 font-mono">
-                <div>
-                  <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Entrada</span>
-                  <span className="text-slate-800 font-bold">{d.id_in || '—'}</span>
-                  <span className="text-[9px] text-slate-400 block truncate" title={d.cod_in}>
-                    {d.cod_in || ''}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Salida</span>
-                  <span className="text-slate-800 font-bold">{d.id_out || '—'}</span>
-                  <span className="text-[9px] text-slate-400 block truncate" title={d.cod_out}>
-                    {d.cod_out || ''}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between text-[11px] pt-0.5 px-0.5">
-                <span className="flex items-center gap-1 text-slate-700 text-[10px]">
+              <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-200/60 text-[11px]">
+                <div className="flex items-center gap-1 text-slate-700">
                   <ArrowDownRight size={11} className="text-uct-blue-primary" />
-                  <b className="text-slate-900">{d.entradas.toLocaleString('es-CL')}</b>
-                </span>
-                <span className="flex items-center gap-1 text-slate-700 text-[10px]">
+                  <span>In: <b className="font-mono">{d.entradas.toLocaleString('es-CL')}</b></span>
+                </div>
+                <div className="flex items-center gap-1 text-slate-700">
                   <ArrowUpRight size={11} className="text-amber-600" />
-                  <b className="text-slate-900">{d.salidas.toLocaleString('es-CL')}</b>
-                </span>
-                <span className="text-slate-500 font-bold text-[10px]">
-                  {d.total.toLocaleString('es-CL')}
-                </span>
+                  <span>Out: <b className="font-mono">{d.salidas.toLocaleString('es-CL')}</b></span>
+                </div>
+              </div>
+              <div className="text-[10px] text-slate-400 font-mono truncate" title={`Lector In: ${d.cod_in} | Lector Out: ${d.cod_out}`}>
+                In: {d.cod_in || 'N/A'} • Out: {d.cod_out || 'N/A'}
               </div>
             </div>
           )
@@ -149,4 +126,5 @@ export function DoorUsagePlotlyChart({ data }: Props) {
   )
 }
 
+export const DoorUsagePlotlyChart = memo(DoorUsagePlotlyChartComponent)
 export default DoorUsagePlotlyChart

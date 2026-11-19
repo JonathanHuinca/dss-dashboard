@@ -93,9 +93,6 @@ const DailyAverageAttendancePlotlyChart = memo(
 const FleetDonutChart = memo(
   lazy(() => import('../charts/FleetDonutChart').then((m) => ({ default: m.FleetDonutChart })))
 )
-const VehicleDailyPlotlyChart = memo(
-  lazy(() => import('../charts/VehicleDailyPlotlyChart').then((m) => ({ default: m.VehicleDailyPlotlyChart })))
-)
 const VehicleMilestonesPlotlyChart = memo(
   lazy(() =>
     import('../charts/VehicleMilestonesPlotlyChart').then((m) => ({ default: m.VehicleMilestonesPlotlyChart }))
@@ -116,13 +113,11 @@ const VehicleBehavioralClustersPlotlyChart = memo(
     }))
   )
 )
-const SeccionCampana24Horas = memo(
-  lazy(() =>
-    import('./biblioteca/SeccionCampana24Horas').then((m) => ({
-      default: m.SeccionCampana24Horas,
-    }))
-  )
-)
+const SeccionCampana24Horas = lazy(() =>
+  import('./biblioteca/SeccionCampana24Horas').then((m) => ({
+    default: m.SeccionCampana24Horas,
+  }))
+) as React.ComponentType<any>
 
 function EsqueletoGraficoInstitucional() {
   return (
@@ -185,8 +180,12 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
       const primerVigente = (resp.reportes || []).find((r: any) => r.vigente)
       if (primerVigente) {
         setTokenReporteActivo(primerVigente.token_acceso)
-        const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso)
-        setDatosReporte(repData)
+        try {
+          const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso)
+          setDatosReporte(repData)
+        } catch (errRep: any) {
+          console.warn('Error al cargar reporte inicial:', errRep)
+        }
       }
     } catch (err: any) {
       setErrorAcceso(err?.response?.data?.detail || 'No fue posible cargar su bandeja de reportes ejecutivos.')
@@ -204,8 +203,12 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
       const primerVigente = (resp.reportes || []).find((r: any) => r.vigente)
       if (primerVigente) {
         setTokenReporteActivo(primerVigente.token_acceso)
-        const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso)
-        setDatosReporte(repData)
+        try {
+          const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso)
+          setDatosReporte(repData)
+        } catch (errRep: any) {
+          console.warn('Error al cargar reporte inicial:', errRep)
+        }
       }
     } catch (err: any) {
       setErrorAcceso(
@@ -278,7 +281,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
     } catch (err: any) {
       setErrorPassword(
         err?.response?.data?.detail ||
-          'No fue posible registrar la contraseña. Debe tener mínimo 8 caracteres, una mayúscula, un número y un carácter especial.'
+        'No fue posible registrar la contraseña. Debe tener mínimo 8 caracteres, una mayúscula, un número y un carácter especial.'
       )
     } finally {
       setCreandoPassword(false)
@@ -296,7 +299,11 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
         setErrorLogin('Credenciales institucionales incorrectas. Verifique su correo y contraseña.')
       }
     } catch (err: any) {
-      setErrorLogin(err?.message || 'Error al autenticar credenciales institucionales.')
+      const detail =
+        err?.response?.data?.detail ||
+        err?.message ||
+        'Credenciales institucionales incorrectas. Verifique su correo y contraseña.'
+      setErrorLogin(detail)
     } finally {
       setIngresandoLogin(false)
     }
@@ -873,8 +880,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                         {reporte.filtros_bloqueados?.sala === 'CSF02' || reporte.filtros_bloqueados?.sala === 'sala_1'
                           ? 'Sala 1 (CSF02 - 2° Piso)'
                           : reporte.filtros_bloqueados?.sala === 'CSF04' || reporte.filtros_bloqueados?.sala === 'sala_2'
-                          ? 'Sala 2 Pecera (CSF04 - 1° Piso)'
-                          : 'Ambas Salas (Sala 1 + Sala 2)'}
+                            ? 'Sala 2 Pecera (CSF04 - 1° Piso)'
+                            : 'Ambas Salas (Sala 1 + Sala 2)'}
                       </strong>
                     </span>
                     <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-800 border border-slate-200 font-medium">
@@ -900,10 +907,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                     {!reporte.filtros_bloqueados?.regimen_horario || reporte.filtros_bloqueados?.regimen_horario === '24h_total'
                       ? 'Todo Horario (24h completo)'
                       : reporte.filtros_bloqueados?.regimen_horario === 'dentro_horario'
-                      ? 'En Horario Hábil'
-                      : reporte.filtros_bloqueados?.regimen_horario === 'fuera_horario'
-                      ? 'Fuera de Horario'
-                      : reporte.filtros_bloqueados?.regimen_horario}
+                        ? 'En Horario Hábil'
+                        : reporte.filtros_bloqueados?.regimen_horario === 'fuera_horario'
+                          ? 'Fuera de Horario'
+                          : reporte.filtros_bloqueados?.regimen_horario}
                   </strong>
                 </span>
                 {reporte.filtros_bloqueados?.direccion && (
@@ -913,8 +920,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                       {reporte.filtros_bloqueados.direccion === 'entrar'
                         ? 'Solo Entradas'
                         : reporte.filtros_bloqueados.direccion === 'salir'
-                        ? 'Solo Salidas'
-                        : reporte.filtros_bloqueados.direccion}
+                          ? 'Solo Salidas'
+                          : reporte.filtros_bloqueados.direccion}
                     </strong>
                   </span>
                 )}
@@ -925,8 +932,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                       {(reporte.filtros_bloqueados as any).tipo_dia === 'habiles'
                         ? 'Lunes a Viernes'
                         : (reporte.filtros_bloqueados as any).tipo_dia === 'fines_semana'
-                        ? 'Sábado y Domingo'
-                        : (reporte.filtros_bloqueados as any).tipo_dia}
+                          ? 'Sábado y Domingo'
+                          : (reporte.filtros_bloqueados as any).tipo_dia}
                     </strong>
                   </span>
                 )}
@@ -961,13 +968,12 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                   return (
                     <div
                       key={item.id}
-                      className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between gap-2.5 ${
-                        seleccionado
+                      className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between gap-2.5 ${seleccionado
                           ? 'bg-blue-50/70 border-uct-blue-primary shadow-xs'
                           : item.vigente
-                          ? 'bg-slate-50/70 border-slate-200 hover:border-slate-300'
-                          : 'bg-slate-50 border-slate-200 opacity-60'
-                      }`}
+                            ? 'bg-slate-50/70 border-slate-200 hover:border-slate-300'
+                            : 'bg-slate-50 border-slate-200 opacity-60'
+                        }`}
                     >
                       <div>
                         <div className="flex items-center justify-between gap-2 mb-1">
@@ -975,11 +981,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                             {item.codigo_corto}
                           </span>
                           <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                              item.vigente
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${item.vigente
                                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                 : 'bg-red-50 text-red-700 border border-red-200'
-                            }`}
+                              }`}
                           >
                             {item.vigente ? 'Disponible' : item.expirado ? 'Expirado' : 'Deshabilitado'}
                           </span>
@@ -993,11 +998,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                         <button
                           type="button"
                           onClick={() => cargarReportePorToken(item.token_acceso)}
-                          className={`w-full py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                            seleccionado
+                          className={`w-full py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${seleccionado
                               ? 'bg-uct-blue-primary text-white'
                               : 'bg-white hover:bg-slate-100 text-uct-blue-primary border border-slate-300'
-                          }`}
+                            }`}
                         >
                           {seleccionado ? 'Reporte Activo en Pantalla' : 'Visualizar este Reporte'}
                         </button>
@@ -1072,9 +1076,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                             </p>
                           </div>
                           <div
-                            className={`w-9 h-9 shrink-0 rounded-lg border flex items-center justify-center ${
-                              info.claseIconoBanner || 'bg-blue-50 text-uct-blue-primary border-blue-200/60'
-                            }`}
+                            className={`w-9 h-9 shrink-0 rounded-lg border flex items-center justify-center ${info.claseIconoBanner || 'bg-blue-50 text-uct-blue-primary border-blue-200/60'
+                              }`}
                           >
                             <IconComp size={18} />
                           </div>
@@ -1090,11 +1093,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
 
               {kpiCardsItems.length > 0 && (
                 <div
-                  className={`grid grid-cols-1 sm:grid-cols-2 ${
-                    reporte.espacio_id === 2 && kpiCardsItems.length > 4
+                  className={`grid grid-cols-1 sm:grid-cols-2 ${reporte.espacio_id === 2 && kpiCardsItems.length > 4
                       ? 'lg:grid-cols-3 xl:grid-cols-6'
                       : 'lg:grid-cols-4'
-                  } gap-4`}
+                    } gap-4`}
                 >
                   {kpiCardsItems.map((catInd) => {
                     const info = formatearValorIndicador(catInd.id)
@@ -1121,37 +1123,38 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
             <div className="flex flex-wrap gap-4 items-start">
               {reporte.espacio_id === 1 && (
                 <>
-                  {grafVisibles.includes('aforo_curva') && (grafData.aforo_curva || grafData.flujo_horario) && (
+
+                  {grafVisibles.includes('aforo_presencia_intervalos') && grafData.aforo_presencia_intervalos && (
                     <div className="w-full space-y-2">
                       <ChartCard
                         layout="full"
-                        title={`Curva de Aforo Concurrente vs Capacidad (${reporte.fecha_inicio} al ${reporte.fecha_fin})`}
+                        title={`Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima (${reporte.fecha_inicio} al ${reporte.fecha_fin})`}
                       >
                         <Suspense fallback={<EsqueletoGraficoInstitucional />}>
                           <OccupancyAreaChart
-                            data={grafData.aforo_curva || grafData.flujo_horario}
+                            data={grafData.aforo_presencia_intervalos}
                             capacidad={
                               reporte.filtros_bloqueados?.sala === 'CSF02'
-                                ? 93
+                                ? 200
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                ? 120
-                                : 213
+                                  ? 226
+                                  : 426
                             }
                             unit="ocupantes"
                             salaLabel={
                               reporte.filtros_bloqueados?.sala === 'CSF02'
                                 ? 'Sala 1 (CSF02)'
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                ? 'Sala 2 Pecera (CSF04)'
-                                : 'Ambas Salas'
+                                  ? 'Sala 2 Pecera (CSF04)'
+                                  : 'Todas las Salas (Campus San Francisco)'
                             }
-                            capSala1={93}
-                            capSala2={120}
+                            capSala1={200}
+                            capSala2={226}
                             comparativaSalas={grafData.comparativa_salas || []}
                           />
                         </Suspense>
                       </ChartCard>
-                      {obtenerNotasDeSeccion('aforo_curva').map((n) => (
+                      {obtenerNotasDeSeccion('aforo_presencia_intervalos').map((n) => (
                         <div
                           key={n.id}
                           className="no-imprimir-reporte print:hidden px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-slate-800"
@@ -1334,26 +1337,37 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                     </div>
                   )}
 
-                  {grafVisibles.includes('prophet_diario') && grafData.prophet_diario && (
+                  {grafVisibles.includes('prophet_presencia_14dias') && grafData.prophet_presencia_14dias && (
                     <div className="w-full space-y-2">
-                      <ChartCard layout="full" title="Pronóstico Continuo Prophet (7 Días)">
+                      <ChartCard
+                        layout="full"
+                        title="Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado) — 14 Días"
+                      >
                         <Suspense fallback={<EsqueletoGraficoInstitucional />}>
                           <ForecastLineChart
-                            forecast={grafData.prophet_diario.forecast || []}
-                            historico7d={grafData.prophet_diario.historico_7d || []}
-                            pronostico7d={grafData.prophet_diario.pronostico_7d || []}
-                            capacidad={grafData.prophet_diario.capacidad || 213}
+                            forecast={grafData.prophet_presencia_14dias.forecast || []}
+                            historico7d={grafData.prophet_presencia_14dias.historico_7d || []}
+                            pronostico7d={grafData.prophet_presencia_14dias.pronostico_7d || []}
+                            capacidad={grafData.prophet_presencia_14dias.capacidad_asientos || 426}
                             salaNombre={
                               reporte.filtros_bloqueados?.sala === 'CSF02'
                                 ? 'Sala 1 (CSF02)'
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                ? 'Sala 2 Pecera (CSF04)'
-                                : 'Biblioteca Campus San Francisco'
+                                  ? 'Sala 2 Pecera (CSF04)'
+                                  : 'Todas las Salas (Campus San Francisco)'
                             }
                             recinto="biblioteca"
                           />
                         </Suspense>
                       </ChartCard>
+                      {obtenerNotasDeSeccion('prophet_presencia_14dias').map((n) => (
+                        <div
+                          key={n.id}
+                          className="no-imprimir-reporte print:hidden px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-slate-800"
+                        >
+                          <strong className="text-uct-blue-primary">Nota del Emisor ({n.titulo}):</strong> {n.contenido}
+                        </div>
+                      ))}
                     </div>
                   )}
 
@@ -1364,7 +1378,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                           <div className="flex items-center gap-2 mb-1">
                             <Moon className="w-5 h-5 text-uct-gold" />
                             <h3 className="text-sm font-bold text-white">
-                              8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno
+                              Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno
                             </h3>
                           </div>
                           <p className="text-xs text-slate-300">
@@ -1399,22 +1413,30 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
 
               {reporte.espacio_id === 2 && (
                 <>
-                  {grafVisibles.includes('aforo_vehicular_curva') &&
-                    (grafData.aforo_vehicular_curva || grafData.flujo_horario_vehicular) && (
+                  {grafVisibles.includes('presencia_vehicular_intervalos') &&
+                    grafData.presencia_vehicular_intervalos && (
                       <div className="w-full space-y-2">
                         <ChartCard
                           layout="full"
-                          title={`Curva de Ocupación Vehicular vs Capacidad (${reporte.fecha_inicio} al ${reporte.fecha_fin})`}
+                          title={`Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad (${reporte.fecha_inicio} al ${reporte.fecha_fin})`}
                         >
                           <Suspense fallback={<EsqueletoGraficoInstitucional />}>
                             <OccupancyAreaChart
-                              data={grafData.aforo_vehicular_curva || grafData.flujo_horario_vehicular}
+                              data={grafData.presencia_vehicular_intervalos}
                               capacidad={indEjecutivos.capacidad_plazas || 125}
                               unit="vehículos"
                               salaLabel={reporte.filtros_bloqueados?.sector || 'Estacionamiento CSF'}
                             />
                           </Suspense>
                         </ChartCard>
+                        {obtenerNotasDeSeccion('presencia_vehicular_intervalos').map((n) => (
+                          <div
+                            key={n.id}
+                            className="no-imprimir-reporte print:hidden px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-slate-800"
+                          >
+                            <strong className="text-uct-blue-primary">Nota del Emisor ({n.titulo}):</strong> {n.contenido}
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -1423,16 +1445,6 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                       <ChartCard layout="full" title="Flujo Horario de Ingresos vs Salidas Vehiculares">
                         <Suspense fallback={<EsqueletoGraficoInstitucional />}>
                           <HourlyBarChart data={grafData.flujo_horario_vehicular} />
-                        </Suspense>
-                      </ChartCard>
-                    </div>
-                  )}
-
-                  {grafVisibles.includes('evolucion_diaria_vehicular') && grafData.evolucion_diaria_vehicular && (
-                    <div className="w-full space-y-2">
-                      <ChartCard layout="full" title="Evolución Diaria de Accesos Vehiculares">
-                        <Suspense fallback={<EsqueletoGraficoInstitucional />}>
-                          <VehicleDailyPlotlyChart data={grafData.evolucion_diaria_vehicular} />
                         </Suspense>
                       </ChartCard>
                     </div>

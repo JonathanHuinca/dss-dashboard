@@ -1,14 +1,15 @@
+import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { VehicleDailyPoint } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data } from 'plotly.js-dist-min'
 import { formatDayMonthSpanish } from '../../types/dateRange'
 
 interface Props {
   data: VehicleDailyPoint[]
 }
 
-export function VehicleDailyPlotlyChart({ data }: Props) {
-  const chartData: Data[] = [
+function VehicleDailyPlotlyChartComponent({ data }: Props) {
+  const chartData = useMemo<Data[]>(() => [
     {
       x: data.map(d => formatDayMonthSpanish(d.fecha)),
       y: data.map(d => d.entradas),
@@ -36,9 +37,9 @@ export function VehicleDailyPlotlyChart({ data }: Props) {
       line: { color: '#0284C7', width: 1.5, dash: 'dot' },
       hovertemplate: '<b>%{x}</b><br>Únicos: %{y:,}<extra></extra>',
     },
-  ]
+  ], [data])
 
-  const layout = {
+  const layout = useMemo(() => ({
     title: { text: 'Evolución Diaria de Accesos Vehiculares (Serie Temporal)' },
     margin: { t: 35, r: 25, b: 65, l: 55 },
     xaxis: {
@@ -51,7 +52,7 @@ export function VehicleDailyPlotlyChart({ data }: Props) {
       title: { text: 'Cantidad de Vehículos' },
       automargin: true,
     },
-  }
+  }), [])
 
   return (
     <InteractiveChart
@@ -62,3 +63,6 @@ export function VehicleDailyPlotlyChart({ data }: Props) {
     />
   )
 }
+
+export const VehicleDailyPlotlyChart = memo(VehicleDailyPlotlyChartComponent)
+export default VehicleDailyPlotlyChart

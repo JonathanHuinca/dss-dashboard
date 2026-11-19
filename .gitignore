@@ -9,12 +9,20 @@ backend/.env
 .env.production
 .env.staging
 
+# Archivos Docker Compose exclusivos de infraestructura / entorno local
+compose.*.yml
+docker-compose.*.yml
+
 # ============================================================
 # DATOS OPERACIONALES UCT — Privacidad Ley 21.719
 # ============================================================
 
 # Carpeta con datos crudos de HikCentral (torniquetes y ANPR)
 Documentos_soloVista/
+
+# Respaldos de base de datos
+*.bak
+*.bacpac
 
 # Archivos de datos con registros de personas y vehiculos
 *.csv
@@ -178,7 +186,7 @@ local/
 certificados/
 
 # Datos fuente y scripts auxiliares de la raíz usados localmente
-biblioteca/
+/biblioteca/
 Documentos_soloVista/
 /scripts/
 

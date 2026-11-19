@@ -29,6 +29,51 @@ from app.services.chat.ejecutor_herramientas import (
 logger = logging.getLogger(__name__)
 
 
+def detectar_intencion_visualizacion(texto: str) -> bool:
+    """
+    Analiza la intención de la consulta:
+    Retorna True si el usuario solicita explícitamente una visualización o dibujo gráfico
+    ("grafica", "muestra el gráfico", "dibuja", "traza", "plotea", etc.).
+    Retorna False si la consulta es de tipo analítico, métrico, comparativo, explicativo
+    o preguntas sobre tendencias del gráfico ya existente en pantalla.
+    """
+    if not texto:
+        return False
+    texto_norm = texto.lower().strip()
+
+    # Patrones de exclusión: preguntas o frases analíticas/explicativas SOBRE el gráfico
+    patrones_explicativos_sobre_grafico = [
+        r'\bqu[eé]\s+(?:nos\s+)?(?:muestra|indica|dice|representa|observas|significa|pas[oó])\s+(?:en\s+|de\s+)?(?:el|este)?\s*gr[aá]fico\b',
+        r'^(?:analiz[ae]|expli[cq][ue]|detall[ae]|interpret[ae]|eval[uú][ae]|compara|resum[en]|dame\s+(?:un\s+)?resumen)\b',
+        r'\b(?:por\s+qu[eé]|cu[aá]l\s+es|cu[aá]ntos?|qu[eé]\s+tendencia|qu[eé]\s+d[ií]a|a\s+qu[eé]\s+hora)\b',
+    ]
+
+    # Verbos imperativos directos para graficar o trazar
+    patron_imperativo_graficar = r'\b(?:grafica|grafíca|grafícame|grafícalo|graficar|dibuja|dibújame|dibújalo|dibujar|traza|trázame|trázalo|trazar|plotea|plotear)\b'
+
+    # Peticiones directas para mostrar/ver/desplegar un gráfico visual
+    patron_mostrar_grafico = r'\b(?:muestra|mu[eé]strame|mostrar|despliega|despli[eé]game|desplegar|quiero\s+ver|deseo\s+ver|necesito\s+ver|ens[eé][ñn]ame)\s+(?:el\s+|la\s+|un\s+|una\s+|este\s+|esta\s+)?(?:gr[aá]fico|gr[aá]fica|curva|plot|chart|visualizaci[oó]n|diagrama)\b'
+
+    # Solicitud de formato visual explícito
+    patron_en_formato_grafico = r'\b(?:en\s+(?:un\s+)?gr[aá]fico|como\s+(?:un\s+)?gr[aá]fico|en\s+forma\s+gr[aá]fica|con\s+(?:un\s+)?gr[aá]fico)\b'
+
+    tiene_peticion_grafica = bool(
+        re.search(patron_imperativo_graficar, texto_norm) or
+        re.search(patron_mostrar_grafico, texto_norm) or
+        re.search(patron_en_formato_grafico, texto_norm)
+    )
+
+    if not tiene_peticion_grafica:
+        return False
+
+    for pat in patrones_explicativos_sobre_grafico:
+        if re.search(pat, texto_norm):
+            if not re.search(r'\by\s+(?:grafica|dibuja|traza|muestra\s+el\s+gr[aá]fico)\b', texto_norm):
+                return False
+
+    return True
+
+
 async def procesar_consulta_analitica(
     request: Request,
     req: ChatRequest,
@@ -106,7 +151,7 @@ async def procesar_consulta_analitica(
 
     try:
         if debe_usar_grafico_contexto and req.grafico_contexto:
-            component, payload, resumen_metricas, fallback_fig, fallback_table = await resolver_datos_grafico_contexto(
+            raw_component, raw_payload, resumen_metricas, raw_fig, raw_table = await resolver_datos_grafico_contexto(
                 grafico_id=req.grafico_contexto,
                 espacio_id=req.espacio_id,
                 fecha_inicio=req.fecha_inicio,
@@ -122,7 +167,20 @@ async def procesar_consulta_analitica(
                 "fecha_inicio": req.fecha_inicio,
                 "fecha_fin": req.fecha_fin,
             }
-            tipo = "component"
+
+            pide_visualizacion = detectar_intencion_visualizacion(prompt_text)
+            if pide_visualizacion:
+                tipo = "component"
+                component = raw_component
+                payload = raw_payload
+                fallback_fig = raw_fig
+                fallback_table = raw_table
+            else:
+                tipo = "text"
+                component = None
+                payload = None
+                fallback_fig = None
+                fallback_table = None
         else:
             # Consulta libre analizada con Gemini Function Calling y anio activo dinamico
             anio_activo = await obtener_anio_activo_espacio(db, req.espacio_id)
@@ -168,7 +226,7 @@ async def procesar_consulta_analitica(
                 "2. UTILIZA EXCLUSIVAMENTE los números, totales, promedios y desgloses diarios calculados arriba. "
                 "ESTÁ TERMINANTEMENTE PROHIBIDO inventar cifras o aproximar valores no provistos en las métricas oficiales.\n"
                 "3. Si un día del período tuvo 0 ingresos o la base de datos reporta que estuvo cerrado/sin actividad, explícalo con total transparencia.\n"
-                "4. Menciona e integra activamente el contexto del Calendario Académico UCT reportado arriba (feriados, recesos o exámenes) para justificar el comportamiento de la concurrencia.\n"
+                "4. Menciona e integra activamente los hechos institucionales reportados arriba (Feriados Oficiales, Semanas de Receso, Vacaciones, Exámenes/Solemnes, Hitos de Clases, Suspensiones, Paros y Contingencias, y Campaña de Horario 24 Horas) para justificar y correlacionar analíticamente el comportamiento de la concurrencia.\n"
                 f"5. DIRECTIVA DE AISLAMIENTO: Estás operando en el módulo {nombre_espacio}. Prohibido mencionar o inventar información del módulo contrario.\n"
                 "6. Cero emojis."
             )
@@ -185,8 +243,9 @@ async def procesar_consulta_analitica(
                     meta_payload = {
                         "type": "meta",
                         "intent": tool_name,
-                        "component": component,
-                        "payload": payload,
+                        "tipo": tipo,
+                        "component": component if tipo == "component" else None,
+                        "payload": payload if tipo == "component" else None,
                         "conversacion_id": str(conv_id_actual),
                     }
                     yield f"data: {json.dumps(meta_payload, default=str)}\n\n"
@@ -217,8 +276,8 @@ async def procesar_consulta_analitica(
                             rol="assistant",
                             tipo=tipo,
                             contenido=narrativa,
-                            herramienta=tool_name if is_tool_call else None,
-                            argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tool_args) else None,
+                            herramienta=tool_name if (is_tool_call and tipo == "component") else None,
+                            argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
                             modelo=req.model,
                         )
 
@@ -260,8 +319,8 @@ async def procesar_consulta_analitica(
             rol="assistant",
             tipo=tipo,
             contenido=narrativa,
-            herramienta=tool_name if is_tool_call else None,
-            argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tool_args) else None,
+            herramienta=tool_name if (is_tool_call and tipo == "component") else None,
+            argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
             modelo=req.model,
         )
 
@@ -278,11 +337,11 @@ async def procesar_consulta_analitica(
 
         return ChatResponse(
             tipo=tipo,
-            component=component,
-            payload=payload,
+            component=component if tipo == "component" else None,
+            payload=payload if tipo == "component" else None,
             explicacion=narrativa,
-            fig_data=fallback_fig,
-            table_data=fallback_table,
+            fig_data=fallback_fig if tipo == "component" else None,
+            table_data=fallback_table if tipo == "component" else None,
             session_id=req.session_id,
             conversacion_id=str(conv_id_actual),
             model_used=req.model,

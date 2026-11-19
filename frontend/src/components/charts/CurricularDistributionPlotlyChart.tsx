@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react'
+import React, {  useState, useMemo, useEffect , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { CurricularDistributionResponse } from '../../api/client'
-import { Data } from 'plotly.js-dist-min'
+import type { Data  } from 'plotly.js-dist-min'
 import {
   ShieldCheck,
   BookOpen,
@@ -36,10 +36,10 @@ const PALETA_COLORES = [
   '#64748B',
 ]
 
-export function CurricularDistributionPlotlyChart({ data }: Props) {
+function CurricularDistributionPlotlyChartComponent({ data }: Props) {
   const [agrupacion, setAgrupacion] = useState<'carreras' | 'facultades' | 'cohortes'>('carreras')
   const [metrica, setMetrica] = useState<'visitas' | 'alumnos'>('visitas')
-  const [topN, setTopN] = useState<number | 'todas'>(10)
+  const [topN, setTopN] = useState<number | 'todas'>(15)
   const [rebanadaSeleccionada, setRebanadaSeleccionada] = useState<string | null>(null)
 
   // Restablecer selección al cambiar filtros internos
@@ -79,7 +79,7 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
       const seleccionadas =
         topN === 'todas'
           ? carrerasOrdenadasSegunMetrica
-          : carrerasOrdenadasSegunMetrica.slice(0, typeof topN === 'number' ? topN : 10)
+          : carrerasOrdenadasSegunMetrica.slice(0, typeof topN === 'number' ? topN : 15)
 
       return seleccionadas.map((c) => ({
         nombre: c.carrera,
@@ -230,7 +230,8 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
     return [
       {
         type: 'pie',
-        hole: 0.48,
+        hole: 0.52,
+        domain: { x: [0.10, 0.90], y: [0.35, 0.98] },
         labels,
         values: itemsDonut.map((e) =>
           metrica === 'visitas' ? e.visitas : e.alumnos
@@ -259,7 +260,7 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
     ]
   }, [elementosOrdenados, agrupacion, topN, metrica, rebanadaSeleccionada])
 
-  const layoutDonut = {
+  const layoutDonut = useMemo(() => ({
     title: {
       text: `Participación Porcentual (%) por ${
         agrupacion === 'carreras'
@@ -277,14 +278,14 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
       orientation: 'h' as const,
       x: 0.5,
       xanchor: 'center' as const,
-      y: -0.12,
+      y: 0.28,
       yanchor: 'top' as const,
-      font: { size: 9.5, color: '#334155' },
+      font: { size: 9, color: '#334155' },
       itemclick: false as const,
       itemdoubleclick: false as const,
     },
-    margin: { t: 35, r: 15, b: 85, l: 15 },
-  }
+    margin: { t: 32, r: 12, b: 15, l: 12 },
+  }), [agrupacion, topN])
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
     if (event.points && event.points.length > 0) {
@@ -453,7 +454,7 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
             data={chartDonutData}
             layout={layoutDonut}
             filename={`porcentaje_${agrupacion}_${metrica}_uct`}
-            height={480}
+            height={500}
             onClick={handleDonutClick}
           />
         </div>
@@ -461,3 +462,6 @@ export function CurricularDistributionPlotlyChart({ data }: Props) {
     </div>
   )
 }
+
+export const CurricularDistributionPlotlyChart = memo(CurricularDistributionPlotlyChartComponent)
+export default CurricularDistributionPlotlyChart
