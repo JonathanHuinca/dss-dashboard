@@ -17,6 +17,13 @@ UMBRAL_ALERTA_85 = 0.85
 # Prefijo de hash seudonimizado asociado a registros sin credencial / marcajes de prueba excluidos de conformes
 PREFIJO_HASH_PRUEBA_EXCLUIDO = "e8f17a68%"
 
+# Constantes SQL y etiquetas reutilizables
+CLAUSULA_ESPACIO_ID = "espacio_id = :espacio_id"
+DOOR_SALA_1_LIKE = "(door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')"
+DOOR_SALA_2_LIKE = "(door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')"
+NOMBRE_SALA_1_CSF02 = "Sala 1 (CSF02)"
+NOMBRE_SALA_2_CSF04 = "Sala 2 (CSF04 Pecera)"
+
 # Caché en memoria para reutilizar horarios de operación, calendario y contingencias entre gráficos simultáneos
 cache_horarios_espacio: TTLCache = TTLCache(maxsize=64, ttl=300)
 
@@ -130,7 +137,7 @@ class AttendanceService:
             except Exception:
                 fecha_inicio = None
         fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
-        conditions = ["espacio_id = :espacio_id"]
+        conditions = [CLAUSULA_ESPACIO_ID]
         params: dict = {"espacio_id": espacio_id}
 
         if fecha_inicio:
@@ -198,9 +205,9 @@ class AttendanceService:
             partes_c = [f"(CAST(time AS DATE) BETWEEN '{c_ini.isoformat()}' AND '{c_fin.isoformat()}')"]
             sub_c = (getattr(cca, "subespacio", None) or "todos").strip()
             if sub_c == "sala_1":
-                partes_c.append("(door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')")
+                partes_c.append(DOOR_SALA_1_LIKE)
             elif sub_c == "sala_2":
-                partes_c.append("(door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')")
+                partes_c.append(DOOR_SALA_2_LIKE)
             h_ini_c = (getattr(cca, "hora_inicio", None) or "").strip()
             h_fin_c = (getattr(cca, "hora_fin", None) or "").strip()
             if h_ini_c and h_fin_c:
@@ -311,9 +318,9 @@ class AttendanceService:
                                 params[p_fin] = h_row.fecha_fin
                             sub_h = (getattr(h_row, "subespacio", None) or "todos").strip()
                             if sub_h in ("sala_1", "sala1"):
-                                sub_clauses.append("(door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')")
+                                sub_clauses.append(DOOR_SALA_1_LIKE)
                             elif sub_h in ("sala_2", "sala2"):
-                                sub_clauses.append("(door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')")
+                                sub_clauses.append(DOOR_SALA_2_LIKE)
                             if not h_row.es_continuo_24h:
                                 p_ape = f"h_apertura_{h_id}"
                                 p_cie = f"h_cierre_{h_id}"
@@ -366,9 +373,9 @@ class AttendanceService:
         if sala and sala.lower() not in ("todos", "todas", ""):
             s_low = sala.strip().lower()
             if any(k in s_low for k in ["csf02", "sala_1", "sala 1", "edificio 2", "locker", "2do piso"]) or s_low == "1":
-                conditions.append("(door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')")
+                conditions.append(DOOR_SALA_1_LIKE)
             elif any(k in s_low for k in ["csf04", "sala_2", "sala 2", "edificio 4", "pecera", "1er piso", "24h"]) or s_low == "2":
-                conditions.append("(door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')")
+                conditions.append(DOOR_SALA_2_LIKE)
             else:
                 p_sala = f"sala_{len(params)}"
                 conditions.append(f"(door_entrada LIKE :{p_sala} OR door_salida LIKE :{p_sala})")
@@ -386,14 +393,14 @@ class AttendanceService:
                     elif d in ("s1_universal", "2177", "2170", "csf02_in01", "csf02_out01"):
                         door_clauses.append("(door_entrada LIKE '%CSF02_320 CTRA IN 01%' OR door_salida LIKE '%CSF02_320 CTRA OUT 01%' OR door_entrada IN ('2177', '2177.0') OR door_salida IN ('2170', '2170.0'))")
                     elif d in ("1", "t1", "torniquete 1"):
-                        door_clauses.append("(door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')")
+                        door_clauses.append(DOOR_SALA_1_LIKE)
                     # Torniquetes Sala 2 (CSF04 Pecera)
                     elif d in ("s2_principal", "2592", "2587", "csf04_in01", "csf04_out"):
                         door_clauses.append("(door_entrada LIKE '%CSF04_110 IN 01%' OR door_salida LIKE '%CSF04_110 OUT%' OR door_entrada IN ('2592', '2592.0') OR door_salida IN ('2587', '2587.0'))")
                     elif d in ("s2_universal", "3411", "3416", "csf04_in02", "csf04_out02"):
                         door_clauses.append("(door_entrada LIKE '%CSF04_110 IN 02%' OR door_salida LIKE '%CSF04_110 OUT 02%' OR door_entrada IN ('3411', '3411.0') OR door_salida IN ('3416', '3416.0'))")
                     elif d in ("2", "t2", "torniquete 2"):
-                        door_clauses.append("(door_entrada LIKE '%CSF04%' OR door_salida LIKE '%CSF04%')")
+                        door_clauses.append(DOOR_SALA_2_LIKE)
                     else:
                         pname = f"door_{len(params)}"
                         door_clauses.append(f"(door_entrada LIKE :{pname} OR door_salida LIKE :{pname})")
@@ -981,7 +988,7 @@ class AttendanceService:
 
         if not tiene_filtros_particulares:
             # Vía acelerada con vista indexada aforo_horario_biblioteca
-            where_clauses = ["espacio_id = :espacio_id"]
+            where_clauses = [CLAUSULA_ESPACIO_ID]
             params: dict = {"espacio_id": espacio_id}
 
             if fecha_inicio:
@@ -1398,7 +1405,7 @@ class AttendanceService:
                 "id_in": "2202",
                 "cod_out": "CSF02_320 CTRA OUT 02",
                 "id_out": "2184",
-                "sala": "Sala 1 (CSF02)",
+                "sala": NOMBRE_SALA_1_CSF02,
                 "tipo_acceso": "Principal",
                 "entradas": ent_s1_p,
                 "salidas": sal_s1_p,
@@ -1411,7 +1418,7 @@ class AttendanceService:
                 "id_in": "2177",
                 "cod_out": "CSF02_320 CTRA OUT 01",
                 "id_out": "2170",
-                "sala": "Sala 1 (CSF02)",
+                "sala": NOMBRE_SALA_1_CSF02,
                 "tipo_acceso": "Universal",
                 "entradas": ent_s1_u,
                 "salidas": sal_s1_u,
@@ -1424,7 +1431,7 @@ class AttendanceService:
                 "id_in": "2592",
                 "cod_out": "CSF04_110 OUT",
                 "id_out": "2587",
-                "sala": "Sala 2 (CSF04 Pecera)",
+                "sala": NOMBRE_SALA_2_CSF04,
                 "tipo_acceso": "Principal",
                 "entradas": ent_s2_p,
                 "salidas": sal_s2_p,
@@ -1437,7 +1444,7 @@ class AttendanceService:
                 "id_in": "3411",
                 "cod_out": "CSF04_110 OUT 02_Door_1",
                 "id_out": "3416",
-                "sala": "Sala 2 (CSF04 Pecera)",
+                "sala": NOMBRE_SALA_2_CSF04,
                 "tipo_acceso": "Universal",
                 "entradas": ent_s2_u,
                 "salidas": sal_s2_u,
@@ -1642,9 +1649,9 @@ class AttendanceService:
         map_salas = {}
         for r in rows_totals:
             if "CSF02" in r.sala_nombre or "Sala 1" in r.sala_nombre:
-                map_salas["Sala 1 (CSF02)"] = r
+                map_salas[NOMBRE_SALA_1_CSF02] = r
             elif "CSF04" in r.sala_nombre or "Sala 2" in r.sala_nombre:
-                map_salas["Sala 2 (CSF04 Pecera)"] = r
+                map_salas[NOMBRE_SALA_2_CSF04] = r
 
         total_global = sum(r.total_marcajes for r in rows_totals)
 
@@ -1665,8 +1672,8 @@ class AttendanceService:
             }
 
         resumen_salas = [
-            construir_sala("Sala 1 (CSF02)", cap_s1, "CSF02", False),
-            construir_sala("Sala 2 (CSF04 Pecera)", cap_s2, "CSF04", True),
+            construir_sala(NOMBRE_SALA_1_CSF02, cap_s1, "CSF02", False),
+            construir_sala(NOMBRE_SALA_2_CSF04, cap_s2, "CSF04", True),
         ]
 
         return {
@@ -2705,7 +2712,7 @@ class AttendanceService:
     ) -> list[dict]:
         """Obtiene el resumen diario de aforo de biblioteca agrupado por fecha."""
         params: dict = {"espacio_id": espacio_id}
-        where_conds = ["espacio_id = :espacio_id"]
+        where_conds = [CLAUSULA_ESPACIO_ID]
         if fecha_inicio:
             where_conds.append("bucket >= :inicio")
             params["inicio"] = fecha_inicio

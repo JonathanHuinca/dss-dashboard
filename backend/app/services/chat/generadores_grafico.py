@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.chat.fechas_chat import MONTH_NAMES
 
+FONDO_TRANSPARENTE = "rgba(0,0,0,0)"
+FUENTE_DEFAULT = "Inter, sans-serif"
+
 
 def serialize_fig(fig) -> Dict[str, Any]:
     """Serializa una figura Plotly a diccionario compatible con JSON."""
@@ -70,11 +73,11 @@ async def generate_monthly_chart(db: AsyncSession, dataset_tipo: str, mes_num: i
         fig.update_layout(
             title=f'Flujo Diario de Estacionamiento CSF — {nombre_mes}',
             barmode='group',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor=FONDO_TRANSPARENTE,
+            plot_bgcolor=FONDO_TRANSPARENTE,
             margin=dict(t=40, r=20, b=40, l=50),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-            font=dict(family='Inter, sans-serif', size=11, color='#64748b'),
+            font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b'),
             xaxis=dict(gridcolor='#e2e8f0'),
             yaxis=dict(gridcolor='#e2e8f0')
         )
@@ -143,11 +146,11 @@ async def generate_monthly_chart(db: AsyncSession, dataset_tipo: str, mes_num: i
         fig.update_layout(
             title=f'Asistencia Diaria de Biblioteca CSF — {nombre_mes}',
             barmode='group',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor=FONDO_TRANSPARENTE,
+            plot_bgcolor=FONDO_TRANSPARENTE,
             margin=dict(t=40, r=20, b=40, l=50),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-            font=dict(family='Inter, sans-serif', size=11, color='#64748b'),
+            font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b'),
             xaxis=dict(gridcolor='#e2e8f0'),
             yaxis=dict(gridcolor='#e2e8f0')
         )
@@ -205,11 +208,11 @@ async def generate_weekly_chart(db: AsyncSession, dataset_tipo: str = "bibliotec
     fig.update_layout(
         title='Evolución Semanal de Afluencia (Semanas ISO)',
         barmode='group',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=FONDO_TRANSPARENTE,
+        plot_bgcolor=FONDO_TRANSPARENTE,
         margin=dict(t=40, r=20, b=40, l=50),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        font=dict(family='Inter, sans-serif', size=11, color='#64748b'),
+        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b'),
         xaxis=dict(gridcolor='#e2e8f0'),
         yaxis=dict(gridcolor='#e2e8f0')
     )
@@ -273,10 +276,10 @@ async def generate_exams_impact_chart(db: AsyncSession):
     ])
     fig.update_layout(
         title='Impacto del Calendario Académico en Aforo Diario Promedio',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=FONDO_TRANSPARENTE,
+        plot_bgcolor=FONDO_TRANSPARENTE,
         margin=dict(t=40, r=20, b=40, l=50),
-        font=dict(family='Inter, sans-serif', size=11, color='#64748b'),
+        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b'),
         xaxis=dict(gridcolor='#e2e8f0'),
         yaxis=dict(gridcolor='#e2e8f0')
     )
@@ -310,11 +313,11 @@ async def generate_peak_hours_chart(db: AsyncSession, dataset_tipo: str = "bibli
         fig.update_layout(
             title='Curva Horaria de Ocupación Vehicular — Franjas Punta',
             barmode='group',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor=FONDO_TRANSPARENTE,
+            plot_bgcolor=FONDO_TRANSPARENTE,
             margin=dict(t=40, r=20, b=40, l=50),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-            font=dict(family='Inter, sans-serif', size=11, color='#64748b')
+            font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b')
         )
         explicacion = "Las franjas vehiculares más críticas se ubican entre las 07:45 y 09:15 hrs para accesos matutinos y 17:30 a 19:00 hrs para salidas vespertinas."
         return serialize_fig(fig), serialize_df(df), explicacion
@@ -351,11 +354,11 @@ async def generate_peak_hours_chart(db: AsyncSession, dataset_tipo: str = "bibli
     ))
     fig.update_layout(
         title='Perfil Horario de Afluencia — Franjas Pico y Valle',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=FONDO_TRANSPARENTE,
+        plot_bgcolor=FONDO_TRANSPARENTE,
         margin=dict(t=40, r=20, b=40, l=50),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        font=dict(family='Inter, sans-serif', size=11, color='#64748b')
+        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b')
     )
     explicacion = (
         "Las franjas pico se concentran claramente entre las 10:00 y las 13:00 hrs y en el bloque vespertino "
@@ -398,11 +401,11 @@ async def generate_cameras_chart(db: AsyncSession):
     fig.update_layout(
         title='Distribución de Tráfico por Cámara ANPR (Estacionamiento CSF)',
         barmode='group',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=FONDO_TRANSPARENTE,
+        plot_bgcolor=FONDO_TRANSPARENTE,
         margin=dict(t=40, r=20, b=40, l=120),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        font=dict(family='Inter, sans-serif', size=11, color='#64748b')
+        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b')
     )
     explicacion = (
         "La cámara con mayor tráfico registrado corresponde al Acceso Principal, capturando más del 65% "
@@ -428,10 +431,10 @@ def generate_stay_profiles_chart():
     ])
     fig.update_layout(
         title='Clasificación de Perfiles de Permanencia (Random Forest)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=FONDO_TRANSPARENTE,
+        plot_bgcolor=FONDO_TRANSPARENTE,
         margin=dict(t=40, r=20, b=40, l=20),
-        font=dict(family='Inter, sans-serif', size=11, color='#64748b')
+        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b')
     )
     table_data = [
         {"perfil": "Corta (< 60m)", "total": 8730, "porcentaje": 39.87, "permanencia_promedio_min": 24.6},
@@ -493,11 +496,11 @@ async def generate_monthly_trend_chart(db: AsyncSession, dataset_tipo: str, star
     fig.update_layout(
         title=f'Evolución Mensual de Afluencia ({MONTH_NAMES.get(start_month)} - {MONTH_NAMES.get(end_month)})',
         barmode='group',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor=FONDO_TRANSPARENTE,
+        plot_bgcolor=FONDO_TRANSPARENTE,
         margin=dict(t=40, r=20, b=40, l=50),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        font=dict(family='Inter, sans-serif', size=11, color='#64748b'),
+        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b'),
         xaxis=dict(gridcolor='#e2e8f0'),
         yaxis=dict(gridcolor='#e2e8f0')
     )

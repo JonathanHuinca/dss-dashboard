@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from app.core.config import settings
@@ -82,60 +82,102 @@ class AssistantResponse(BaseModel):
 def get_gemini_api_key() -> str:
     return settings.GEMINI_API_KEY.strip()
 
-def build_offline_response(prompt_text: str) -> str:
-    lower = prompt_text.lower()
-    if ("qu" in lower or "de que" in lower or "origen" in lower or "explic" in lower) and ("dato" in lower or "informaci" in lower or "registro" in lower):
-        return (
+_REGLAS_OFFLINE = [
+    (
+        lambda s: ("qu" in s or "de que" in s or "origen" in s or "explic" in s) and ("dato" in s or "informaci" in s or "registro" in s),
+        (
             "Estos datos corresponden a los registros consolidados de afluencia, ocupación y movilidad del Sistema DSS de Campus San Francisco (UCT). "
             "Incluyen el registro de ingresos peatonales por los 4 torniquetes de acceso en Biblioteca (Salas CSF02 y Sala 2 Pecera CSF04), "
             "así como el control de acceso vehicular por cámaras ANPR en estacionamientos Norte y Sur. "
             "Toda la información se encuentra seudonimizada bajo estándar HMAC/SHA-256 (conforme a Ley N° 21.719) y está correlacionada directamente "
             "con los hitos del Calendario Académico institucional (certámenes, exámenes, recesos, feriados, suspensiones y campaña de horario 24 horas)."
-        )
-    if "semana" in lower and ("congesti" in lower or "mayor" in lower or "afluencia" in lower or "pico" in lower):
-        return (
+        ),
+    ),
+    (
+        lambda s: "semana" in s and ("congesti" in s or "mayor" in s or "afluencia" in s or "pico" in s),
+        (
             "Segun el registro historico de la tabla aforo_horario_biblioteca, la semana con mayor volumen de "
             "congestion y afluencia corresponde a la Semana ISO 2026-16, con un total acumulado de 2.097 ingresos. "
             "Esta concentracion coincidio directamente con el primer periodo solemne de certamenes registrado en la tabla calendario_academico."
-        )
-    if "examen" in lower or "certamen" in lower or "impactan" in lower or "impacto" in lower:
-        return (
+        ),
+    ),
+    (
+        lambda s: "examen" in s or "certamen" in s or "impactan" in s or "impacto" in s,
+        (
             "El cruce entre aforo_horario_biblioteca y calendario_academico demuestra un impacto significativo: "
             "en jornadas donde is_exam_period es verdadero, el aforo promedio alcanza 321 ingresos diarios, "
             "mientras que en jornadas lectivas regulares sin evaluaciones promedia aproximadamente 70 ingresos diarios. "
             "Esto representa un incremento de afluencia superior al 350% durante certamenes solemnes."
-        )
-    if "permanencia" in lower or "perfil" in lower:
-        return (
+        ),
+    ),
+    (
+        lambda s: "permanencia" in s or "perfil" in s,
+        (
             "La clasificacion de perfiles de permanencia registra: Visitas Cortas (<60m) con un 39.87%, "
             "Visitas Medias (60 a 180m) con un 37.23% y Visitas de Estudio Extenso (>180m) con un 22.90%, "
             "concentrandose las estancias largas en el segundo piso del recinto."
-        )
-    if "paro" in lower or "contingencia" in lower:
-        return (
+        ),
+    ),
+    (
+        lambda s: "paro" in s or "contingencia" in s,
+        (
             "En los registros de contingencias académicas de Campus San Francisco se registra el Paro General Estudiantil FEUCT "
             "(01 al 29 de septiembre de 2026) y suspensiones de salas, las cuales redujeron la concurrencia a niveles mínimos operativos."
-        )
-    if "24" in lower and ("hora" in lower or "nocturn" in lower or "pecera" in lower):
-        return (
+        ),
+    ),
+    (
+        lambda s: "24" in s and ("hora" in s or "nocturn" in s or "pecera" in s),
+        (
             "La Campaña 24 Horas habilita la Sala 2 Pecera (CSF04, 126 asientos base, calibrada a 226 asientos en régimen nocturno) "
             "con apertura ininterrumpida de 20:30 a 08:30 hrs durante períodos solemnes de certámenes y exámenes."
-        )
-    if "receso" in lower or "vacacion" in lower or "feriado" in lower or "suspensi" in lower:
-        return (
+        ),
+    ),
+    (
+        lambda s: "receso" in s or "vacacion" in s or "feriado" in s or "suspensi" in s,
+        (
             "El Calendario Académico UCT contempla Semanas de Receso Estudiantil, Períodos de Vacaciones y Feriados Oficiales "
             "con suspensión de actividades docentes y administrativas, reduciendo la concurrencia en recintos a mínimos operativos."
-        )
-    if "estacionamiento" in lower or "vehicul" in lower or "camara" in lower:
-        return (
+        ),
+    ),
+    (
+        lambda s: "estacionamiento" in s or "vehicul" in s or "camara" in s,
+        (
             "En la tabla aforo_horario_estacionamiento, las horas de maxima saturacion vehicular se registran entre "
             "las 07:45 y 09:15 hrs en los accesos norte y sur, con una segunda oleada de egresos entre 17:30 y 19:00 hrs."
-        )
-    return (
-        "El DSS de Campus San Francisco cuenta con 24.430 ingresos consolidados en Biblioteca y monitoreo continuo de flujo vehicular. "
-        "Los principales factores de variabilidad son los hitos del calendario academico (certamenes elevan el aforo a 321 usuarios/dia y recesos disminuyen a minimos operativos). "
-        "Las horas de máxima afluencia se concentran entre 10:00 - 13:00 y 15:00 - 17:00 hrs."
-    )
+        ),
+    ),
+]
+
+_RESPUESTA_DEFAULT_OFFLINE = (
+    "El DSS de Campus San Francisco cuenta con 24.430 ingresos consolidados en Biblioteca y monitoreo continuo de flujo vehicular. "
+    "Los principales factores de variabilidad son los hitos del calendario academico (certamenes elevan el aforo a 321 usuarios/dia y recesos disminuyen a minimos operativos). "
+    "Las horas de máxima afluencia se concentran entre 10:00 - 13:00 y 15:00 - 17:00 hrs."
+)
+
+
+def build_offline_response(prompt_text: str) -> str:
+    """Retorna una respuesta contextual basada en reglas heurísticas institucionales precalculadas."""
+    lower = prompt_text.lower()
+    for predicado, respuesta in _REGLAS_OFFLINE:
+        if predicado(lower):
+            return respuesta
+    return _RESPUESTA_DEFAULT_OFFLINE
+
+
+def _ejecutar_generacion_gemini(client, candidate_models: List[str], contents: list, config: Any) -> Tuple[str, str, Optional[Exception]]:
+    """Itera los modelos candidatos de Gemini hasta obtener respuesta o agotar fallbacks."""
+    last_exception = None
+    for candidate in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=candidate,
+                contents=contents,
+                config=config,
+            )
+            return response.text or "", candidate, None
+        except Exception as exc:
+            last_exception = exc
+    return "", candidate_models[0] if candidate_models else "gemini-3.1-flash-lite", last_exception
 
 @router.get("/models")
 async def list_available_models():
@@ -205,26 +247,13 @@ async def query_assistant(req: AssistantRequest, current_user = Depends(require_
             temperature=0.2,
         )
 
-        candidate_models = [selected_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview"]
-        # Filtrar duplicados preservando orden
-        candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
-        last_exception = None
-        used_model = selected_model
-        generated_text = ""
-
-        for candidate in candidate_models:
-            try:
-                response = client.models.generate_content(
-                    model=candidate,
-                    contents=history_contents,
-                    config=config,
-                )
-                generated_text = response.text or ""
-                used_model = candidate
-                break
-            except Exception as exc:
-                last_exception = exc
-                continue
+        candidate_models = list(dict.fromkeys([m for m in [selected_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview"] if m]))
+        generated_text, used_model, last_exception = _ejecutar_generacion_gemini(
+            client=client,
+            candidate_models=candidate_models,
+            contents=history_contents,
+            config=config,
+        )
 
         if not generated_text and last_exception:
             fallback_text = build_offline_response(user_msg)

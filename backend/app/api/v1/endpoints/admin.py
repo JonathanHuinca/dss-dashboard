@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -27,6 +27,7 @@ from app.core.planificador import (
 )
 
 router = APIRouter()
+FORMATO_FECHA_ISO = "%Y-%m-%d"
 
 
 class ChatAuditItem(BaseModel):
@@ -258,6 +259,60 @@ def _serializar_ejecucion(e: EjecucionTarea) -> EjecucionTareaResponse:
     )
 
 
+async def _obtener_proxima_ejecucion_tarea(db: AsyncSession, nombre: str, info: dict) -> Optional[datetime]:
+    """Calcula la próxima ejecución hábil o programada para una tarea dada."""
+    if info.get("cron_trigger") is not None:
+        try:
+            from app.core.planificador import ZONA_HORARIA_CHILE, calcular_proxima_ejecucion_habil
+            ahora_cl = datetime.now(ZONA_HORARIA_CHILE)
+            return await calcular_proxima_ejecucion_habil(db, nombre, ahora_cl)
+        except Exception:
+            pass
+    sched = obtener_planificador()
+    if sched and sched.running:
+        job = sched.get_job(nombre)
+        if job and job.next_run_time:
+            return job.next_run_time
+    return None
+
+
+async def _construir_item_tarea_catalogo(
+    db: AsyncSession,
+    nombre: str,
+    info: dict,
+    limite_latido: datetime,
+) -> TareaCatalogoItem:
+    """Construye un TareaCatalogoItem con su estado en curso y última ejecución."""
+    stmt_ult = (
+        select(EjecucionTarea)
+        .where(EjecucionTarea.tarea == nombre)
+        .order_by(desc(EjecucionTarea.inicio_en))
+        .limit(1)
+    )
+    ult_ej = (await db.execute(stmt_ult)).scalars().first()
+
+    stmt_activa = (
+        select(EjecucionTarea)
+        .where(
+            EjecucionTarea.tarea == nombre,
+            EjecucionTarea.estado == "en_curso",
+            EjecucionTarea.latido_en >= limite_latido,
+        )
+        .limit(1)
+    )
+    en_curso = (await db.execute(stmt_activa)).scalars().first() is not None
+    proxima = await _obtener_proxima_ejecucion_tarea(db, nombre, info)
+
+    return TareaCatalogoItem(
+        nombre=nombre,
+        descripcion=info["descripcion"],
+        cron_expresion=info["cron_str"],
+        en_curso=en_curso,
+        proxima_ejecucion=proxima,
+        ultima_ejecucion=_serializar_ejecucion(ult_ej) if ult_ej else None,
+    )
+
+
 @router.get("/tareas", response_model=ResumenTareasResponse, summary="Listar catálogo y estado de tareas programadas")
 @router.get("/tareas/resumen", response_model=ResumenTareasResponse, include_in_schema=False)
 async def listar_tareas_admin(
@@ -268,52 +323,10 @@ async def listar_tareas_admin(
     ahora = _ahora_chile_naive()
     limite_latido = ahora - timedelta(minutes=15)
 
-    catalogo_items: List[TareaCatalogoItem] = []
-    for nombre, info in CATALOGO_TAREAS.items():
-        stmt_ult = (
-            select(EjecucionTarea)
-            .where(EjecucionTarea.tarea == nombre)
-            .order_by(desc(EjecucionTarea.inicio_en))
-            .limit(1)
-        )
-        ult_ej = (await db.execute(stmt_ult)).scalars().first()
-
-        stmt_activa = (
-            select(EjecucionTarea)
-            .where(
-                EjecucionTarea.tarea == nombre,
-                EjecucionTarea.estado == "en_curso",
-                EjecucionTarea.latido_en >= limite_latido,
-            )
-            .limit(1)
-        )
-        en_curso = (await db.execute(stmt_activa)).scalars().first() is not None
-
-        proxima = None
-        if info.get("cron_trigger") is not None:
-            try:
-                from app.core.planificador import ZONA_HORARIA_CHILE, calcular_proxima_ejecucion_habil
-                ahora_cl = datetime.now(ZONA_HORARIA_CHILE)
-                proxima = await calcular_proxima_ejecucion_habil(db, nombre, ahora_cl)
-            except Exception:
-                proxima = None
-        if proxima is None:
-            sched = obtener_planificador()
-            if sched and sched.running:
-                job = sched.get_job(nombre)
-                if job and job.next_run_time:
-                    proxima = job.next_run_time
-
-        catalogo_items.append(
-            TareaCatalogoItem(
-                nombre=nombre,
-                descripcion=info["descripcion"],
-                cron_expresion=info["cron_str"],
-                en_curso=en_curso,
-                proxima_ejecucion=proxima,
-                ultima_ejecucion=_serializar_ejecucion(ult_ej) if ult_ej else None,
-            )
-        )
+    catalogo_items = [
+        await _construir_item_tarea_catalogo(db, nombre, info, limite_latido)
+        for nombre, info in CATALOGO_TAREAS.items()
+    ]
 
     stmt_hist = (
         select(EjecucionTarea)
@@ -458,6 +471,96 @@ class SolicitudPurgaDatos(BaseModel):
     confirmacion: str
 
 
+async def _purgar_modulo_asistencia(db: AsyncSession, espacio_id: Optional[int], es_todo: bool) -> int:
+    """Elimina eventos de asistencia y sus rollups correspondientes."""
+    from sqlalchemy import delete
+    from app.domain.models import EventoAsistencia, RollupHistoricoDiario
+    from app.services.ingestion_service import invalidar_caches_recinto_y_actualizar_predicciones
+
+    stmt = delete(EventoAsistencia)
+    stmt_rollup = delete(RollupHistoricoDiario)
+    if espacio_id and not es_todo:
+        stmt = stmt.where(EventoAsistencia.espacio_id == espacio_id)
+        stmt_rollup = stmt_rollup.where(RollupHistoricoDiario.espacio_id == espacio_id)
+    elif not es_todo:
+        stmt_rollup = stmt_rollup.where(RollupHistoricoDiario.espacio_id == 1)
+
+    res = await db.execute(stmt)
+    await db.execute(stmt_rollup)
+    await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id or 1)
+    return res.rowcount
+
+
+async def _purgar_modulo_vehicular(db: AsyncSession, espacio_id: Optional[int], es_todo: bool) -> int:
+    """Elimina eventos vehiculares y sus rollups correspondientes."""
+    from sqlalchemy import delete
+    from app.domain.models import EventoVehicular, RollupHistoricoDiario
+    from app.services.ingestion_service import invalidar_caches_recinto_y_actualizar_predicciones
+
+    stmt_veh = delete(EventoVehicular)
+    if espacio_id and not es_todo:
+        stmt_veh = stmt_veh.where(EventoVehicular.espacio_id == espacio_id)
+        await db.execute(delete(RollupHistoricoDiario).where(RollupHistoricoDiario.espacio_id == espacio_id))
+    elif not es_todo:
+        await db.execute(delete(RollupHistoricoDiario).where(RollupHistoricoDiario.espacio_id == 2))
+
+    res_v = await db.execute(stmt_veh)
+    await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id or 2)
+    return res_v.rowcount
+
+
+async def _purgar_modulo_institucional(db: AsyncSession) -> dict:
+    """Elimina maestros institucionales en orden inverso a sus dependencias."""
+    from sqlalchemy import delete
+    from app.domain.models import DimEstudianteCarrera
+    from app.domain.modelos_institucionales_uct import (
+        InstitucionalCampus,
+        InstitucionalEdificios,
+        InstitucionalTipoInmueble,
+        InstitucionalAmbiente,
+        InstitucionalTipoCarrera,
+        InstitucionalCarreraPrograma,
+        InstitucionalCarreraCampus,
+        InstitucionalSituacionAlumno,
+        InstitucionalViasIngreso,
+        InstitucionalEstudiante,
+        InstitucionalEstudianteCarrera,
+    )
+
+    r_dim = await db.execute(delete(DimEstudianteCarrera))
+    r_uec = await db.execute(delete(InstitucionalEstudianteCarrera))
+    r_ue = await db.execute(delete(InstitucionalEstudiante))
+    await db.execute(delete(InstitucionalCarreraCampus))
+    r_ucp = await db.execute(delete(InstitucionalCarreraPrograma))
+    await db.execute(delete(InstitucionalTipoCarrera))
+    await db.execute(delete(InstitucionalSituacionAlumno))
+    await db.execute(delete(InstitucionalViasIngreso))
+    await db.execute(delete(InstitucionalAmbiente))
+    await db.execute(delete(InstitucionalEdificios))
+    await db.execute(delete(InstitucionalTipoInmueble))
+    r_uca = await db.execute(delete(InstitucionalCampus))
+
+    return {
+        "dim_estudiante_carrera": r_dim.rowcount,
+        "uct_estudiante_carrera": r_uec.rowcount,
+        "uct_estudiante": r_ue.rowcount,
+        "uct_carrera_programa": r_ucp.rowcount,
+        "uct_campus": r_uca.rowcount,
+    }
+
+
+async def _purgar_modulo_ingestas(db: AsyncSession, espacio_id: Optional[int], es_todo: bool) -> int:
+    """Elimina registros históricos de IngestionJob."""
+    from sqlalchemy import delete
+    from app.domain.models import IngestionJob
+
+    stmt_ij = delete(IngestionJob)
+    if espacio_id and not es_todo:
+        stmt_ij = stmt_ij.where(IngestionJob.espacio_id == espacio_id)
+    res_ij = await db.execute(stmt_ij)
+    return res_ij.rowcount
+
+
 @router.post(
     "/purgar-datos",
     summary="Purga administrativa y controlada de datos de recintos o maestros institucionales",
@@ -472,23 +575,6 @@ async def purgar_datos_admin(
     reseteando aforos o limpiando tablas institucionales para una recarga limpia.
     Requiere obligatoriamente confirmacion == 'CONFIRMAR_PURGA'.
     """
-    from sqlalchemy import delete, text
-    from app.domain.models import EventoAsistencia, EventoVehicular, RollupHistoricoDiario, Espacio, IngestionJob, DimEstudianteCarrera
-    from app.domain.modelos_institucionales_uct import (
-        InstitucionalCampus,
-        InstitucionalEdificios,
-        InstitucionalTipoInmueble,
-        InstitucionalAmbiente,
-        InstitucionalTipoCarrera,
-        InstitucionalCarreraPrograma,
-        InstitucionalCarreraCampus,
-        InstitucionalSituacionAlumno,
-        InstitucionalViasIngreso,
-        InstitucionalEstudiante,
-        InstitucionalEstudianteCarrera,
-    )
-    from app.services.ingestion_service import invalidar_caches_recinto_y_actualizar_predicciones
-
     if solicitud.confirmacion.strip() != "CONFIRMAR_PURGA":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -497,61 +583,20 @@ async def purgar_datos_admin(
 
     alcance = solicitud.alcance.strip().lower()
     espacio_id = solicitud.espacio_id
+    es_todo = alcance == "todo"
     registros_eliminados = {}
 
     if alcance in ("asistencia", "todo"):
-        stmt = delete(EventoAsistencia)
-        stmt_rollup = delete(RollupHistoricoDiario)
-        if espacio_id and alcance != "todo":
-            stmt = stmt.where(EventoAsistencia.espacio_id == espacio_id)
-            stmt_rollup = stmt_rollup.where(RollupHistoricoDiario.espacio_id == espacio_id)
-        elif alcance != "todo":
-            stmt_rollup = stmt_rollup.where(RollupHistoricoDiario.espacio_id == 1)
-        
-        res = await db.execute(stmt)
-        await db.execute(stmt_rollup)
-        registros_eliminados["eventos_asistencia"] = res.rowcount
-        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id or 1)
+        registros_eliminados["eventos_asistencia"] = await _purgar_modulo_asistencia(db, espacio_id, es_todo)
 
     if alcance in ("vehicular", "todo"):
-        stmt_veh = delete(EventoVehicular)
-        if espacio_id and alcance != "todo":
-            stmt_veh = stmt_veh.where(EventoVehicular.espacio_id == espacio_id)
-            await db.execute(delete(RollupHistoricoDiario).where(RollupHistoricoDiario.espacio_id == espacio_id))
-        elif alcance != "todo":
-            await db.execute(delete(RollupHistoricoDiario).where(RollupHistoricoDiario.espacio_id == 2))
-        
-        res_v = await db.execute(stmt_veh)
-        registros_eliminados["eventos_vehiculares"] = res_v.rowcount
-        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id or 2)
+        registros_eliminados["eventos_vehiculares"] = await _purgar_modulo_vehicular(db, espacio_id, es_todo)
 
     if alcance in ("institucional_estudiantes", "todo"):
-        # Borrado en orden inverso de dependencias de claves foráneas
-        r_dim = await db.execute(delete(DimEstudianteCarrera))
-        r_uec = await db.execute(delete(InstitucionalEstudianteCarrera))
-        r_ue = await db.execute(delete(InstitucionalEstudiante))
-        await db.execute(delete(InstitucionalCarreraCampus))
-        r_ucp = await db.execute(delete(InstitucionalCarreraPrograma))
-        await db.execute(delete(InstitucionalTipoCarrera))
-        await db.execute(delete(InstitucionalSituacionAlumno))
-        await db.execute(delete(InstitucionalViasIngreso))
-        await db.execute(delete(InstitucionalAmbiente))
-        await db.execute(delete(InstitucionalEdificios))
-        await db.execute(delete(InstitucionalTipoInmueble))
-        r_uca = await db.execute(delete(InstitucionalCampus))
-
-        registros_eliminados["dim_estudiante_carrera"] = r_dim.rowcount
-        registros_eliminados["uct_estudiante_carrera"] = r_uec.rowcount
-        registros_eliminados["uct_estudiante"] = r_ue.rowcount
-        registros_eliminados["uct_carrera_programa"] = r_ucp.rowcount
-        registros_eliminados["uct_campus"] = r_uca.rowcount
+        registros_eliminados.update(await _purgar_modulo_institucional(db))
 
     if alcance in ("ingestas", "todo"):
-        stmt_ij = delete(IngestionJob)
-        if espacio_id and alcance != "todo":
-            stmt_ij = stmt_ij.where(IngestionJob.espacio_id == espacio_id)
-        res_ij = await db.execute(stmt_ij)
-        registros_eliminados["ingestion_jobs"] = res_ij.rowcount
+        registros_eliminados["ingestion_jobs"] = await _purgar_modulo_ingestas(db, espacio_id, es_todo)
 
     if not registros_eliminados and alcance not in ("asistencia", "vehicular", "institucional_estudiantes", "ingestas", "todo"):
         raise HTTPException(
@@ -614,6 +659,69 @@ async def obtener_estado_smart_campus_admin(
     return await obtener_resumen_estado_smart_campus(db)
 
 
+def _parsear_fecha_iso(valor: Optional[str]) -> Optional[date]:
+    """Parsea una fecha en formato YYYY-MM-DD tolerando cadenas con hora añadida."""
+    if not valor:
+        return None
+    try:
+        return datetime.strptime(valor[:10], FORMATO_FECHA_ISO).date()
+    except Exception:
+        return None
+
+
+async def _ejecutar_pipeline_smart_campus(
+    db: AsyncSession,
+    req: SmartCampusSincronizarRequest,
+) -> tuple[str, dict]:
+    """Despacha la sincronización según el pipeline configurado (cierre diario o en vivo)."""
+    from app.services.servicio_smart_campus import (
+        sincronizar_aforo_vivo_horario,
+        consolidar_dia_cerrado,
+    )
+
+    if req.tipo_pipeline == "cierre_diario":
+        nombre_tarea = "consolidar_smart_campus_nocturno"
+        fecha_obj = _parsear_fecha_iso(req.desde)
+        resultado = await consolidar_dia_cerrado(db, fecha_objetivo=fecha_obj)
+    else:
+        nombre_tarea = "sincronizar_smart_campus_en_vivo"
+        desde_dt = _parsear_fecha_iso(req.desde)
+        hasta_dt = _parsear_fecha_iso(req.hasta)
+        resultado = await sincronizar_aforo_vivo_horario(db, desde_manual=desde_dt, hasta_manual=hasta_dt)
+
+    return nombre_tarea, resultado
+
+
+async def _registrar_ejecucion_sincronizacion(
+    db: AsyncSession,
+    nombre_tarea: str,
+    inicio_sinc: datetime,
+    fin_sinc: datetime,
+    usuario_id: Optional[int],
+    resultado: dict,
+    hubo_fallo_total: bool,
+    errores_sinc: list,
+) -> None:
+    """Registra en la tabla de auditoría EjecucionTarea el resultado del pipeline ejecutado."""
+    import json
+    try:
+        reg_ejec = EjecucionTarea(
+            tarea=nombre_tarea,
+            disparador="manual",
+            estado="fallido" if hubo_fallo_total else "exitoso",
+            inicio_en=inicio_sinc,
+            fin_en=fin_sinc,
+            latido_en=fin_sinc,
+            usuario_id=usuario_id,
+            resumen_json=json.dumps(resultado, ensure_ascii=False),
+            error="; ".join(errores_sinc) if hubo_fallo_total else None,
+        )
+        db.add(reg_ejec)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+
+
 @router.post(
     "/smart-campus/sincronizar",
     summary="Disparar sincronización manual de la API Smart Campus UCT",
@@ -627,43 +735,13 @@ async def sincronizar_smart_campus_admin(
     Ejecuta bajo demanda la ingesta de la API Smart Campus.
     Permite seleccionar entre Pipeline 1 (Aforo en Vivo del día) o Pipeline 2 (Consolidación de Día Cerrado).
     """
-    from app.services.servicio_smart_campus import (
-        sincronizar_aforo_vivo_horario,
-        consolidar_dia_cerrado,
-    )
     from app.core.planificador import _ahora_chile_naive
-    import json
 
     req = payload or SmartCampusSincronizarRequest()
     inicio_sinc = _ahora_chile_naive()
-    nombre_tarea_asociada = (
-        "consolidar_smart_campus_nocturno" if req.tipo_pipeline == "cierre_diario" else "sincronizar_smart_campus_en_vivo"
-    )
-
-    if req.tipo_pipeline == "cierre_diario":
-        fecha_obj = None
-        if req.desde:
-            try:
-                fecha_obj = datetime.strptime(req.desde[:10], "%Y-%m-%d").date()
-            except Exception:
-                pass
-        resultado = await consolidar_dia_cerrado(db, fecha_objetivo=fecha_obj)
-    else:
-        desde_dt = None
-        hasta_dt = None
-        if req.desde:
-            try:
-                desde_dt = datetime.strptime(req.desde[:10], "%Y-%m-%d").date()
-            except Exception:
-                pass
-        if req.hasta:
-            try:
-                hasta_dt = datetime.strptime(req.hasta[:10], "%Y-%m-%d").date()
-            except Exception:
-                pass
-        resultado = await sincronizar_aforo_vivo_horario(db, desde_manual=desde_dt, hasta_manual=hasta_dt)
-
+    nombre_tarea_asociada, resultado = await _ejecutar_pipeline_smart_campus(db, req)
     fin_sinc = _ahora_chile_naive()
+
     errores_sinc = resultado.get("errores") or []
     t_ins = resultado.get("torniquetes", {}).get("insertados", 0)
     e_ins = resultado.get("estacionamientos", {}).get("insertados", 0)
@@ -671,22 +749,10 @@ async def sincronizar_smart_campus_admin(
     e_lei = resultado.get("estacionamientos", {}).get("leidos", 0)
     hubo_fallo_total = bool(errores_sinc and t_lei == 0 and e_lei == 0)
 
-    try:
-        reg_ejec = EjecucionTarea(
-            tarea=nombre_tarea_asociada,
-            disparador="manual",
-            estado="fallido" if hubo_fallo_total else "exitoso",
-            inicio_en=inicio_sinc,
-            fin_en=fin_sinc,
-            latido_en=fin_sinc,
-            usuario_id=current_user.id if current_user else None,
-            resumen_json=json.dumps(resultado, ensure_ascii=False),
-            error="; ".join(errores_sinc) if hubo_fallo_total else None,
-        )
-        db.add(reg_ejec)
-        await db.commit()
-    except Exception:
-        await db.rollback()
+    u_id = current_user.id if current_user else None
+    await _registrar_ejecucion_sincronizacion(
+        db, nombre_tarea_asociada, inicio_sinc, fin_sinc, u_id, resultado, hubo_fallo_total, errores_sinc
+    )
 
     if hubo_fallo_total:
         mensaje_resp = f"Sincronización finalizada con observaciones: {'; '.join(errores_sinc)}"

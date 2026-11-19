@@ -111,6 +111,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+URL_DEV_UCT_HTTPS = "https://indicadoreshikcentral.dev.uct.cl"
+URL_DEV_UCT_HTTP = "http://indicadoreshikcentral.dev.uct.cl"
+
+
 @app.middleware("http")
 async def sincronizar_url_frontend_middleware(request: Request, call_next):
     from urllib.parse import urlparse
@@ -132,7 +136,7 @@ async def sincronizar_url_frontend_middleware(request: Request, call_next):
 
     if base_detectada:
         if "indicadoreshikcentral.dev.uct.cl" in base_detectada:
-            base_detectada = "https://indicadoreshikcentral.dev.uct.cl"
+            base_detectada = URL_DEV_UCT_HTTPS
         settings.FRONTEND_URL = base_detectada
         token_ctx = contexto_url_frontend.set(base_detectada)
         try:
@@ -155,16 +159,16 @@ CORS_ORIGINS = [
     "http://127.0.0.1:5174",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://indicadoreshikcentral.dev.uct.cl",
-    "https://indicadoreshikcentral.dev.uct.cl",
+    URL_DEV_UCT_HTTP,
+    URL_DEV_UCT_HTTPS,
 ]
 if settings.FRONTEND_URL and settings.FRONTEND_URL not in CORS_ORIGINS:
     CORS_ORIGINS.append(settings.FRONTEND_URL)
 if settings.is_production:
     CORS_ORIGINS = [
         "https://dashboard.uct.cl",
-        "http://indicadoreshikcentral.dev.uct.cl",
-        "https://indicadoreshikcentral.dev.uct.cl",
+        URL_DEV_UCT_HTTP,
+        URL_DEV_UCT_HTTPS,
         settings.FRONTEND_URL,
     ]
 

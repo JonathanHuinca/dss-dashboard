@@ -179,22 +179,9 @@ async def retroactive_enrich_endpoint(
     )
 
 
-@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
-async def upload_file(
-    tipo: str = Query(..., description="asistencia, vehicular, academico, curricular, marcajes_torniquete, custom"),
-    espacio_id: int = Query(..., description="ID del espacio institucional"),
-    modo_solapamiento: str = Query("merge", description="'merge' o 'overwrite'"),
-    clave_enlace: str = Query("rut", description="'rut', 'matricula' o 'crosswalk'"),
-    modo_enlace: str = Query("tolerante", description="'tolerante' o 'mandatorio'"),
-    file: UploadFile = File(...),
-    current_user = Depends(require_role("SuperAdmin", "Directivo", "Admin_Sistema", "Director_Recinto")),
-    db: AsyncSession = Depends(get_db)
-):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Nombre de archivo no encontrado")
-
-    # 1. Validación de extensiones permitidas
-    ext = Path(file.filename).suffix.lower()
+def _validar_extension_archivo(filename: str) -> None:
+    """Valida que la extensión del archivo se encuentre en la lista blanca permitida."""
+    ext = Path(filename).suffix.lower()
     ext_permitidas = [e.strip().lower() for e in settings.EXTENSIONES_INGESTA_PERMITIDAS.split(",") if e.strip()]
     if ext not in ext_permitidas:
         raise HTTPException(
@@ -202,22 +189,14 @@ async def upload_file(
             detail=f"Extensión '{ext}' no permitida. Formatos aceptados: {settings.EXTENSIONES_INGESTA_PERMITIDAS}",
         )
 
-    validar_acceso_espacio(espacio_id, current_user)
 
-    # 2. Almacenamiento en volumen y validación de tamaño máximo con streaming y SHA-256
-    dir_ingesta = Path(settings.DIRECTORIO_INGESTA)
-    dir_ingesta.mkdir(parents=True, exist_ok=True)
-    job_id = uuid.uuid4()
-    nombre_limpio = Path(file.filename).name.replace(" ", "_")
-    ruta_temporal = dir_ingesta / f"temp_{job_id}_{nombre_limpio}"
-
+async def _guardar_archivo_ingesta_stream(file: UploadFile, ruta_temporal: Path, limite_bytes: int) -> str:
+    """Escribe los bytes en disco de manera segura mediante streaming y retorna su hash SHA-256."""
     hasher = hashlib.sha256()
     total_bytes = 0
-    limite_bytes = settings.TAMANO_MAXIMO_INGESTA_MB * 1024 * 1024
-
     try:
         with open(ruta_temporal, "wb") as f_out:
-            while chunk := await file.read(1024 * 1024):  # 1 MB por chunk
+            while chunk := await file.read(1024 * 1024):
                 total_bytes += len(chunk)
                 if total_bytes > limite_bytes:
                     f_out.close()
@@ -241,23 +220,57 @@ async def upload_file(
             ruta_temporal.unlink()
         raise HTTPException(status_code=400, detail="El archivo subido se encuentra vacío")
 
-    sha256_hash = hasher.hexdigest()
+    return hasher.hexdigest()
+
+
+async def _verificar_duplicado_ingesta(db: AsyncSession, sha256_hash: str, ruta_temporal: Path) -> None:
+    """Rechaza ingestas redundantes si un archivo idéntico ya fue procesado con éxito."""
+    stmt_dup = select(IngestionJob).where(
+        IngestionJob.file_hash == sha256_hash,
+        IngestionJob.estado == "completed",
+    )
+    res_dup = await db.execute(stmt_dup)
+    duplicado = res_dup.scalars().first()
+    if duplicado:
+        if ruta_temporal.exists():
+            ruta_temporal.unlink()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"El archivo con hash criptográfico {sha256_hash[:12]} ya fue procesado con éxito previamente ({duplicado.filename}). Para forzar reescritura seleccione modo 'overwrite'.",
+        )
+
+
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED)
+async def upload_file(
+    tipo: str = Query(..., description="asistencia, vehicular, academico, curricular, marcajes_torniquete, custom"),
+    espacio_id: int = Query(..., description="ID del espacio institucional"),
+    modo_solapamiento: str = Query("merge", description="'merge' o 'overwrite'"),
+    clave_enlace: str = Query("rut", description="'rut', 'matricula' o 'crosswalk'"),
+    modo_enlace: str = Query("tolerante", description="'tolerante' o 'mandatorio'"),
+    file: UploadFile = File(...),
+    current_user = Depends(require_role("SuperAdmin", "Directivo", "Admin_Sistema", "Director_Recinto")),
+    db: AsyncSession = Depends(get_db)
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Nombre de archivo no encontrado")
+
+    # 1. Validación de extensiones permitidas y acceso
+    _validar_extension_archivo(file.filename)
+    validar_acceso_espacio(espacio_id, current_user)
+
+    # 2. Almacenamiento en volumen y validación de tamaño máximo con streaming y SHA-256
+    dir_ingesta = Path(settings.DIRECTORIO_INGESTA)
+    dir_ingesta.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4()
+    nombre_limpio = Path(file.filename).name.replace(" ", "_")
+    ruta_temporal = dir_ingesta / f"temp_{job_id}_{nombre_limpio}"
+
+    limite_bytes = settings.TAMANO_MAXIMO_INGESTA_MB * 1024 * 1024
+    sha256_hash = await _guardar_archivo_ingesta_stream(file, ruta_temporal, limite_bytes)
 
     # 3. Rechazar duplicados preexistentes si no es modo overwrite
     if modo_solapamiento != "overwrite":
-        stmt_dup = select(IngestionJob).where(
-            IngestionJob.file_hash == sha256_hash,
-            IngestionJob.estado == "completed",
-        )
-        res_dup = await db.execute(stmt_dup)
-        duplicado = res_dup.scalars().first()
-        if duplicado:
-            if ruta_temporal.exists():
-                ruta_temporal.unlink()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"El archivo con hash criptográfico {sha256_hash[:12]} ya fue procesado con éxito previamente ({duplicado.filename}). Para forzar reescritura seleccione modo 'overwrite'.",
-            )
+        await _verificar_duplicado_ingesta(db, sha256_hash, ruta_temporal)
 
     # 4. Renombrar al archivo definitivo en volumen ingesta_archivos
     ruta_definitiva = dir_ingesta / f"{job_id}_{nombre_limpio}"
