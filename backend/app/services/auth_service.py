@@ -458,7 +458,6 @@ async def update_user_status(
         user.can_use_ai = can_use_ai
     await db.commit()
     await db.refresh(user)
-    return user
     limpiar_cache_usuario(user_id)
     return user
 

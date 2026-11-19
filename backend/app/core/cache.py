@@ -307,13 +307,22 @@ def _contexto_seguridad_usuario(usuario: Any, espacio_id: Optional[int] = None) 
     if espacio_id is not None:
         return {"espacio_autorizado": int(espacio_id)}
     if usuario is None:
-        return {"datasets": []}
+        return {"datasets": [], "roles": [], "espacio_usuario": None}
     datasets = getattr(usuario, "allowed_datasets", None)
     if isinstance(datasets, (list, tuple, set)):
         datasets = sorted(str(d).lower() for d in datasets)
     else:
         datasets = []
-    return {"datasets": datasets}
+    roles_obj = getattr(usuario, "roles", []) or []
+    roles = []
+    for r in roles_obj:
+        if isinstance(r, str):
+            roles.append(r)
+        elif hasattr(r, "nombre"):
+            roles.append(getattr(r, "nombre"))
+    roles.sort()
+    esp_u = getattr(usuario, "espacio_id", None)
+    return {"datasets": datasets, "roles": roles, "espacio_usuario": esp_u}
 
 
 def _generar_clave_cache(
