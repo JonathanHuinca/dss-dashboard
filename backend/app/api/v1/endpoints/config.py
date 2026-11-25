@@ -1,17 +1,29 @@
 from datetime import date
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.core.cache import invalidar_cache_por_espacio, limpiar_toda_la_cache
+from app.core.config import settings
 from app.core.security import validar_acceso_espacio
 from app.core.database import get_db
 from app.core.security_cipher import decrypt_api_key, mask_api_key
+from app.core.tiempo import marcar_utc
 from app.domain.auth_models import Usuario
 from app.schemas.config_schemas import (
+    CatalogoProveedoresIAResponse,
     ConfiguracionEspaciosResponse,
     ConfiguracionEspaciosUpdate,
+    ConfiguracionSMTPCreate,
+    ConfiguracionSMTPListResponse,
+    ConfiguracionSMTPResponse,
+    ConfiguracionSMTPUpdate,
+    CredencialIACreate,
+    CredencialIAResponse,
+    CredencialIAUpdate,
+    CredencialesIAListResponse,
     LLMProviderUpdate,
     HorarioOperacionResponse,
     HorarioOperacionCreate,
@@ -22,10 +34,28 @@ from app.schemas.config_schemas import (
     ContingenciaRespuesta,
     EventoCalendarioActualizar,
     EventoCalendarioCrear,
+    ProveedorCatalogoItem,
+    SMTPTestRequest,
+    TestConexionIAResponse,
+    TestConexionSMTPResponse,
 )
 from app.services.calendar_service import CalendarService
 from app.services.config_service import (
+    activar_configuracion_smtp,
+    activar_credencial_ia,
+    actualizar_configuracion_smtp,
+    actualizar_credencial_ia,
+    crear_configuracion_smtp,
+    crear_credencial_ia,
+    eliminar_configuracion_smtp,
+    eliminar_credencial_ia,
     get_configuracion_espacio,
+    listar_configuraciones_smtp,
+    listar_credenciales_ia,
+    obtener_configuracion_smtp,
+    obtener_credencial_ia,
+    probar_configuracion_smtp_guardada,
+    probar_credencial_ia_guardada,
     toggle_ia_asistente,
     update_llm_provider,
     get_horarios_operacion,
@@ -37,21 +67,11 @@ from app.services.config_service import (
     update_espacio_capacidad,
 )
 
-
+logger = logging.getLogger(__name__)
 router = APIRouter()
 public_router = APIRouter()
 
-
-async def require_superadmin(
-    current_user: Usuario = Depends(get_current_user),
-) -> Usuario:
-    user_roles = [r.nombre for r in current_user.roles]
-    if "SuperAdmin" not in user_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Permisos insuficientes: se requiere rol SuperAdmin",
-        )
-    return current_user
+require_superadmin = require_role("Admin_Sistema", "SuperAdmin")
 
 
 from typing import Optional
@@ -153,37 +173,36 @@ async def set_llm_provider(
     db: AsyncSession = Depends(get_db),
     espacio_id: int = Depends(get_espacio_id),
 ) -> ConfiguracionEspaciosResponse:
-    if not req.api_key or not req.api_key.strip():
+    from app.services.llm_client import CATALOGO_PROVEEDORES_IA
+
+    pid = (req.provider or "").strip().lower()
+    if pid not in CATALOGO_PROVEEDORES_IA:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Proveedor '{req.provider}' no soportado.",
+        )
+    meta = CATALOGO_PROVEEDORES_IA[pid]
+    if meta.get("requires_api_key", True) and (not req.api_key or not req.api_key.strip()):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La API Key no puede estar vacía",
         )
-    if req.provider.lower() == "claude":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El proveedor 'claude' no está implementado actualmente en el sistema. Utilice 'gemini'.",
-        )
-    if req.provider.lower() != "gemini":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Proveedor '{req.provider}' no soportado. Proveedor soportado: 'gemini'.",
-        )
     config = await update_llm_provider(
         db=db,
         espacio_id=espacio_id,
-        provider=req.provider,
+        provider=pid,
         default_model=req.default_model,
         api_key=req.api_key,
     )
-    plain = req.api_key.strip()
+    plain = (req.api_key or "").strip()
     return ConfiguracionEspaciosResponse(
         id=config.id,
         espacio_id=config.espacio_id,
         ia_asistente_activo=config.ia_asistente_activo,
         active_provider=config.active_provider,
         default_model=config.default_model,
-        has_api_key=True,
-        masked_api_key=mask_api_key(plain),
+        has_api_key=bool(plain),
+        masked_api_key=mask_api_key(plain) if plain else "",
         updated_at=config.updated_at,
     )
 
@@ -509,6 +528,303 @@ async def eliminar_evento_calendario(
     if not eliminado:
         raise HTTPException(status_code=404, detail="Evento de calendario no encontrado")
     return {"mensaje": "Evento eliminado exitosamente"}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints de Gestión Multi-Proveedor IA y Servidor SMTP (Solo Admin_Sistema)
+# ---------------------------------------------------------------------------
+def _serializar_credencial_ia(cred) -> CredencialIAResponse:
+    return CredencialIAResponse(
+        id=cred.id,
+        nombre=cred.nombre,
+        provider_id=cred.provider_id,
+        modelo=cred.modelo,
+        base_url=cred.base_url,
+        has_api_key=bool(cred.encrypted_api_key),
+        key_hint=cred.key_hint or "",
+        es_activa=bool(cred.es_activa),
+        ultimo_test_ok=cred.ultimo_test_ok,
+        ultimo_test_en=marcar_utc(cred.ultimo_test_en),
+        created_at=marcar_utc(cred.created_at),
+        updated_at=marcar_utc(cred.updated_at),
+    )
+
+
+def _serializar_smtp(cfg) -> ConfiguracionSMTPResponse:
+    return ConfiguracionSMTPResponse(
+        id=cfg.id,
+        nombre=cfg.nombre,
+        host=cfg.host,
+        port=cfg.port,
+        use_tls=bool(cfg.use_tls),
+        use_ssl=bool(cfg.use_ssl),
+        username=cfg.username,
+        from_email=cfg.from_email,
+        from_name=cfg.from_name,
+        has_password=bool(cfg.encrypted_password),
+        password_hint=cfg.password_hint or "",
+        es_activa=bool(cfg.es_activa),
+        ultimo_test_ok=cfg.ultimo_test_ok,
+        ultimo_test_en=marcar_utc(cfg.ultimo_test_en),
+        created_at=marcar_utc(cfg.created_at),
+        updated_at=marcar_utc(cfg.updated_at),
+    )
+
+
+@router.get("/llm/catalog", response_model=CatalogoProveedoresIAResponse, summary="Listar catálogo de proveedores IA soportados")
+async def listar_catalogo_ia(
+    _: Usuario = Depends(require_superadmin),
+) -> CatalogoProveedoresIAResponse:
+    from app.services.llm_client import obtener_catalogo_proveedores
+    return CatalogoProveedoresIAResponse(
+        proveedores=[ProveedorCatalogoItem(**p) for p in obtener_catalogo_proveedores()]
+    )
+
+
+@router.get("/llm/credentials", response_model=CredencialesIAListResponse, summary="Listar credenciales IA guardadas (enmascaradas)")
+async def listar_credenciales_ia_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(require_superadmin),
+) -> CredencialesIAListResponse:
+    items = await listar_credenciales_ia(db)
+    config_esp = await get_configuracion_espacio(db, 1)
+    fallback_env = bool(settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip())
+
+    activa = next((c for c in items if c.es_activa), None)
+    if activa:
+        origen = "bd"
+        resumen = f"{activa.nombre} ({activa.provider_id} / {activa.modelo})"
+    elif fallback_env:
+        origen = "env"
+        resumen = f"Respaldo .env (gemini / {settings.MODELO_GEMINI_POR_DEFECTO})"
+    else:
+        origen = "ninguno"
+        resumen = None
+
+    return CredencialesIAListResponse(
+        items=[_serializar_credencial_ia(c) for c in items],
+        ia_asistente_activo=bool(config_esp.ia_asistente_activo),
+        fallback_env_disponible=fallback_env,
+        origen_activo=origen,
+        proveedor_activo_resumen=resumen,
+    )
+
+
+@router.post("/llm/credentials", response_model=CredencialIAResponse, status_code=status.HTTP_201_CREATED, summary="Registrar nueva credencial de proveedor IA")
+async def crear_credencial_ia_endpoint(
+    datos: CredencialIACreate,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> CredencialIAResponse:
+    try:
+        cred = await crear_credencial_ia(
+            db=db,
+            nombre=datos.nombre,
+            provider_id=datos.provider_id,
+            modelo=datos.modelo,
+            base_url=datos.base_url,
+            api_key=datos.api_key,
+            activar=datos.activar,
+            usuario_id=usuario.id,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+    logger.info("Credencial IA '%s' (%s) creada por %s", cred.nombre, cred.provider_id, usuario.email)
+    return _serializar_credencial_ia(cred)
+
+
+@router.put("/llm/credentials/{cred_id}", response_model=CredencialIAResponse, summary="Actualizar credencial de proveedor IA")
+async def actualizar_credencial_ia_endpoint(
+    cred_id: int,
+    datos: CredencialIAUpdate,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> CredencialIAResponse:
+    cred = await obtener_credencial_ia(db, cred_id)
+    if not cred:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credencial de IA no encontrada")
+    try:
+        actualizada = await actualizar_credencial_ia(
+            db=db,
+            cred=cred,
+            nombre=datos.nombre,
+            provider_id=datos.provider_id,
+            modelo=datos.modelo,
+            base_url=datos.base_url,
+            api_key=datos.api_key,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+    logger.info("Credencial IA id=%s ('%s') actualizada por %s", cred_id, actualizada.nombre, usuario.email)
+    return _serializar_credencial_ia(actualizada)
+
+
+@router.post("/llm/credentials/{cred_id}/activate", response_model=CredencialIAResponse, summary="Activar credencial de proveedor IA")
+async def activar_credencial_ia_endpoint(
+    cred_id: int,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> CredencialIAResponse:
+    cred = await obtener_credencial_ia(db, cred_id)
+    if not cred:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credencial de IA no encontrada")
+    activada = await activar_credencial_ia(db, cred)
+    logger.info("Credencial IA id=%s ('%s') activada por %s", cred_id, activada.nombre, usuario.email)
+    return _serializar_credencial_ia(activada)
+
+
+@router.post("/llm/credentials/{cred_id}/test", response_model=TestConexionIAResponse, summary="Probar conectividad real de una credencial IA")
+async def probar_credencial_ia_endpoint(
+    cred_id: int,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> TestConexionIAResponse:
+    cred = await obtener_credencial_ia(db, cred_id)
+    if not cred:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credencial de IA no encontrada")
+    res = await probar_credencial_ia_guardada(db, cred)
+    logger.info("Prueba de conexión IA id=%s ('%s') por %s: ok=%s", cred_id, cred.nombre, usuario.email, res["ok"])
+    return TestConexionIAResponse(**res)
+
+
+@router.delete("/llm/credentials/{cred_id}", summary="Eliminar definitivamente una credencial de proveedor IA")
+async def eliminar_credencial_ia_endpoint(
+    cred_id: int,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> dict:
+    cred = await obtener_credencial_ia(db, cred_id)
+    if not cred:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credencial de IA no encontrada")
+    nombre = cred.nombre
+    await eliminar_credencial_ia(db, cred)
+    logger.info("Credencial IA id=%s ('%s') eliminada definitivamente por %s", cred_id, nombre, usuario.email)
+    return {"mensaje": f"Credencial '{nombre}' eliminada definitivamente."}
+
+
+@router.get("/smtp", response_model=ConfiguracionSMTPListResponse, summary="Listar perfiles de servidor SMTP configurados")
+async def listar_smtp_endpoint(
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(require_superadmin),
+) -> ConfiguracionSMTPListResponse:
+    items = await listar_configuraciones_smtp(db)
+    fallback_env = bool(settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD)
+    activa = next((c for c in items if c.es_activa), None)
+    origen = "bd" if activa else ("env" if fallback_env else "ninguno")
+
+    return ConfiguracionSMTPListResponse(
+        items=[_serializar_smtp(c) for c in items],
+        fallback_env_disponible=fallback_env,
+        fallback_env_host=settings.SMTP_HOST or None,
+        fallback_env_user=settings.SMTP_USER or None,
+        origen_activo=origen,
+    )
+
+
+@router.post("/smtp", response_model=ConfiguracionSMTPResponse, status_code=status.HTTP_201_CREATED, summary="Registrar nuevo perfil SMTP")
+async def crear_smtp_endpoint(
+    datos: ConfiguracionSMTPCreate,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> ConfiguracionSMTPResponse:
+    try:
+        cfg = await crear_configuracion_smtp(
+            db=db,
+            nombre=datos.nombre,
+            host=datos.host,
+            port=datos.port,
+            use_tls=datos.use_tls,
+            use_ssl=datos.use_ssl,
+            username=datos.username,
+            from_email=str(datos.from_email),
+            from_name=datos.from_name,
+            password=datos.password,
+            activar=datos.activar,
+            usuario_id=usuario.id,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+    logger.info("Perfil SMTP '%s' (%s:%s) creado por %s", cfg.nombre, cfg.host, cfg.port, usuario.email)
+    return _serializar_smtp(cfg)
+
+
+@router.put("/smtp/{smtp_id}", response_model=ConfiguracionSMTPResponse, summary="Actualizar perfil SMTP")
+async def actualizar_smtp_endpoint(
+    smtp_id: int,
+    datos: ConfiguracionSMTPUpdate,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> ConfiguracionSMTPResponse:
+    cfg = await obtener_configuracion_smtp(db, smtp_id)
+    if not cfg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Configuración SMTP no encontrada")
+    try:
+        actualizado = await actualizar_configuracion_smtp(
+            db=db,
+            cfg=cfg,
+            nombre=datos.nombre,
+            host=datos.host,
+            port=datos.port,
+            use_tls=datos.use_tls,
+            use_ssl=datos.use_ssl,
+            username=datos.username,
+            from_email=str(datos.from_email) if datos.from_email is not None else None,
+            from_name=datos.from_name,
+            password=datos.password,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+    logger.info("Perfil SMTP id=%s ('%s') actualizado por %s", smtp_id, actualizado.nombre, usuario.email)
+    return _serializar_smtp(actualizado)
+
+
+@router.post("/smtp/{smtp_id}/activate", response_model=ConfiguracionSMTPResponse, summary="Activar perfil SMTP en caliente")
+async def activar_smtp_endpoint(
+    smtp_id: int,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> ConfiguracionSMTPResponse:
+    cfg = await obtener_configuracion_smtp(db, smtp_id)
+    if not cfg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Configuración SMTP no encontrada")
+    activado = await activar_configuracion_smtp(db, cfg)
+    logger.info("Perfil SMTP id=%s ('%s') activado por %s", smtp_id, activado.nombre, usuario.email)
+    return _serializar_smtp(activado)
+
+
+@router.post("/smtp/{smtp_id}/test", response_model=TestConexionSMTPResponse, summary="Enviar correo de prueba desde un perfil SMTP")
+async def probar_smtp_endpoint(
+    smtp_id: int,
+    req: SMTPTestRequest,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> TestConexionSMTPResponse:
+    cfg = await obtener_configuracion_smtp(db, smtp_id)
+    if not cfg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Configuración SMTP no encontrada")
+    destino = str(req.destinatario or usuario.email)
+    ok, msg = await probar_configuracion_smtp_guardada(db, cfg, destino)
+    logger.info("Prueba SMTP id=%s ('%s') hacia %s por %s: ok=%s", smtp_id, cfg.nombre, destino, usuario.email, ok)
+    return TestConexionSMTPResponse(ok=ok, mensaje=msg, destinatario=destino)
+
+
+@router.delete("/smtp/{smtp_id}", summary="Eliminar definitivamente un perfil SMTP")
+async def eliminar_smtp_endpoint(
+    smtp_id: int,
+    db: AsyncSession = Depends(get_db),
+    usuario: Usuario = Depends(require_superadmin),
+) -> dict:
+    cfg = await obtener_configuracion_smtp(db, smtp_id)
+    if not cfg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Configuración SMTP no encontrada")
+    nombre = cfg.nombre
+    await eliminar_configuracion_smtp(db, cfg)
+    logger.info("Perfil SMTP id=%s ('%s') eliminado definitivamente por %s", smtp_id, nombre, usuario.email)
+    return {"mensaje": f"Perfil SMTP '{nombre}' eliminado definitivamente."}
 
 
 

@@ -111,6 +111,12 @@ def validar_acceso_espacio(espacio_id: int, current_user: Usuario) -> None:
     if "Admin_Sistema" in user_roles:
         return
 
+    if user_roles == {"Consultor_Reporte"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado: los usuarios Consultor_Reporte solo tienen acceso a sus reportes asignados.",
+        )
+
     if ("Director_Recinto" in user_roles or "Guardia_Seguridad" in user_roles) and current_user.espacio_id is not None:
         if current_user.espacio_id != espacio_id:
             raise HTTPException(
@@ -120,8 +126,8 @@ def validar_acceso_espacio(espacio_id: int, current_user: Usuario) -> None:
 
     modulo_por_espacio = {1: "biblioteca", 2: "estacionamiento"}
     dataset_nombre = modulo_por_espacio.get(espacio_id)
-    if dataset_nombre and current_user.allowed_datasets:
-        permitidos = [d.lower() for d in current_user.allowed_datasets]
+    if dataset_nombre and current_user.allowed_datasets is not None:
+        permitidos = [str(d).lower() for d in current_user.allowed_datasets]
         if dataset_nombre not in permitidos:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

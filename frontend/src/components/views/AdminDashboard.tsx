@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ShieldCheck,
   Users,
@@ -15,8 +15,13 @@ import {
   CalendarCheck,
   Lock,
   Mail,
+  KeyRound,
+  Bell,
+  AlertTriangle,
+  FileCheck2,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
+import { listarNotificacionesAdmin } from '../../api/administracion'
 import { ChatAuditSection } from './ChatAuditSection'
 import { DownloadAuditSection } from './DownloadAuditSection'
 import { HorariosSection } from './HorariosSection'
@@ -27,6 +32,9 @@ import { PurgaDatosSection } from './PurgaDatosSection'
 import { UsuariosSection } from './admin/UsuariosSection'
 import { TareasProgramadasSection } from './admin/TareasProgramadasSection'
 import { CalendarioSection } from './admin/CalendarioSection'
+import { IntegracionesSection } from './admin/IntegracionesSection'
+import { AlertasSeguridadSection } from './admin/AlertasSeguridadSection'
+import { ReportesEmitidosSection } from './admin/ReportesEmitidosSection'
 
 export const AdminDashboard: React.FC = () => {
   const {
@@ -40,8 +48,17 @@ export const AdminDashboard: React.FC = () => {
   const isSuperAdminOrDirectivo = isSuperAdmin || isDirectivo
   const queryClient = useQueryClient()
 
+  const { data: alertasAdmin } = useQuery({
+    queryKey: ['admin-notificaciones'],
+    queryFn: listarNotificacionesAdmin,
+    enabled: isAuthenticated && isSuperAdmin,
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  })
+  const noLeidas = isSuperAdmin ? (alertasAdmin?.no_leidas ?? 0) : 0
+
   const [adminTab, setAdminTab] = useState<
-    'usuarios' | 'tareas' | 'calendario' | 'aforo' | 'horarios' | 'descargas' | 'auditoria' | 'ingesta' | 'purga'
+    'usuarios' | 'alertas' | 'integraciones' | 'tareas' | 'calendario' | 'aforo' | 'horarios' | 'reportes' | 'descargas' | 'auditoria' | 'ingesta' | 'purga'
   >(isSuperAdminOrDirectivo ? 'usuarios' : 'aforo')
 
   const [emailInput, setEmailInput] = useState('')
@@ -176,6 +193,26 @@ export const AdminDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Aviso prioritario de alertas de seguridad no revisadas */}
+      {isSuperAdmin && noLeidas > 0 && adminTab !== 'alertas' && (
+        <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs text-rose-900">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse shrink-0" />
+            <AlertTriangle size={16} className="text-rose-600 shrink-0" />
+            <span>
+              Tienes <strong>{noLeidas}</strong> {noLeidas === 1 ? 'alerta de seguridad sin revisar' : 'alertas de seguridad sin revisar'} por bloqueos de acceso (5 intentos fallidos).
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAdminTab('alertas')}
+            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer transition shadow-2xs"
+          >
+            Ver alertas
+          </button>
+        </div>
+      )}
+
       {/* Navegación por Pestañas del Panel */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200">
         {isSuperAdminOrDirectivo && (
@@ -190,6 +227,41 @@ export const AdminDashboard: React.FC = () => {
           >
             <Users size={16} />
             <span>Usuarios & IA</span>
+          </button>
+        )}
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('alertas')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'alertas'
+                ? 'border-rose-600 text-rose-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Bell size={16} />
+            <span>Alertas de Seguridad</span>
+            {noLeidas > 0 && (
+              <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none">
+                {noLeidas > 9 ? '9+' : noLeidas}
+              </span>
+            )}
+          </button>
+        )}
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('integraciones')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'integraciones'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <KeyRound size={16} />
+            <span>IA y Correo (SMTP)</span>
           </button>
         )}
 
@@ -246,6 +318,21 @@ export const AdminDashboard: React.FC = () => {
           <Calendar size={16} />
           <span>Horarios de Atención</span>
         </button>
+
+        {isSuperAdminOrDirectivo && (
+          <button
+            type="button"
+            onClick={() => setAdminTab('reportes')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
+              adminTab === 'reportes'
+                ? 'border-uct-blue-primary text-uct-blue-primary'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <FileCheck2 size={16} />
+            <span>Reportes Emitidos</span>
+          </button>
+        )}
 
         {isSuperAdmin && (
           <button
@@ -311,6 +398,10 @@ export const AdminDashboard: React.FC = () => {
       {/* Contenido de la Pestaña Activa */}
       {adminTab === 'usuarios' && isSuperAdminOrDirectivo ? (
         <UsuariosSection />
+      ) : adminTab === 'alertas' && isSuperAdmin ? (
+        <AlertasSeguridadSection />
+      ) : adminTab === 'integraciones' && isSuperAdmin ? (
+        <IntegracionesSection />
       ) : adminTab === 'tareas' && isSuperAdmin ? (
         <TareasProgramadasSection />
       ) : adminTab === 'calendario' ? (
@@ -319,6 +410,8 @@ export const AdminDashboard: React.FC = () => {
         <AforoSection />
       ) : adminTab === 'horarios' ? (
         <HorariosSection />
+      ) : adminTab === 'reportes' && isSuperAdminOrDirectivo ? (
+        <ReportesEmitidosSection />
       ) : adminTab === 'descargas' && isSuperAdmin ? (
         <DownloadAuditSection />
       ) : adminTab === 'auditoria' && isSuperAdmin ? (

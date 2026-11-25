@@ -6,6 +6,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import joinedload
 
 from app.core.database import AsyncSessionLocal
+from app.core.tiempo import inicio_dia_chile
 from app.domain.download_audit_models import DownloadAuditLog
 from app.domain.auth_models import Usuario
 
@@ -101,15 +102,14 @@ async def get_download_audit_history(
             for r in rows
         ]
 
-        # Estadísticas acumuladas
-        now_utc = datetime.now(timezone.utc)
-        today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Estadísticas acumuladas usando medianoche real en Chile (columna usa GETDATE local)
+        today_start_cl = inicio_dia_chile().replace(tzinfo=None)
 
         all_stmt = select(DownloadAuditLog)
         all_rows = (await session.execute(all_stmt)).scalars().all()
 
         total_descargas = len(all_rows)
-        descargas_hoy = sum(1 for r in all_rows if r.timestamp and r.timestamp >= today_start.replace(tzinfo=None))
+        descargas_hoy = sum(1 for r in all_rows if r.timestamp and r.timestamp >= today_start_cl)
         descargas_csv = sum(1 for r in all_rows if r.formato == "csv")
         descargas_pdf = sum(1 for r in all_rows if r.formato == "pdf")
 

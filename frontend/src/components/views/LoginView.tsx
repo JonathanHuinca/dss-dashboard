@@ -84,8 +84,9 @@ export function LoginView() {
   }
 
   const demoEnv = (import.meta as any).env ?? {}
-  const demoAdminPass: string = demoEnv.VITE_DEMO_ADMIN_PASSWORD || 'AdminUCT2026!'
-  const demoUserPass: string = demoEnv.VITE_DEMO_USER_PASSWORD || 'UCTdemo2026!'
+  const esDev = Boolean(demoEnv.DEV)
+  const demoAdminPass: string = esDev ? (demoEnv.VITE_DEMO_ADMIN_PASSWORD || 'AdminUCT2026!') : ''
+  const demoUserPass: string = esDev ? (demoEnv.VITE_DEMO_USER_PASSWORD || 'UCTdemo2026!') : ''
 
   const setPresetUser = (roleEmail: string, rolePass: string) => {
     setEmail(roleEmail)
@@ -250,6 +251,22 @@ export function LoginView() {
                 >
                   <span className="font-bold block text-[11px]">Guardia Seguridad</span>
                   <span className="text-[10px] text-emerald-700 block truncate">guardia@uct.cl</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPresetUser('consultor1@uct.cl', demoUserPass)}
+                  className="p-2 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-900 transition-colors text-left cursor-pointer"
+                >
+                  <span className="font-bold block text-[11px]">Consultor Prueba 1</span>
+                  <span className="text-[10px] text-amber-700 block truncate">consultor1@uct.cl</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPresetUser('consultor2@uct.cl', demoUserPass)}
+                  className="p-2 rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-900 transition-colors text-left cursor-pointer"
+                >
+                  <span className="font-bold block text-[11px]">Consultor Prueba 2</span>
+                  <span className="text-[10px] text-amber-700 block truncate">consultor2@uct.cl</span>
                 </button>
               </div>
             </div>

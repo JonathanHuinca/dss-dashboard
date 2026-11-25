@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.mssql import DATETIME2
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -102,8 +103,8 @@ class Usuario(Base):
                 "Director_Recinto",
                 "Directivo",
                 "Analista_Consulta",
-                "Consultor_Reporte",
                 "Guardia_Seguridad",
+                "Consultor_Reporte",
             ]:
                 if priority_role in role_names:
                     return priority_role
@@ -129,4 +130,29 @@ class TokenActivacion(Base):
     )
 
     usuario: Mapped["Usuario"] = relationship("Usuario", back_populates="tokens_activacion")
+
+
+class NotificacionAdmin(Base):
+    """Alertas de seguridad administrativas (bloqueos de acceso por fuerza bruta)."""
+
+    __tablename__ = "notificaciones_admin"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tipo: Mapped[str] = mapped_column(String(50), default="bloqueo_login", nullable=False, index=True)
+    titulo: Mapped[str] = mapped_column(String(150), nullable=False)
+    mensaje: Mapped[str] = mapped_column(String(500), nullable=False)
+    usuario_afectado_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    usuario_afectado_email: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    usuario_afectado_nombre: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    intentos_fallidos: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    ip_origen: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    leida: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    leida_en: Mapped[Optional[datetime]] = mapped_column(DATETIME2, nullable=True)
+    # Sin FK en cascada para evitar múltiples rutas en cascada hacia usuarios en SQL Server
+    leida_por_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DATETIME2, server_default=func.now(), nullable=False
+    )
 

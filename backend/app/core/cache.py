@@ -532,6 +532,8 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
                 "direccion": "completos",
                 "incluir_pausas_bano": True,
                 "desduplicar_rafagas": True,
+                "incluir_funcionarios": True,
+                "incluir_sin_identificar": True,
             }
 
             # Rangos de hitos académicos del selector de períodos para Biblioteca

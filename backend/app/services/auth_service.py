@@ -15,14 +15,17 @@ from typing import Any, Dict, List, Optional
 import jwt
 from fastapi import HTTPException, status
 from passlib.context import CryptContext
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.cache import TTLCache
-from app.core.config import settings
-from app.domain.auth_models import Rol, TokenActivacion, Usuario, UsuarioRol
-from app.schemas.auth_schemas import UsuarioCreate, UsuarioInviteRequest
+from app.core.config import obtener_url_frontend, settings
+from app.core.tiempo import ahora_chile_naive
+from app.domain.auth_models import NotificacionAdmin, Rol, TokenActivacion, Usuario, UsuarioRol
+from app.domain.reportes_compartidos_models import DestinatarioReporte
+from app.schemas.auth_schemas import UsuarioCreate, UsuarioInviteRequest, UsuarioUpdateRequest
+from app.services.email_service import enviar_correo_bloqueo_login
 
 # Caché en memoria de sesiones de usuario para evitar consultas repetitivas por petición
 cache_usuarios_sesion: TTLCache = TTLCache(maxsize=256, ttl=60)
@@ -139,6 +142,8 @@ def create_access_token(
     can_ingest: bool = False,
     espacio_id: Optional[int] = None,
     expires_delta: Optional[timedelta] = None,
+    nombre_completo: Optional[str] = None,
+    email: Optional[str] = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     expire = now + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
@@ -148,6 +153,8 @@ def create_access_token(
     payload: Dict[str, Any] = {
         "sub": str(user_id),
         "user_id": user_id,
+        "nombre_completo": nombre_completo,
+        "email": email,
         "rol": normalized_rol,
         "roles": normalized_roles,
         "allowed_datasets": allowed_datasets if allowed_datasets is not None else ["biblioteca", "estacionamiento"],
@@ -248,17 +255,16 @@ async def get_user_by_email(db: AsyncSession, email: str) -> Optional[Usuario]:
 
 
 async def authenticate_user(
-    db: AsyncSession, email: str, password: str
+    db: AsyncSession,
+    email: str,
+    password: str,
+    ip_origen: Optional[str] = None,
+    background_tasks: Any = None,
 ) -> Optional[Usuario]:
     email_clean = (email or "").strip().lower()
     user = await get_user_by_email(db, email_clean)
     if not user:
         return None
-
-    es_jhuinca = email_clean == "jhuinca2020@alu.uct.cl"
-    if es_jhuinca:
-        user.bloqueado_hasta = None
-        user.intentos_fallidos_login = 0
 
     # Verificar si la cuenta se encuentra bloqueada por fuerza bruta
     ahora = datetime.now(timezone.utc)
@@ -288,19 +294,56 @@ async def authenticate_user(
 
     # Validar contraseña
     es_valida = verify_password(password, user.hashed_password)
-    if not es_valida and es_jhuinca and password in ("AdminUCT2026!", "Uct2026!", "Admin2026!", "UCTdemo2026!"):
-        es_valida = True
-        user.hashed_password = hash_password(password)
-        await db.commit()
 
     if not es_valida:
         user.intentos_fallidos_login = (user.intentos_fallidos_login or 0) + 1
         if user.intentos_fallidos_login >= 5:
             user.bloqueado_hasta = ahora + timedelta(minutes=15)
+            # Registra alerta para SuperAdmin y emite enlace directo de recuperación al usuario
+            notificacion = NotificacionAdmin(
+                tipo="bloqueo_login",
+                titulo="Cuenta bloqueada tras 5 intentos fallidos",
+                mensaje=(
+                    f"El usuario {user.nombre_completo} ({user.email}) falló 5 veces consecutivas "
+                    "al ingresar su contraseña y fue bloqueado por 15 minutos."
+                ),
+                usuario_afectado_id=user.id,
+                usuario_afectado_email=user.email,
+                usuario_afectado_nombre=user.nombre_completo,
+                intentos_fallidos=int(user.intentos_fallidos_login),
+                ip_origen=ip_origen,
+                leida=False,
+            )
+            db.add(notificacion)
+
+            token_plano, token_hash = generar_token_activacion()
+            token_obj = TokenActivacion(
+                usuario_id=user.id,
+                token_hash=token_hash,
+                tipo_token="RECUPERACION_PASSWORD",
+                expira_en=ahora + timedelta(minutes=15),
+                utilizado=False,
+                ip_solicitante=ip_origen,
+            )
+            db.add(token_obj)
             await db.commit()
+
+            if background_tasks is not None:
+                enlace = f"{obtener_url_frontend()}/recuperar-password?token={token_plano}"
+                background_tasks.add_task(
+                    enviar_correo_bloqueo_login,
+                    user.email,
+                    user.nombre_completo or "",
+                    enlace,
+                    int(user.intentos_fallidos_login),
+                )
+
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
-                detail="Cuenta bloqueada preventivamente tras 5 intentos erróneos consecutivos (OWASP ASVS). Puede restablecer su contraseña mediante la opción '¿Olvidó su contraseña?' o esperar 15 minutos.",
+                detail=(
+                    "Cuenta bloqueada preventivamente tras 5 intentos erróneos consecutivos (OWASP ASVS). "
+                    "Se envió un enlace de restablecimiento a su correo institucional y se notificó al administrador."
+                ),
             )
         else:
             await db.commit()
@@ -320,6 +363,99 @@ async def authenticate_user(
     return user
 
 
+def _roles_usuario(usuario: Usuario) -> set[str]:
+    return {normalizar_rol(r.nombre) for r in (getattr(usuario, "roles", None) or [])}
+
+
+def _datasets_usuario(usuario: Usuario) -> set[str]:
+    datasets = {
+        str(d).strip().lower()
+        for d in (getattr(usuario, "allowed_datasets", None) or [])
+        if str(d).strip().lower() in ("biblioteca", "estacionamiento")
+    }
+    if not datasets:
+        if getattr(usuario, "espacio_id", None) == 1:
+            datasets.add("biblioteca")
+        elif getattr(usuario, "espacio_id", None) == 2:
+            datasets.add("estacionamiento")
+    return datasets
+
+
+def _es_solo_consultor(roles_norm: List[str] | set[str]) -> bool:
+    roles_set = {normalizar_rol(r) for r in roles_norm if str(r).strip()}
+    return bool(roles_set) and roles_set == {"Consultor_Reporte"}
+
+
+def _resolver_espacio_por_datasets(
+    allowed_datasets: Optional[List[str]],
+    roles_norm: List[str] | set[str],
+) -> tuple[List[str], Optional[int]]:
+    """Deriva allowed_datasets normalizado y el espacio_id coherente (1, 2 o None para ambos)."""
+    roles_set = {normalizar_rol(r) for r in roles_norm if str(r).strip()}
+    if _es_solo_consultor(roles_set):
+        return [], None
+
+    limpios: List[str] = []
+    for d in allowed_datasets or []:
+        dl = str(d).strip().lower()
+        if dl in ("biblioteca", "estacionamiento") and dl not in limpios:
+            limpios.append(dl)
+
+    if not limpios:
+        if "Admin_Sistema" in roles_set:
+            return ["biblioteca", "estacionamiento"], None
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debe asignar al menos un módulo autorizado (biblioteca y/o estacionamiento).",
+        )
+
+    ds_set = set(limpios)
+    if ds_set == {"biblioteca"}:
+        return ["biblioteca"], 1
+    if ds_set == {"estacionamiento"}:
+        return ["estacionamiento"], 2
+    return ["biblioteca", "estacionamiento"], None
+
+
+def _es_gestionable_por_director(director: Usuario, target: Usuario) -> bool:
+    """
+    Gobernanza Opción A: un Director_Recinto solo puede gestionar usuarios cuyos módulos
+    sean subconjunto de los suyos (nunca Admin, otros Directores ni multi-módulo ajenos).
+    """
+    if target.id == director.id:
+        return False
+    target_roles = _roles_usuario(target)
+    if "Admin_Sistema" in target_roles or "Director_Recinto" in target_roles:
+        return False
+    if _es_solo_consultor(target_roles):
+        return target.created_by_user_id == director.id
+    dir_ds = _datasets_usuario(director)
+    target_ds = _datasets_usuario(target)
+    return bool(target_ds) and target_ds.issubset(dir_ds)
+
+
+async def _asegurar_destinatario_consultor(db: AsyncSession, usuario: Usuario) -> None:
+    email_norm = (usuario.email or "").strip().lower()
+    if not email_norm:
+        return
+    stmt_dest = select(DestinatarioReporte).where(func.lower(DestinatarioReporte.email) == email_norm)
+    dest = (await db.execute(stmt_dest)).scalar_one_or_none()
+    if not dest:
+        ahora = ahora_chile_naive()
+        db.add(
+            DestinatarioReporte(
+                email=email_norm,
+                nombre_completo=usuario.nombre_completo,
+                cargo="Consultor de Reportes",
+                unidad_academica="Universidad Católica de Temuco",
+                token_portal=secrets.token_urlsafe(32),
+                activo=True,
+                creado_en=ahora,
+                actualizado_en=ahora,
+            )
+        )
+
+
 async def create_user(
     db: AsyncSession, user_in: UsuarioCreate, creator: Optional[Usuario] = None
 ) -> Usuario:
@@ -328,51 +464,53 @@ async def create_user(
     """
     assigned_roles = [normalizar_rol(r) for r in user_in.roles]
     created_by_user_id = user_in.created_by_user_id
-    espacio_id = user_in.espacio_id
+    raw_datasets = list(user_in.allowed_datasets or [])
 
     if creator:
-        creator_roles = [normalizar_rol(r.nombre) for r in creator.roles]
+        creator_roles = _roles_usuario(creator)
         if "Admin_Sistema" in creator_roles:
             created_by_user_id = creator.id
         elif "Director_Recinto" in creator_roles:
-            # Restricción delegada: únicamente Analista_Consulta acotado a su propio recinto
             for r in assigned_roles:
-                if r != "Analista_Consulta":
+                if r not in ("Analista_Consulta", "Guardia_Seguridad", "Consultor_Reporte"):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Los Directores de Recinto solo pueden crear usuarios con rol Analista de Consulta.",
+                        detail="Los Directores de Recinto solo pueden crear usuarios Analista, Guardia o Consultor de Reporte.",
                     )
-            espacio_id = creator.espacio_id
             created_by_user_id = creator.id
-            # Forzar dataset según el recinto del director
-            if creator.espacio_id == 1:
-                allowed_datasets = ["biblioteca"]
-            elif creator.espacio_id == 2:
-                allowed_datasets = ["estacionamiento"]
-            else:
-                allowed_datasets = creator.allowed_datasets or ["biblioteca"]
+            director_datasets = _datasets_usuario(creator)
+            if not _es_solo_consultor(assigned_roles):
+                req_ds = {str(d).strip().lower() for d in raw_datasets if str(d).strip()}
+                if req_ds and not req_ds.issubset(director_datasets):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="No puede asignar módulos fuera de su jurisdicción.",
+                    )
+                if not req_ds:
+                    raw_datasets = sorted(director_datasets)
         else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="No tiene permisos para crear usuarios en el sistema.",
             )
 
-    # Configuración de permisos modulares por omisión según rol institucional
+    final_allowed_datasets, espacio_id = _resolver_espacio_por_datasets(raw_datasets, assigned_roles)
+
     can_use_ai = user_in.can_use_ai
     can_export = user_in.can_export
     can_ingest = user_in.can_ingest
 
-    if "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
+    if _es_solo_consultor(assigned_roles):
+        can_use_ai = False
+        can_export = True
+        can_ingest = False
+    elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
         can_use_ai = True
         can_export = True
         can_ingest = True
     elif "Analista_Consulta" in assigned_roles:
         can_use_ai = True
         can_export = True
-
-    final_allowed_datasets = user_in.allowed_datasets
-    if creator and "Director_Recinto" in creator_roles:
-        final_allowed_datasets = allowed_datasets
 
     hashed_pwd = hash_password(user_in.password)
     user = Usuario(
@@ -390,7 +528,7 @@ async def create_user(
     db.add(user)
     await db.flush()
 
-    for role_name in assigned_roles:
+    for role_name in dict.fromkeys(assigned_roles):
         stmt = select(Rol).where(Rol.nombre == role_name)
         result = await db.execute(stmt)
         role_obj = result.scalar_one_or_none()
@@ -398,8 +536,10 @@ async def create_user(
             role_obj = Rol(nombre=role_name, descripcion=None)
             db.add(role_obj)
             await db.flush()
-        user_role = UsuarioRol(usuario_id=user.id, rol_id=role_obj.id)
-        db.add(user_role)
+        db.add(UsuarioRol(usuario_id=user.id, rol_id=role_obj.id))
+
+    if "Consultor_Reporte" in assigned_roles:
+        await _asegurar_destinatario_consultor(db, user)
 
     await db.commit()
     await db.refresh(user)
@@ -419,32 +559,13 @@ async def update_user_status(
         return None
 
     if current_user:
-        creator_roles = [normalizar_rol(r.nombre) for r in current_user.roles]
+        creator_roles = _roles_usuario(current_user)
         if "Admin_Sistema" not in creator_roles:
             if "Director_Recinto" in creator_roles:
-                target_roles = [normalizar_rol(r.nombre) for r in user.roles]
-                if "Admin_Sistema" in target_roles or "Director_Recinto" in target_roles:
+                if not _es_gestionable_por_director(current_user, user):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="No tiene permisos para modificar el estado de usuarios con jerarquía superior o equivalente.",
-                    )
-                director_datasets = set(current_user.allowed_datasets or [])
-                if current_user.espacio_id == 1:
-                    director_datasets.add("biblioteca")
-                elif current_user.espacio_id == 2:
-                    director_datasets.add("estacionamiento")
-
-                target_datasets = set(user.allowed_datasets or [])
-                if user.espacio_id == 1:
-                    target_datasets.add("biblioteca")
-                elif user.espacio_id == 2:
-                    target_datasets.add("estacionamiento")
-
-                coincide_recinto = bool(director_datasets.intersection(target_datasets))
-                if user.created_by_user_id != current_user.id and not coincide_recinto and user.espacio_id != current_user.espacio_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Solo puede modificar el estado de usuarios de su propio recinto.",
+                        detail="Solo puede gestionar usuarios cuyos módulos pertenezcan exclusivamente a su recinto asignado.",
                     )
             else:
                 raise HTTPException(
@@ -455,6 +576,11 @@ async def update_user_status(
     if is_active is not None:
         user.is_active = is_active
     if can_use_ai is not None:
+        if _es_solo_consultor(_roles_usuario(user)) and can_use_ai:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Los usuarios con rol único Consultor_Reporte no utilizan el asistente IA global.",
+            )
         user.can_use_ai = can_use_ai
     await db.commit()
     await db.refresh(user)
@@ -470,18 +596,10 @@ async def list_users(db: AsyncSession, current_user: Optional[Usuario] = None) -
     )
 
     if current_user:
-        user_roles = [normalizar_rol(r.nombre) for r in current_user.roles]
+        user_roles = _roles_usuario(current_user)
         if "Admin_Sistema" not in user_roles:
             if "Director_Recinto" in user_roles:
-                director_datasets = set(current_user.allowed_datasets or [])
-                if current_user.espacio_id == 1:
-                    director_datasets.add("biblioteca")
-                elif current_user.espacio_id == 2:
-                    director_datasets.add("estacionamiento")
-
-                es_solo_estacionamiento = "estacionamiento" in director_datasets and "biblioteca" not in director_datasets
-                es_solo_biblioteca = "biblioteca" in director_datasets and "estacionamiento" not in director_datasets
-
+                director_datasets = _datasets_usuario(current_user)
                 result = await db.execute(stmt)
                 todos = list(result.scalars().all())
 
@@ -491,29 +609,16 @@ async def list_users(db: AsyncSession, current_user: Optional[Usuario] = None) -
                         usuarios_filtrados.append(u)
                         continue
 
-                    u_roles = [normalizar_rol(r.nombre) for r in u.roles]
+                    u_roles = _roles_usuario(u)
                     if "Admin_Sistema" in u_roles or "Director_Recinto" in u_roles:
                         continue
 
-                    u_datasets = set(u.allowed_datasets or [])
-                    if u.espacio_id == 1:
-                        u_datasets.add("biblioteca")
-                    elif u.espacio_id == 2:
-                        u_datasets.add("estacionamiento")
-
-                    if u.created_by_user_id == current_user.id:
+                    if u.created_by_user_id == current_user.id or _es_solo_consultor(u_roles):
                         usuarios_filtrados.append(u)
                         continue
 
-                    if es_solo_estacionamiento:
-                        if "estacionamiento" in u_datasets and "biblioteca" not in u_datasets:
-                            usuarios_filtrados.append(u)
-                    elif es_solo_biblioteca:
-                        if "biblioteca" in u_datasets and "estacionamiento" not in u_datasets:
-                            usuarios_filtrados.append(u)
-                    else:
-                        if director_datasets.intersection(u_datasets):
-                            usuarios_filtrados.append(u)
+                    if director_datasets.intersection(_datasets_usuario(u)):
+                        usuarios_filtrados.append(u)
 
                 return usuarios_filtrados
             else:
@@ -535,12 +640,18 @@ async def invitar_usuario(
     Registra un usuario inactivo con contraseña 'PENDIENTE_ACTIVACION' y genera
     un token efímero en tokens_activacion según RF27 (Zero-Plaintext).
     """
-    assigned_roles = [normalizar_rol(r) for r in invite_in.roles]
+    assigned_roles = [normalizar_rol(r) for r in invite_in.roles if str(r).strip()]
+    if not assigned_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debe seleccionar al menos un rol institucional.",
+        )
+
     created_by_user_id = None
-    espacio_id = invite_in.espacio_id
+    raw_datasets = list(invite_in.allowed_datasets or [])
 
     if creator:
-        creator_roles = [normalizar_rol(r.nombre) for r in creator.roles]
+        creator_roles = _roles_usuario(creator)
         if "Admin_Sistema" in creator_roles:
             created_by_user_id = creator.id
         elif "Director_Recinto" in creator_roles:
@@ -550,35 +661,34 @@ async def invitar_usuario(
                         status_code=status.HTTP_403_FORBIDDEN,
                         detail="Los Directores de Recinto solo pueden invitar usuarios con rol Analista_Consulta, Guardia_Seguridad o Consultor_Reporte.",
                     )
-            espacio_id = creator.espacio_id
             created_by_user_id = creator.id
-            director_datasets = set(creator.allowed_datasets or [])
-            if creator.espacio_id == 1:
-                director_datasets.add("biblioteca")
-            elif creator.espacio_id == 2:
-                director_datasets.add("estacionamiento")
-
-            allowed_ds = [d for d in invite_in.allowed_datasets if d in director_datasets]
-            if not allowed_ds:
-                allowed_ds = list(director_datasets)
-            invite_in.allowed_datasets = allowed_ds
+            director_datasets = _datasets_usuario(creator)
+            if not _es_solo_consultor(assigned_roles):
+                req_ds = {str(d).strip().lower() for d in raw_datasets if str(d).strip()}
+                if req_ds and not req_ds.issubset(director_datasets):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="No puede asignar módulos fuera de su jurisdicción.",
+                    )
+                if not req_ds:
+                    raw_datasets = sorted(director_datasets)
         else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="No tiene permisos para invitar usuarios en el sistema.",
             )
 
-    if not espacio_id and invite_in.allowed_datasets:
-        if set(invite_in.allowed_datasets) == {"biblioteca"}:
-            espacio_id = 1
-        elif set(invite_in.allowed_datasets) == {"estacionamiento"}:
-            espacio_id = 2
+    final_allowed_datasets, espacio_id = _resolver_espacio_por_datasets(raw_datasets, assigned_roles)
 
     can_use_ai = invite_in.can_use_ai
     can_export = invite_in.can_export
     can_ingest = invite_in.can_ingest
 
-    if "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
+    if _es_solo_consultor(assigned_roles):
+        can_use_ai = False
+        can_export = True
+        can_ingest = False
+    elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
         can_use_ai = True
         can_export = True
         can_ingest = True
@@ -586,13 +696,12 @@ async def invitar_usuario(
         can_use_ai = True
         can_export = True
 
-    # Persistir usuario en estado inactivo sin credencial en texto plano
     user = Usuario(
-        email=invite_in.email,
+        email=invite_in.email.strip().lower(),
         hashed_password="PENDIENTE_ACTIVACION",
-        nombre_completo=invite_in.nombre_completo,
+        nombre_completo=invite_in.nombre_completo.strip(),
         is_active=False,
-        allowed_datasets=invite_in.allowed_datasets,
+        allowed_datasets=final_allowed_datasets,
         can_use_ai=can_use_ai,
         can_export=can_export,
         can_ingest=can_ingest,
@@ -602,7 +711,7 @@ async def invitar_usuario(
     db.add(user)
     await db.flush()
 
-    for role_name in assigned_roles:
+    for role_name in dict.fromkeys(assigned_roles):
         stmt_role = select(Rol).where(Rol.nombre == role_name)
         res_role = await db.execute(stmt_role)
         role_obj = res_role.scalar_one_or_none()
@@ -611,7 +720,9 @@ async def invitar_usuario(
 
     await db.flush()
 
-    # Generación y almacenamiento del token efímero con vigencia de 1 hora
+    if "Consultor_Reporte" in assigned_roles:
+        await _asegurar_destinatario_consultor(db, user)
+
     token_plano, token_hash = generar_token_activacion()
     expira_en = datetime.now(timezone.utc) + timedelta(hours=1)
 
@@ -629,6 +740,108 @@ async def invitar_usuario(
     return user_refreshed or user, token_plano, token_obj
 
 
+async def actualizar_usuario_admin(
+    db: AsyncSession,
+    user_id: int,
+    update_in: UsuarioUpdateRequest,
+    current_user: Usuario,
+) -> Usuario:
+    """Actualiza rol, módulos autorizados y flags de un usuario existente respetando gobernanza Opción A."""
+    limpiar_cache_usuario(user_id)
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado.")
+
+    actor_roles = _roles_usuario(current_user)
+    es_admin = "Admin_Sistema" in actor_roles
+    es_director = "Director_Recinto" in actor_roles
+
+    if not es_admin:
+        if not es_director:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes.")
+        if not _es_gestionable_por_director(current_user, user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo puede editar usuarios cuyos módulos pertenezcan exclusivamente a su recinto asignado.",
+            )
+
+    if update_in.roles is not None:
+        assigned_roles = [normalizar_rol(r) for r in update_in.roles if str(r).strip()]
+        if not assigned_roles:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Debe seleccionar al menos un rol.")
+        if not es_admin:
+            for r in assigned_roles:
+                if r not in ("Analista_Consulta", "Guardia_Seguridad", "Consultor_Reporte"):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Los Directores de Recinto solo pueden asignar roles Analista, Guardia o Consultor de Reporte.",
+                    )
+        if user.id == current_user.id and "Admin_Sistema" in _roles_usuario(user) and "Admin_Sistema" not in assigned_roles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Un administrador no puede revocar su propio rol Admin_Sistema.",
+            )
+    else:
+        assigned_roles = [normalizar_rol(r.nombre) for r in (user.roles or [])]
+
+    raw_datasets = (
+        list(update_in.allowed_datasets)
+        if update_in.allowed_datasets is not None
+        else list(user.allowed_datasets or [])
+    )
+    if not es_admin and not _es_solo_consultor(assigned_roles):
+        dir_ds = _datasets_usuario(current_user)
+        req_ds = {str(d).strip().lower() for d in raw_datasets if str(d).strip()}
+        if req_ds and not req_ds.issubset(dir_ds):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No puede asignar módulos fuera de su jurisdicción.",
+            )
+        if not req_ds:
+            raw_datasets = sorted(dir_ds)
+
+    final_datasets, final_espacio = _resolver_espacio_por_datasets(raw_datasets, assigned_roles)
+
+    if update_in.nombre_completo is not None and update_in.nombre_completo.strip():
+        user.nombre_completo = update_in.nombre_completo.strip()
+    user.allowed_datasets = final_datasets
+    user.espacio_id = final_espacio
+
+    if _es_solo_consultor(assigned_roles):
+        user.can_use_ai = False
+        user.can_export = True
+        user.can_ingest = False
+    else:
+        if update_in.can_use_ai is not None:
+            user.can_use_ai = update_in.can_use_ai
+        elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
+            user.can_use_ai = True
+        if update_in.can_export is not None:
+            user.can_export = update_in.can_export
+        elif any(r in assigned_roles for r in ("Admin_Sistema", "Director_Recinto", "Analista_Consulta")):
+            user.can_export = True
+        if update_in.can_ingest is not None:
+            user.can_ingest = update_in.can_ingest
+        elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
+            user.can_ingest = True
+
+    if update_in.roles is not None:
+        await db.execute(delete(UsuarioRol).where(UsuarioRol.usuario_id == user.id))
+        await db.flush()
+        for role_name in dict.fromkeys(assigned_roles):
+            rol_obj = (await db.execute(select(Rol).where(Rol.nombre == role_name))).scalar_one_or_none()
+            if rol_obj:
+                db.add(UsuarioRol(usuario_id=user.id, rol_id=rol_obj.id))
+
+    if "Consultor_Reporte" in assigned_roles:
+        await _asegurar_destinatario_consultor(db, user)
+
+    await db.commit()
+    limpiar_cache_usuario(user_id)
+    actualizado = await get_user_by_id(db, user_id)
+    return actualizado or user
+
+
 async def reenviar_invitacion_usuario(
     db: AsyncSession,
     user_id: int,
@@ -641,32 +854,13 @@ async def reenviar_invitacion_usuario(
             detail="Usuario no encontrado",
         )
     if creator:
-        creator_roles = [normalizar_rol(r.nombre) for r in creator.roles]
+        creator_roles = _roles_usuario(creator)
         if "Admin_Sistema" not in creator_roles:
             if "Director_Recinto" in creator_roles:
-                target_roles = [normalizar_rol(r.nombre) for r in user.roles]
-                if "Admin_Sistema" in target_roles or "Director_Recinto" in target_roles:
+                if not _es_gestionable_por_director(creator, user):
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail="No tiene permisos para gestionar invitaciones de usuarios con jerarquía superior o equivalente.",
-                    )
-                director_datasets = set(creator.allowed_datasets or [])
-                if creator.espacio_id == 1:
-                    director_datasets.add("biblioteca")
-                elif creator.espacio_id == 2:
-                    director_datasets.add("estacionamiento")
-
-                target_datasets = set(user.allowed_datasets or [])
-                if user.espacio_id == 1:
-                    target_datasets.add("biblioteca")
-                elif user.espacio_id == 2:
-                    target_datasets.add("estacionamiento")
-
-                coincide_recinto = bool(director_datasets.intersection(target_datasets))
-                if user.created_by_user_id != creator.id and not coincide_recinto and user.espacio_id != creator.espacio_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Solo puede gestionar usuarios de su propio recinto.",
+                        detail="Solo puede reenviar invitaciones a usuarios cuyos módulos pertenezcan exclusivamente a su recinto asignado.",
                     )
             else:
                 raise HTTPException(
@@ -872,13 +1066,13 @@ async def desbloquear_cuenta_admin(
             detail="Usuario no encontrado en el sistema.",
         )
 
-    creator_roles = [normalizar_rol(r.nombre) for r in current_user.roles]
+    creator_roles = _roles_usuario(current_user)
     if "Admin_Sistema" not in creator_roles:
         if "Director_Recinto" in creator_roles:
-            if usuario.espacio_id != current_user.espacio_id and usuario.created_by_user_id != current_user.id:
+            if not _es_gestionable_por_director(current_user, usuario):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Solo puede desbloquear cuentas pertenecientes a su recinto asignado.",
+                    detail="Solo puede desbloquear cuentas cuyos módulos pertenezcan exclusivamente a su recinto asignado.",
                 )
         else:
             raise HTTPException(

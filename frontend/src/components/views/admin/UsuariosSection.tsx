@@ -24,8 +24,9 @@ import {
   BotOff,
   Mail,
   RefreshCw,
+  Pencil,
 } from 'lucide-react'
-import { api, deleteUser, forgotPassword, inviteUser } from '../../../api/client'
+import { api, deleteUser, forgotPassword, inviteUser, updateUser } from '../../../api/client'
 import { useAuth } from '../../../context/AuthContext'
 
 interface RoleItem {
@@ -42,6 +43,10 @@ interface UserItem {
   nombre_completo: string
   is_active: boolean
   can_use_ai?: boolean
+  can_export?: boolean
+  can_ingest?: boolean
+  espacio_id?: number | null
+  created_by_user_id?: number | null
   intentos_fallidos_login?: number
   bloqueado_hasta?: string | null
   created_at: string
@@ -93,6 +98,13 @@ export const UsuariosSection: React.FC = () => {
   const [newDatasets, setNewDatasets] = useState<string[]>(datasetsIniciales)
   const [modalError, setModalError] = useState<string | null>(null)
 
+  // Modal Editar Usuario
+  const [editingUser, setEditingUser] = useState<UserItem | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editRole, setEditRole] = useState('Guardia_Seguridad')
+  const [editDatasets, setEditDatasets] = useState<string[]>([])
+  const [editError, setEditError] = useState<string | null>(null)
+
   // Estados para configuración de IA
   const [providerInput, setProviderInput] = useState('gemini')
   const [modelInput, setModelInput] = useState('gemini-3.1-flash-lite')
@@ -140,12 +152,17 @@ export const UsuariosSection: React.FC = () => {
   const rolesDisponibles = React.useMemo(() => {
     const base = rolesList.length > 0 ? rolesList : ROLES_PREDETERMINADOS
     if (!isSuperAdmin && isDirectivo) {
-      return base.filter((r) => r.nombre === 'Analista_Consulta' || r.nombre === 'Guardia_Seguridad')
+      return base.filter(
+        (r) =>
+          r.nombre === 'Analista_Consulta' ||
+          r.nombre === 'Guardia_Seguridad' ||
+          r.nombre === 'Consultor_Reporte'
+      )
     }
     return base
   }, [rolesList, isSuperAdmin, isDirectivo])
 
-  // Verificación jerárquica de permisos de gestión sobre usuarios específicos (RBAC)
+  // Verificación jerárquica Opción A sobre usuarios específicos (RBAC)
   const puedeGestionarUsuario = React.useCallback(
     (targetUser: UserItem) => {
       const esPropio = Boolean(userId && targetUser.id === userId)
@@ -155,11 +172,19 @@ export const UsuariosSection: React.FC = () => {
         const esJerarquiaAlta = targetUser.roles.some(
           (r) => r.nombre === 'Admin_Sistema' || r.nombre === 'Director_Recinto'
         )
-        return !esJerarquiaAlta
+        if (esJerarquiaAlta) return false
+        const esSoloConsultor =
+          targetUser.roles.length > 0 &&
+          targetUser.roles.every((r) => r.nombre === 'Consultor_Reporte')
+        if (esSoloConsultor) {
+          return Boolean(userId && targetUser.created_by_user_id === userId)
+        }
+        const targetDs = targetUser.allowed_datasets || []
+        return targetDs.length > 0 && targetDs.every((ds) => allowedDatasets.includes(ds))
       }
       return false
     },
-    [userId, isSuperAdmin, isDirectivo]
+    [userId, isSuperAdmin, isDirectivo, allowedDatasets]
   )
 
   const puedeEliminarUsuario = React.useCallback(
@@ -368,6 +393,44 @@ export const UsuariosSection: React.FC = () => {
       prev.includes(dataset) ? prev.filter((d) => d !== dataset) : [...prev, dataset]
     )
   }
+
+  const handleEditDatasetCheckbox = (dataset: string) => {
+    setEditDatasets((prev) =>
+      prev.includes(dataset) ? prev.filter((d) => d !== dataset) : [...prev, dataset]
+    )
+  }
+
+  const abrirModalEdicion = (u: UserItem) => {
+    const rolPrincipal = u.roles[0]?.nombre || 'Guardia_Seguridad'
+    const esSoloCons = u.roles.length > 0 && u.roles.every((r) => r.nombre === 'Consultor_Reporte')
+    setEditingUser(u)
+    setEditName(u.nombre_completo)
+    setEditRole(rolPrincipal)
+    setEditDatasets(esSoloCons ? [] : [...(u.allowed_datasets || [])])
+    setEditError(null)
+  }
+
+  const updateUserMutation = useMutation({
+    mutationFn: async ({
+      userId: targetId,
+      payload,
+    }: {
+      userId: number
+      payload: Parameters<typeof updateUser>[1]
+    }) => {
+      return await updateUser(targetId, payload)
+    },
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] })
+      setEditingUser(null)
+      setEditError(null)
+      setUserActionMsg(`Usuario ${updated?.email || ''} actualizado exitosamente.`)
+      setTimeout(() => setUserActionMsg(null), 5000)
+    },
+    onError: (err: any) => {
+      setEditError(err?.response?.data?.detail || 'No fue posible actualizar los permisos del usuario.')
+    },
+  })
 
   const isAiActive = configData ? configData.ia_asistente_activo : true
 
@@ -690,10 +753,18 @@ export const UsuariosSection: React.FC = () => {
               ) : (
                 filteredUsers.map((u) => {
                   const estaBloqueado = Boolean(u.bloqueado_hasta && new Date(u.bloqueado_hasta) > new Date())
+                  const esSoloConsultor =
+                    u.roles.length > 0 && u.roles.every((r) => r.nombre === 'Consultor_Reporte')
                   const puedeGestionar = puedeGestionarUsuario(u)
                   const puedeEliminar = puedeEliminarUsuario(u)
                   const puedeReenviar = puedeGestionar
                   const puedeDesbloquear = puedeGestionar && estaBloqueado
+                  const esSoloLecturaOpcionA =
+                    !isSuperAdmin &&
+                    isDirectivo &&
+                    !puedeGestionar &&
+                    u.id !== userId &&
+                    !u.roles.some((r) => r.nombre === 'Admin_Sistema' || r.nombre === 'Director_Recinto')
 
                   return (
                     <tr key={u.id} className="hover:bg-slate-50/50 transition">
@@ -712,12 +783,20 @@ export const UsuariosSection: React.FC = () => {
                         ))}
                       </td>
                       <td className="py-3 px-3">
-                        <div className="flex items-center gap-1">
-                          {(u.allowed_datasets || []).map((ds) => (
-                            <span key={ds} className="text-[10px] font-medium bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
-                              {ds}
+                        <div className="flex flex-wrap items-center gap-1">
+                          {esSoloConsultor ? (
+                            <span className="text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-full">
+                              Solo Reportes
                             </span>
-                          ))}
+                          ) : (u.allowed_datasets || []).length > 0 ? (
+                            (u.allowed_datasets || []).map((ds) => (
+                              <span key={ds} className="text-[10px] font-medium bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+                                {ds}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[10px] text-slate-400">Sin módulos</span>
+                          )}
                         </div>
                       </td>
                       <td className="py-3 px-3">
@@ -747,7 +826,7 @@ export const UsuariosSection: React.FC = () => {
                         )}
                       </td>
                       <td className="py-3 px-3">
-                        {puedeGestionar ? (
+                        {puedeGestionar && !esSoloConsultor ? (
                           <button
                             type="button"
                             onClick={() => toggleUserAiMutation.mutate({ userId: u.id, can_use_ai: !u.can_use_ai })}
@@ -764,12 +843,22 @@ export const UsuariosSection: React.FC = () => {
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 select-none">
                             {u.can_use_ai ? <Bot size={12} className="text-purple-600" /> : <BotOff size={12} className="text-slate-400" />}
-                            <span>{u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
+                            <span>{esSoloConsultor ? 'No aplica' : u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
                           </span>
                         )}
                       </td>
                       <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {puedeGestionar && (
+                            <button
+                              type="button"
+                              onClick={() => abrirModalEdicion(u)}
+                              className="p-1.5 text-slate-600 hover:text-uct-blue-primary hover:bg-blue-50 rounded-lg transition cursor-pointer"
+                              title="Editar rol y módulos autorizados"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          )}
                           {puedeReenviar && (
                             <button
                               type="button"
@@ -801,7 +890,15 @@ export const UsuariosSection: React.FC = () => {
                               <Trash2 size={14} />
                             </button>
                           )}
-                          {!puedeReenviar && !puedeDesbloquear && !puedeEliminar && (
+                          {esSoloLecturaOpcionA && (
+                            <span
+                              title="Usuario multi-módulo o global administrado por Super Administrador"
+                              className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200 whitespace-nowrap"
+                            >
+                              Solo lectura
+                            </span>
+                          )}
+                          {!puedeGestionar && !puedeEliminar && !esSoloLecturaOpcionA && (
                             <span className="text-slate-300 text-xs px-2 select-none">—</span>
                           )}
                         </div>
@@ -836,11 +933,17 @@ export const UsuariosSection: React.FC = () => {
             <form
               onSubmit={(e) => {
                 e.preventDefault()
+                const esConsultor = newRole === 'Consultor_Reporte'
+                if (!esConsultor && newDatasets.length === 0) {
+                  setModalError('Debe autorizar al menos un módulo (Biblioteca o Estacionamiento).')
+                  return
+                }
+                setModalError(null)
                 createUserMutation.mutate({
                   nombre_completo: newName,
                   email: newEmail,
                   roles: [newRole],
-                  allowed_datasets: newDatasets,
+                  allowed_datasets: esConsultor ? [] : newDatasets,
                 })
               }}
               className="p-5 space-y-4"
@@ -880,7 +983,15 @@ export const UsuariosSection: React.FC = () => {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Rol Institucional</label>
                 <select
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
+                  onChange={(e) => {
+                    const rolSel = e.target.value
+                    setNewRole(rolSel)
+                    if (rolSel === 'Consultor_Reporte') {
+                      setNewDatasets([])
+                    } else if (newDatasets.length === 0) {
+                      setNewDatasets(datasetsIniciales)
+                    }
+                  }}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:outline-none"
                 >
                   {rolesDisponibles.map((r) => (
@@ -893,32 +1004,38 @@ export const UsuariosSection: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">Módulos / Datasets Autorizados</label>
-                <div className="flex items-center gap-4 text-xs text-slate-700">
-                  {(isSuperAdmin || allowedDatasets.includes('biblioteca')) && (
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={newDatasets.includes('biblioteca')}
-                        onChange={() => handleDatasetCheckbox('biblioteca')}
-                        disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('estacionamiento')}
-                        className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
-                      />
-                      <span>Biblioteca</span>
-                    </label>
-                  )}
-                  {(isSuperAdmin || allowedDatasets.includes('estacionamiento')) && (
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={newDatasets.includes('estacionamiento')}
-                        onChange={() => handleDatasetCheckbox('estacionamiento')}
-                        disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('biblioteca')}
-                        className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
-                      />
-                      <span>Estacionamiento</span>
-                    </label>
-                  )}
-                </div>
+                {newRole === 'Consultor_Reporte' ? (
+                  <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                    Confinamiento automático: Consultor_Reporte accede exclusivamente a su bandeja de reportes compartidos (sin acceso a módulos).
+                  </p>
+                ) : (
+                  <div className="flex items-center gap-4 text-xs text-slate-700">
+                    {(isSuperAdmin || allowedDatasets.includes('biblioteca')) && (
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newDatasets.includes('biblioteca')}
+                          onChange={() => handleDatasetCheckbox('biblioteca')}
+                          disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('estacionamiento')}
+                          className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
+                        />
+                        <span>Biblioteca</span>
+                      </label>
+                    )}
+                    {(isSuperAdmin || allowedDatasets.includes('estacionamiento')) && (
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newDatasets.includes('estacionamiento')}
+                          onChange={() => handleDatasetCheckbox('estacionamiento')}
+                          disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('biblioteca')}
+                          className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
+                        />
+                        <span>Estacionamiento</span>
+                      </label>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
@@ -935,6 +1052,149 @@ export const UsuariosSection: React.FC = () => {
                   className="px-4 py-2 bg-uct-blue-primary hover:bg-uct-blue-hover text-white text-xs font-bold rounded-xl transition shadow-xs cursor-pointer disabled:opacity-50"
                 >
                   {createUserMutation.isPending ? 'Enviando...' : 'Enviar Invitación'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Editar Rol y Módulos */}
+      {editingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Pencil size={17} className="text-uct-blue-primary" />
+                <h3 className="text-sm font-bold text-slate-900">Editar Permisos de Usuario</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingUser(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg transition cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                const esCons = editRole === 'Consultor_Reporte'
+                if (!esCons && editDatasets.length === 0) {
+                  setEditError('Debe seleccionar al menos un módulo (Biblioteca o Estacionamiento).')
+                  return
+                }
+                setEditError(null)
+                updateUserMutation.mutate({
+                  userId: editingUser.id,
+                  payload: {
+                    nombre_completo: editName.trim(),
+                    roles: [editRole],
+                    allowed_datasets: esCons ? [] : editDatasets,
+                  },
+                })
+              }}
+              className="p-5 space-y-4"
+            >
+              {editError && (
+                <div className="p-3 bg-rose-50 text-rose-700 text-xs rounded-xl border border-rose-100 flex items-center gap-2">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  <span>{editError}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1">Correo Institucional</label>
+                <div className="px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600">
+                  {editingUser.email}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Nombre Completo</label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Rol Institucional</label>
+                <select
+                  value={editRole}
+                  onChange={(e) => {
+                    const rolSel = e.target.value
+                    setEditRole(rolSel)
+                    if (rolSel === 'Consultor_Reporte') {
+                      setEditDatasets([])
+                    } else if (editDatasets.length === 0) {
+                      setEditDatasets(datasetsIniciales)
+                    }
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:outline-none"
+                >
+                  {rolesDisponibles.map((r) => (
+                    <option key={r.id} value={r.nombre}>
+                      {r.nombre} — {r.descripcion}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Módulos / Datasets Autorizados</label>
+                {editRole === 'Consultor_Reporte' ? (
+                  <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                    Consultor_Reporte queda confinado exclusivamente a sus reportes ejecutivos compartidos.
+                  </p>
+                ) : (
+                  <div className="flex items-center gap-4 text-xs text-slate-700">
+                    {(isSuperAdmin || allowedDatasets.includes('biblioteca')) && (
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editDatasets.includes('biblioteca')}
+                          onChange={() => handleEditDatasetCheckbox('biblioteca')}
+                          disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('estacionamiento')}
+                          className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
+                        />
+                        <span>Biblioteca</span>
+                      </label>
+                    )}
+                    {(isSuperAdmin || allowedDatasets.includes('estacionamiento')) && (
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editDatasets.includes('estacionamiento')}
+                          onChange={() => handleEditDatasetCheckbox('estacionamiento')}
+                          disabled={isDirectivo && !isSuperAdmin && !allowedDatasets.includes('biblioteca')}
+                          className="rounded text-uct-blue-primary focus:ring-uct-blue-primary/40 disabled:opacity-50"
+                        />
+                        <span>Estacionamiento</span>
+                      </label>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingUser(null)}
+                  className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={updateUserMutation.isPending}
+                  className="px-4 py-2 bg-uct-blue-primary hover:bg-uct-blue-hover text-white text-xs font-bold rounded-xl transition shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {updateUserMutation.isPending ? 'Guardando...' : 'Guardar Cambios'}
                 </button>
               </div>
             </form>

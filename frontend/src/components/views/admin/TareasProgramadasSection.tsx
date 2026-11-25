@@ -287,10 +287,10 @@ export const TareasProgramadasSection: React.FC = () => {
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-800">
-                Modelos Predictivos (Prophet Presencia Física, GBR Demanda y K-Means)
+                Modelos Predictivos (Prophet Presencia Física Biblioteca/Vehicular y K-Means)
               </h3>
               <p className="text-[11px] text-slate-500">
-                Actualización automática diaria a las 06:00 AM (solo en días operativos de cada módulo según horario y calendario académico) o ejecución manual bajo demanda.
+                Actualización automática diaria a las 06:00 AM (solo en días operativos de cada módulo según horario y calendario académico) o ejecución manual bajo demanda. Las vistas globales (prophet_presencia_todas y prophet_vehicular) operan por reconciliación jerárquica Bottom-Up (Sala 1 + Sala 2 y CSF11 + CSF21 + CHS01), conservando los artefactos globales como respaldo.
               </p>
             </div>
           </div>

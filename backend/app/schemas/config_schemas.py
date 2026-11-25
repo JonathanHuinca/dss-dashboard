@@ -115,7 +115,13 @@ from datetime import date
 class ContingenciaCrear(BaseModel):
     fecha_inicio: date
     fecha_fin: date
-    tipo: str = Field(..., description="paro_federado | paro_carrera | suspension_sala | toma_campus | climatica | duelo | otro")
+    tipo: str = Field(
+        ...,
+        description=(
+            "paro_federado | paro_carrera | suspension_sala | toma_campus | "
+            "climatica | duelo | falla_sensor | apertura_manual | mantencion_cierre | sin_demanda | otro"
+        ),
+    )
     titulo: str
     descripcion: Optional[str] = None
     carreras_afectadas: Optional[str] = "Todas"
@@ -147,6 +153,139 @@ class EventoCalendarioActualizar(BaseModel):
 class EventoCalendarioCrear(EventoCalendarioActualizar):
     fecha_inicio: date
     fecha_fin: Optional[date] = None
+
+
+# ---------------------------------------------------------------------------
+# Esquemas Multi-Proveedor IA y Servidor SMTP (Admin_Sistema)
+# ---------------------------------------------------------------------------
+from pydantic import EmailStr
+
+
+class ProveedorCatalogoItem(BaseModel):
+    id: str
+    nombre: str
+    protocolo: str
+    default_base_url: str = ""
+    requires_api_key: bool = True
+    requires_base_url: bool = False
+    allows_local_http: bool = False
+    modelos_sugeridos: list[str] = []
+
+
+class CatalogoProveedoresIAResponse(BaseModel):
+    proveedores: list[ProveedorCatalogoItem]
+
+
+class CredencialIACreate(BaseModel):
+    nombre: str = Field(..., min_length=2, max_length=100)
+    provider_id: str = Field(..., min_length=2, max_length=50)
+    modelo: str = Field(..., min_length=1, max_length=120)
+    base_url: Optional[str] = Field(None, max_length=300)
+    api_key: Optional[str] = Field(None, max_length=500)
+    activar: bool = False
+
+
+class CredencialIAUpdate(BaseModel):
+    nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+    provider_id: Optional[str] = Field(None, min_length=2, max_length=50)
+    modelo: Optional[str] = Field(None, min_length=1, max_length=120)
+    base_url: Optional[str] = Field(None, max_length=300)
+    api_key: Optional[str] = Field(None, max_length=500)
+
+
+class CredencialIAResponse(BaseModel):
+    id: int
+    nombre: str
+    provider_id: str
+    modelo: str
+    base_url: Optional[str] = None
+    has_api_key: bool
+    key_hint: str = ""
+    es_activa: bool
+    ultimo_test_ok: Optional[bool] = None
+    ultimo_test_en: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CredencialesIAListResponse(BaseModel):
+    items: list[CredencialIAResponse]
+    ia_asistente_activo: bool
+    fallback_env_disponible: bool
+    origen_activo: str
+    proveedor_activo_resumen: Optional[str] = None
+
+
+class TestConexionIAResponse(BaseModel):
+    ok: bool
+    latencia_ms: float
+    mensaje: str
+    provider_id: str
+    modelo: str
+
+
+class ConfiguracionSMTPCreate(BaseModel):
+    nombre: str = Field(..., min_length=2, max_length=100)
+    host: str = Field(..., min_length=2, max_length=200)
+    port: int = Field(587, ge=1, le=65535)
+    use_tls: bool = True
+    use_ssl: bool = False
+    username: str = Field(..., min_length=1, max_length=200)
+    from_email: EmailStr
+    from_name: str = Field("Sistema DSS Campus San Francisco UCT", min_length=1, max_length=150)
+    password: str = Field(..., min_length=1, max_length=500)
+    activar: bool = False
+
+
+class ConfiguracionSMTPUpdate(BaseModel):
+    nombre: Optional[str] = Field(None, min_length=2, max_length=100)
+    host: Optional[str] = Field(None, min_length=2, max_length=200)
+    port: Optional[int] = Field(None, ge=1, le=65535)
+    use_tls: Optional[bool] = None
+    use_ssl: Optional[bool] = None
+    username: Optional[str] = Field(None, min_length=1, max_length=200)
+    from_email: Optional[EmailStr] = None
+    from_name: Optional[str] = Field(None, min_length=1, max_length=150)
+    password: Optional[str] = Field(None, max_length=500)
+
+
+class ConfiguracionSMTPResponse(BaseModel):
+    id: int
+    nombre: str
+    host: str
+    port: int
+    use_tls: bool
+    use_ssl: bool
+    username: str
+    from_email: str
+    from_name: str
+    has_password: bool
+    password_hint: str = ""
+    es_activa: bool
+    ultimo_test_ok: Optional[bool] = None
+    ultimo_test_en: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConfiguracionSMTPListResponse(BaseModel):
+    items: list[ConfiguracionSMTPResponse]
+    fallback_env_disponible: bool
+    fallback_env_host: Optional[str] = None
+    fallback_env_user: Optional[str] = None
+    origen_activo: str
+
+
+class SMTPTestRequest(BaseModel):
+    destinatario: Optional[EmailStr] = None
+
+
+class TestConexionSMTPResponse(BaseModel):
+    ok: bool
+    mensaje: str
+    destinatario: str
 
 
 

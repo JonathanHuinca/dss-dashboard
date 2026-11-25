@@ -45,6 +45,8 @@ export interface DataFilters {
   tipo_vehiculo?: string
   incluir_pausas_bano?: boolean
   desduplicar_rafagas?: boolean
+  incluir_funcionarios?: boolean
+  incluir_sin_identificar?: boolean
 }
 
 export function parseFilters(filters?: DataFilters | string): DataFilters {
@@ -85,6 +87,9 @@ export interface HourlyFlowPoint {
   entradas?: number
   lecturas_fallidas?: number
   vehiculos_presentes?: number
+  sin_registros?: boolean
+  sin_registros_sala1?: boolean
+  sin_registros_sala2?: boolean
 }
 
 export interface KPISummary {
@@ -129,8 +134,12 @@ export const fetchKpiSummary = (
       carrera: f.carrera,
       facultad: f.facultad,
       cohorte: f.cohorte,
+      sector: f.sector,
+      tipo_vehiculo: f.tipo_vehiculo,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }

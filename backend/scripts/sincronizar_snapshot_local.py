@@ -152,6 +152,13 @@ def restaurar_snapshot(
     forzar: bool = False,
     modo: str = "completo",
 ) -> None:
+    if not forzar:
+        entorno = os.environ.get("ENVIRONMENT", "").strip().lower()
+        flag_snap = os.environ.get("RESTAURAR_SNAPSHOT", "true").strip().lower()
+        if entorno == "production" or flag_snap in ("0", "false", "no"):
+            print("[snapshot] Restauración automática desactivada en producción o por RESTAURAR_SNAPSHOT.")
+            return
+
     if not RUTA_SNAPSHOT.exists():
         print(f"[snapshot] No existe {RUTA_SNAPSHOT}; se omite restauracion.")
         return
@@ -177,8 +184,8 @@ def restaurar_snapshot(
     if not forzar:
         try:
             if modo == "base":
-                cur.execute("SELECT COUNT(*) FROM [usuarios] WHERE email = 'jhuinca2020@alu.uct.cl'")
-                tiene_usuario = cur.fetchone()[0] > 0
+                cur.execute("SELECT COUNT(*) FROM [usuarios]")
+                tiene_usuario = cur.fetchone()[0] >= 1
                 cur.execute("SELECT COUNT(*) FROM [dim_estudiante_carrera]")
                 conteo_dim = cur.fetchone()[0]
                 cur.execute("SELECT COUNT(*) FROM [horarios_operacion] WHERE subespacio IS NOT NULL")
@@ -202,8 +209,8 @@ def restaurar_snapshot(
             else:
                 cur.execute("SELECT COUNT(*) FROM [eventos_asistencia]")
                 conteo_asistencia = cur.fetchone()[0]
-                cur.execute("SELECT COUNT(*) FROM [usuarios] WHERE email = 'jhuinca2020@alu.uct.cl'")
-                tiene_usuario_local = cur.fetchone()[0] > 0
+                cur.execute("SELECT COUNT(*) FROM [usuarios]")
+                tiene_usuario_local = cur.fetchone()[0] >= 1
                 if conteo_asistencia >= 130000 and tiene_usuario_local:
                     print("[snapshot] Base completa ya sincronizada. Se omite.")
                     conn.close()

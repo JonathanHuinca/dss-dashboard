@@ -2,14 +2,21 @@ from datetime import date, datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, desc
+from sqlalchemy import func, select, desc, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.core.security import require_role, require_roles, require_permission
 from app.core.database import get_db
 from app.core.config import settings
-from app.domain.auth_models import Usuario
+from app.core.tiempo import (
+    ahora_chile_naive,
+    inicio_dia_chile_en_utc_naive,
+    marcar_chile,
+    marcar_utc,
+    utc_a_chile,
+)
+from app.domain.auth_models import NotificacionAdmin, Usuario
 from app.domain.chat_audit_models import ChatAuditLog
 from app.domain.ejecucion_tarea_models import EjecucionTarea
 from app.schemas.tarea_schemas import (
@@ -36,11 +43,20 @@ class ChatAuditItem(BaseModel):
     usuario_email: Optional[str] = None
     usuario_nombre: Optional[str] = None
     prompt_text: str
+    respuesta_text: Optional[str] = None
+    origen: str = "dashboard"
+    reporte_codigo: Optional[str] = None
     dataset_tipo: Optional[str] = None
     modelo_utilizado: Optional[str] = None
     status: str
     response_time_ms: Optional[float] = None
     timestamp: datetime
+
+
+class ChatAuditUsuarioItem(BaseModel):
+    id: int
+    nombre_completo: str
+    email: str
 
 
 class HourlyStat(BaseModel):
@@ -64,6 +80,7 @@ class ChatAuditResponse(BaseModel):
     page_size: int
     total_pages: int
     stats: ChatAuditStats
+    usuarios_disponibles: List[ChatAuditUsuarioItem] = Field(default_factory=list)
 
 
 @router.get("/chat-audit", response_model=ChatAuditResponse)
@@ -72,6 +89,8 @@ async def get_chat_audit_logs(
     page_size: int = Query(15, ge=1, le=100),
     dataset_tipo: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(None),
+    usuario_id: Optional[int] = Query(None),
+    origen: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     current_user: Usuario = Depends(require_role("SuperAdmin")),
     db: AsyncSession = Depends(get_db),
@@ -86,13 +105,31 @@ async def get_chat_audit_logs(
     if dataset_tipo:
         stmt = stmt.where(ChatAuditLog.dataset_tipo == dataset_tipo)
         count_stmt = count_stmt.where(ChatAuditLog.dataset_tipo == dataset_tipo)
+    if usuario_id is not None:
+        stmt = stmt.where(ChatAuditLog.usuario_id == usuario_id)
+        count_stmt = count_stmt.where(ChatAuditLog.usuario_id == usuario_id)
+    if origen:
+        stmt = stmt.where(ChatAuditLog.origen == origen)
+        count_stmt = count_stmt.where(ChatAuditLog.origen == origen)
     if status_filter:
-        stmt = stmt.where(ChatAuditLog.status == status_filter)
-        count_stmt = count_stmt.where(ChatAuditLog.status == status_filter)
+        if status_filter == "éxito":
+            stmt = stmt.where(ChatAuditLog.status.in_(["éxito", "success"]))
+            count_stmt = count_stmt.where(ChatAuditLog.status.in_(["éxito", "success"]))
+        elif status_filter == "error":
+            stmt = stmt.where(ChatAuditLog.status.like("error%"))
+            count_stmt = count_stmt.where(ChatAuditLog.status.like("error%"))
+        else:
+            stmt = stmt.where(ChatAuditLog.status == status_filter)
+            count_stmt = count_stmt.where(ChatAuditLog.status == status_filter)
     if search:
         search_pattern = f"%{search}%"
-        stmt = stmt.where(ChatAuditLog.prompt_text.ilike(search_pattern))
-        count_stmt = count_stmt.where(ChatAuditLog.prompt_text.ilike(search_pattern))
+        cond_search = (
+            ChatAuditLog.prompt_text.ilike(search_pattern)
+            | ChatAuditLog.respuesta_text.ilike(search_pattern)
+            | ChatAuditLog.reporte_codigo.ilike(search_pattern)
+        )
+        stmt = stmt.where(cond_search)
+        count_stmt = count_stmt.where(cond_search)
 
     total = (await db.execute(count_stmt)).scalar() or 0
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -107,24 +144,47 @@ async def get_chat_audit_logs(
             usuario_email=r.usuario.email if r.usuario else None,
             usuario_nombre=r.usuario.nombre_completo if r.usuario else None,
             prompt_text=r.prompt_text,
+            respuesta_text=getattr(r, "respuesta_text", None),
+            origen=getattr(r, "origen", None) or "dashboard",
+            reporte_codigo=getattr(r, "reporte_codigo", None),
             dataset_tipo=r.dataset_tipo,
             modelo_utilizado=r.modelo_utilizado,
-            status=r.status,
+            status="éxito" if r.status in ("éxito", "success") else r.status,
             response_time_ms=r.response_time_ms,
-            timestamp=r.timestamp,
+            timestamp=marcar_utc(r.timestamp),
         )
         for r in rows
     ]
 
-    now_utc = datetime.now(timezone.utc)
-    today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Usuarios distintos que han realizado consultas IA (filtrados por dataset_tipo si aplica)
+    stmt_users = (
+        select(Usuario.id, Usuario.nombre_completo, Usuario.email)
+        .join(ChatAuditLog, ChatAuditLog.usuario_id == Usuario.id)
+        .distinct()
+        .order_by(Usuario.nombre_completo.asc())
+    )
+    if dataset_tipo:
+        stmt_users = stmt_users.where(ChatAuditLog.dataset_tipo == dataset_tipo)
+    filas_u = (await db.execute(stmt_users)).all()
+    usuarios_disponibles = [
+        ChatAuditUsuarioItem(id=u.id, nombre_completo=u.nombre_completo, email=u.email)
+        for u in filas_u
+    ]
 
-    today_stmt = select(ChatAuditLog).where(ChatAuditLog.timestamp >= today_start)
+    today_start_utc = inicio_dia_chile_en_utc_naive()
+
+    today_stmt = select(ChatAuditLog).where(ChatAuditLog.timestamp >= today_start_utc)
+    if dataset_tipo:
+        today_stmt = today_stmt.where(ChatAuditLog.dataset_tipo == dataset_tipo)
+    if usuario_id is not None:
+        today_stmt = today_stmt.where(ChatAuditLog.usuario_id == usuario_id)
+    if origen:
+        today_stmt = today_stmt.where(ChatAuditLog.origen == origen)
     today_rows = (await db.execute(today_stmt)).scalars().all()
 
     consultas_hoy = len(today_rows)
-    consultas_exitosas_hoy = sum(1 for r in today_rows if r.status == "éxito")
-    consultas_error_hoy = sum(1 for r in today_rows if r.status == "error")
+    consultas_exitosas_hoy = sum(1 for r in today_rows if r.status in ("éxito", "success"))
+    consultas_error_hoy = sum(1 for r in today_rows if r.status not in ("éxito", "success"))
 
     times = [r.response_time_ms for r in today_rows if r.response_time_ms is not None]
     promedio_tiempo_hoy_ms = round(sum(times) / len(times), 2) if times else 0.0
@@ -136,11 +196,11 @@ async def get_chat_audit_logs(
 
     hours_map = {f"{h:02d}:00": 0 for h in range(8, 22)}
     for r in today_rows:
-        h_str = f"{r.timestamp.hour:02d}:00"
-        if h_str in hours_map:
-            hours_map[h_str] += 1
-        else:
-            hours_map[h_str] = 1
+        ts_cl = utc_a_chile(r.timestamp)
+        if ts_cl is None:
+            continue
+        h_str = f"{ts_cl.hour:02d}:00"
+        hours_map[h_str] = hours_map.get(h_str, 0) + 1
 
     consultas_por_hora_hoy = [
         HourlyStat(hora=h, cantidad=c) for h, c in sorted(hours_map.items())
@@ -160,6 +220,7 @@ async def get_chat_audit_logs(
             consultas_por_dataset_hoy=datasets_count,
             consultas_por_hora_hoy=consultas_por_hora_hoy,
         ),
+        usuarios_disponibles=usuarios_disponibles,
     )
 
 
@@ -996,6 +1057,127 @@ async def actualizar_config_global_admin(
         "masked_api_key": masked,
         "updated_at": config.updated_at,
     }
+
+
+class NotificacionAdminItem(BaseModel):
+    id: int
+    tipo: str
+    titulo: str
+    mensaje: str
+    usuario_afectado_id: Optional[int] = None
+    usuario_afectado_email: Optional[str] = None
+    usuario_afectado_nombre: Optional[str] = None
+    intentos_fallidos: int
+    ip_origen: Optional[str] = None
+    leida: bool
+    leida_en: Optional[datetime] = None
+    creado_en: datetime
+    cuenta_bloqueada_ahora: bool = False
+
+
+class NotificacionesAdminResponse(BaseModel):
+    items: List[NotificacionAdminItem]
+    no_leidas: int
+
+
+@router.get(
+    "/notificaciones",
+    response_model=NotificacionesAdminResponse,
+    summary="Listar alertas de seguridad para SuperAdmin (bloqueos tras 5 intentos fallidos)",
+)
+async def listar_notificaciones_admin(
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
+) -> NotificacionesAdminResponse:
+    stmt = (
+        select(NotificacionAdmin)
+        .order_by(NotificacionAdmin.creado_en.desc(), NotificacionAdmin.id.desc())
+        .limit(50)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    no_leidas = (
+        await db.execute(
+            select(func.count(NotificacionAdmin.id)).where(NotificacionAdmin.leida == False)
+        )
+    ).scalar() or 0
+
+    user_ids = list({n.usuario_afectado_id for n in rows if n.usuario_afectado_id is not None})
+    bloqueos_por_uid: Dict[int, Optional[datetime]] = {}
+    if user_ids:
+        u_rows = (
+            await db.execute(
+                select(Usuario.id, Usuario.bloqueado_hasta).where(Usuario.id.in_(user_ids))
+            )
+        ).all()
+        bloqueos_por_uid = {uid: bh for uid, bh in u_rows}
+
+    ahora = datetime.now(timezone.utc)
+    items: List[NotificacionAdminItem] = []
+    for n in rows:
+        bloqueada_ahora = False
+        if n.usuario_afectado_id is not None:
+            bh = bloqueos_por_uid.get(n.usuario_afectado_id)
+            if bh:
+                bh_utc = bh.replace(tzinfo=timezone.utc) if bh.tzinfo is None else bh
+                bloqueada_ahora = ahora < bh_utc
+        items.append(
+            NotificacionAdminItem(
+                id=n.id,
+                tipo=n.tipo,
+                titulo=n.titulo,
+                mensaje=n.mensaje,
+                usuario_afectado_id=n.usuario_afectado_id,
+                usuario_afectado_email=n.usuario_afectado_email,
+                usuario_afectado_nombre=n.usuario_afectado_nombre,
+                intentos_fallidos=int(n.intentos_fallidos or 0),
+                ip_origen=n.ip_origen,
+                leida=bool(n.leida),
+                leida_en=marcar_chile(n.leida_en),
+                creado_en=marcar_chile(n.creado_en),
+                cuenta_bloqueada_ahora=bloqueada_ahora,
+            )
+        )
+
+    return NotificacionesAdminResponse(items=items, no_leidas=int(no_leidas))
+
+
+@router.post(
+    "/notificaciones/marcar-vistas",
+    summary="Marcar todas las alertas de seguridad pendientes como vistas",
+)
+async def marcar_notificaciones_vistas(
+    db: AsyncSession = Depends(get_db),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
+) -> dict:
+    res = await db.execute(
+        sql_update(NotificacionAdmin)
+        .where(NotificacionAdmin.leida == False)
+        .values(
+            leida=True,
+            leida_en=ahora_chile_naive(),
+            leida_por_id=current_user.id,
+        )
+    )
+    await db.commit()
+    return {"marcadas": int(res.rowcount or 0), "no_leidas": 0}
+
+
+@router.delete(
+    "/notificaciones/{notif_id}",
+    summary="Eliminar una alerta de seguridad",
+)
+async def eliminar_notificacion_admin_endpoint(
+    notif_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
+) -> dict:
+    stmt = select(NotificacionAdmin).where(NotificacionAdmin.id == notif_id)
+    notif = (await db.execute(stmt)).scalar_one_or_none()
+    if not notif:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notificación no encontrada")
+    await db.delete(notif)
+    await db.commit()
+    return {"eliminada": True, "id": notif_id}
 
 
 

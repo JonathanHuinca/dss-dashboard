@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     SEMILLA_DEMO: bool = True
     DEMO_ADMIN_PASSWORD: str = "AdminUCT2026!"
     DEMO_USER_PASSWORD: str = "UCTdemo2026!"
+    RESTAURAR_SNAPSHOT: bool = True
+    ADMIN_BOOTSTRAP_EMAIL: str = "admin@uct.cl"
+    ADMIN_BOOTSTRAP_PASSWORD: str = ""
 
     # Seguridad de Red y Control Perimetral
     ENABLE_IP_WHITELIST: bool = False

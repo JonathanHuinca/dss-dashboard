@@ -846,5 +846,16 @@ async def actualizar_capacidad_sector(
 
     await db.commit()
     await db.refresh(sector)
+
+    # Invalidar cachés de capacidades y respuestas en memoria del módulo Estacionamiento (id=2)
+    try:
+        from app.services.vehicle_service import invalidar_cache_horarios_vehiculos
+        from app.core.cache import invalidar_cache_por_espacio
+
+        invalidar_cache_horarios_vehiculos(2)
+        await invalidar_cache_por_espacio(2)
+    except Exception as exc_cache:
+        logger.warning("No se pudo invalidar caché vehicular tras actualizar capacidad de sector: %s", exc_cache)
+
     return sector
 

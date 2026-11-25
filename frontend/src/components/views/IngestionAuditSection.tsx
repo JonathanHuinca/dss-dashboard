@@ -13,6 +13,7 @@ import {
   Filter,
 } from 'lucide-react'
 import { fetchIngestionHistory, IngestionHistoryItem } from '../../api/client'
+import { formatearFechaHoraChile } from '../../utils/fechaChile'
 
 export const IngestionAuditSection: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('')
@@ -52,22 +53,8 @@ export const IngestionAuditSection: React.FC = () => {
     })
   }, [jobs, searchTerm, tipoFilter, estadoFilter])
 
-  const formatearFecha = (fechaStr?: string | null) => {
-    if (!fechaStr) return 'N/A'
-    try {
-      const d = new Date(fechaStr)
-      return d.toLocaleString('es-CL', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
-    } catch {
-      return fechaStr
-    }
-  }
+  const formatearFecha = (fechaStr?: string | null) =>
+    formatearFechaHoraChile(fechaStr, { second: '2-digit' }, 'N/A')
 
   const obtenerBadgeTipo = (tipo: string) => {
     switch (tipo) {

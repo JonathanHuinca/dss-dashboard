@@ -3,11 +3,75 @@ import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
+from cachetools import TTLCache
+from sqlalchemy import desc, select
 
 from app.core.config import settings, obtener_url_frontend
+from app.core.database import AsyncSessionLocal
+from app.core.security_cipher import decrypt_api_key
+from app.core.validacion_red import sanitizar_error_credencial
+from app.domain.config_models import ConfiguracionSMTP
 
 logger = logging.getLogger("uvicorn.error")
+_cache_smtp_activo: TTLCache = TTLCache(maxsize=1, ttl=60)
+
+
+def limpiar_cache_smtp() -> None:
+    """Invalida la configuración SMTP cacheada tras altas, activaciones o eliminaciones."""
+    _cache_smtp_activo.clear()
+
+
+async def obtener_config_smtp_activa() -> Optional[Dict[str, Any]]:
+    """Obtiene la cuenta SMTP activa desde BD (Fernet) o fallback .env."""
+    if "activo" in _cache_smtp_activo:
+        return _cache_smtp_activo["activo"]
+
+    try:
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                select(ConfiguracionSMTP)
+                .where(ConfiguracionSMTP.es_activa == True)
+                .order_by(desc(ConfiguracionSMTP.updated_at), desc(ConfiguracionSMTP.id))
+                .limit(1)
+            )
+            cfg = (await db.execute(stmt)).scalar_one_or_none()
+            if cfg:
+                password = decrypt_api_key(cfg.encrypted_password)
+                datos = {
+                    "host": cfg.host,
+                    "port": int(cfg.port),
+                    "use_tls": bool(cfg.use_tls),
+                    "use_ssl": bool(cfg.use_ssl),
+                    "username": cfg.username,
+                    "password": password,
+                    "from_email": cfg.from_email,
+                    "from_name": cfg.from_name,
+                    "origen": "db",
+                    "nombre": cfg.nombre,
+                }
+                _cache_smtp_activo["activo"] = datos
+                return datos
+    except Exception as exc:
+        logger.debug("Lectura de configuracion_smtp omitida: %s", sanitizar_error_credencial(exc))
+
+    if settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
+        datos_env = {
+            "host": settings.SMTP_HOST,
+            "port": int(settings.SMTP_PORT),
+            "use_tls": bool(settings.SMTP_USE_TLS),
+            "use_ssl": int(settings.SMTP_PORT) == 465,
+            "username": settings.SMTP_USER,
+            "password": settings.SMTP_PASSWORD,
+            "from_email": settings.SMTP_FROM_EMAIL or settings.SMTP_USER,
+            "from_name": settings.SMTP_FROM_NAME,
+            "origen": "env",
+            "nombre": "Respaldo .env",
+        }
+        _cache_smtp_activo["activo"] = datos_env
+        return datos_env
+
+    return None
 
 
 def _normalizar_enlace_frontend(enlace: Optional[str]) -> str:
@@ -70,23 +134,41 @@ def _construir_plantilla_base(contenido_cuerpo: str, titulo: str) -> str:
 """
 
 
-def _enviar_correo_sincrono(
+def _enviar_correo_sincrono_detallado(
     destinatario: str,
     asunto: str,
     cuerpo_html: str,
     cuerpo_texto: Optional[str] = None,
-) -> bool:
-    """
-    Despacha un correo mediante conexión SMTP con cifrado STARTTLS.
-    """
-    if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        logger.warning(
-            "Servicio SMTP no configurado en settings. No se despachó el correo a %s.",
-            destinatario,
-        )
-        return False
+    smtp_cfg: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, str]:
+    """Despacha un correo mediante SMTP (STARTTLS o SSL) retornando estado y detalle sanitizado."""
+    cfg = smtp_cfg
+    if cfg is None and settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
+        cfg = {
+            "host": settings.SMTP_HOST,
+            "port": int(settings.SMTP_PORT),
+            "use_tls": bool(settings.SMTP_USE_TLS),
+            "use_ssl": int(settings.SMTP_PORT) == 465,
+            "username": settings.SMTP_USER,
+            "password": settings.SMTP_PASSWORD,
+            "from_email": settings.SMTP_FROM_EMAIL or settings.SMTP_USER,
+            "from_name": settings.SMTP_FROM_NAME,
+        }
 
-    remitente_formato = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL or settings.SMTP_USER}>"
+    if not cfg or not cfg.get("host") or not cfg.get("username") or not cfg.get("password"):
+        logger.warning("Servicio SMTP no configurado. No se despachó el correo a %s.", destinatario)
+        return False, "No existe un servidor SMTP activo configurado."
+
+    host = str(cfg["host"])
+    port = int(cfg["port"])
+    username = str(cfg["username"])
+    password = str(cfg["password"])
+    from_email = str(cfg.get("from_email") or username)
+    from_name = str(cfg.get("from_name") or settings.SMTP_FROM_NAME)
+    use_ssl = bool(cfg.get("use_ssl", False))
+    use_tls = bool(cfg.get("use_tls", True))
+
+    remitente_formato = f"{from_name} <{from_email}>"
 
     mensaje = MIMEMultipart("alternative")
     mensaje["Subject"] = asunto
@@ -98,29 +180,50 @@ def _enviar_correo_sincrono(
     mensaje.attach(MIMEText(cuerpo_html, "html", "utf-8"))
 
     try:
-        servidor = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15)
-        servidor.ehlo()
-        if settings.SMTP_USE_TLS:
-            servidor.starttls()
-            servidor.ehlo()
-        servidor.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-        servidor.sendmail(settings.SMTP_FROM_EMAIL or settings.SMTP_USER, [destinatario], mensaje.as_string())
-        servidor.quit()
+        if use_ssl:
+            with smtplib.SMTP_SSL(host, port, timeout=15) as servidor:
+                servidor.ehlo()
+                servidor.login(username, password)
+                servidor.sendmail(from_email, [destinatario], mensaje.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as servidor:
+                servidor.ehlo()
+                if use_tls:
+                    servidor.starttls()
+                    servidor.ehlo()
+                servidor.login(username, password)
+                servidor.sendmail(from_email, [destinatario], mensaje.as_string())
         logger.warning("Correo despachado exitosamente hacia: %s (Asunto: %s)", destinatario, asunto)
-        return True
+        return True, f"Correo de prueba enviado correctamente a {destinatario}."
     except smtplib.SMTPAuthenticationError as err:
-        logger.error("Error de autenticación SMTP al conectar con %s (código 535 Bad Credentials): %s", settings.SMTP_HOST, err)
-        return False
+        detalle = sanitizar_error_credencial(err, password)
+        logger.error("Error de autenticación SMTP al conectar con %s: %s", host, detalle)
+        return False, f"Error de autenticación SMTP: {detalle}"
     except smtplib.SMTPServerDisconnected as err:
-        logger.error(
-            "Servidor SMTP desconectó la sesión (535 Bad Credentials / Rechazo de credenciales por Google). "
-            "Verifique que SMTP_USER sea el correo correcto y que SMTP_PASSWORD sea una contraseña de aplicación válida de 16 caracteres: %s",
-            err,
-        )
-        return False
+        detalle = sanitizar_error_credencial(err, password)
+        logger.error("Servidor SMTP %s desconectó la sesión: %s", host, detalle)
+        return False, f"Conexión cerrada por el servidor SMTP: {detalle}"
     except Exception as err:
-        logger.error("Fallo inesperado al enviar correo SMTP a %s: %s", destinatario, err, exc_info=True)
-        return False
+        detalle = sanitizar_error_credencial(err, password)
+        logger.error("Fallo inesperado al enviar correo SMTP a %s: %s", destinatario, detalle)
+        return False, f"Error enviando correo SMTP: {detalle}"
+
+
+def _enviar_correo_sincrono(
+    destinatario: str,
+    asunto: str,
+    cuerpo_html: str,
+    cuerpo_texto: Optional[str] = None,
+    smtp_cfg: Optional[Dict[str, Any]] = None,
+) -> bool:
+    ok, _ = _enviar_correo_sincrono_detallado(
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=cuerpo_html,
+        cuerpo_texto=cuerpo_texto,
+        smtp_cfg=smtp_cfg,
+    )
+    return ok
 
 
 async def enviar_correo_despacho(
@@ -129,15 +232,39 @@ async def enviar_correo_despacho(
     cuerpo_html: str,
     cuerpo_texto: Optional[str] = None,
 ) -> bool:
-    """
-    Ejecuta el envío de correo de forma asíncrona sin bloquear el loop de eventos.
-    """
+    """Ejecuta el envío de correo de forma asíncrona sin bloquear el loop de eventos."""
+    smtp_cfg = await obtener_config_smtp_activa()
     return await asyncio.to_thread(
         _enviar_correo_sincrono,
         destinatario=destinatario,
         asunto=asunto,
         cuerpo_html=cuerpo_html,
         cuerpo_texto=cuerpo_texto,
+        smtp_cfg=smtp_cfg,
+    )
+
+
+async def probar_envio_smtp(smtp_cfg: Dict[str, Any], destinatario: str) -> Tuple[bool, str]:
+    """Envía un correo de verificación técnica para validar credenciales SMTP sin guardar logs secretos."""
+    asunto = "Verificación de Servidor SMTP — Plataforma DSS UCT"
+    cuerpo_interno = f"""
+        <h2 style="margin-top: 0; color: #002855; font-size: 18px; font-weight: 700;">
+            Prueba de Conectividad SMTP Exitosa
+        </h2>
+        <p style="color: #334155; font-size: 14px;">
+            Este mensaje confirma que el perfil SMTP <strong>{smtp_cfg.get('nombre', 'Configurado')}</strong>
+            (<code>{smtp_cfg.get('host')}:{smtp_cfg.get('port')}</code>) está operativo y autorizado para
+            despachar notificaciones de activación y reportes ejecutivos desde el DSS UCT.
+        </p>
+    """
+    plantilla_html = _construir_plantilla_base(cuerpo_interno, asunto)
+    return await asyncio.to_thread(
+        _enviar_correo_sincrono_detallado,
+        destinatario=destinatario,
+        asunto=asunto,
+        cuerpo_html=plantilla_html,
+        cuerpo_texto="Prueba de conectividad SMTP exitosa para la plataforma DSS UCT.",
+        smtp_cfg=smtp_cfg,
     )
 
 
@@ -208,6 +335,42 @@ async def enviar_correo_recuperacion(
         </p>
         <p style="color: #94a3b8; font-size: 11px;">
             Si usted no realizó esta solicitud, puede desestimar este mensaje. Su cuenta permanecerá protegida.
+        </p>
+        <p style="color: #94a3b8; font-size: 11px; word-break: break-all;">
+            Enlace alternativo:<br>
+            <a href="{enlace_recuperacion}" style="color: #0056b3;">{enlace_recuperacion}</a>
+        </p>
+    """
+    plantilla_html = _construir_plantilla_base(cuerpo_interno, asunto)
+    return await enviar_correo_despacho(destinatario, asunto, plantilla_html)
+
+
+async def enviar_correo_bloqueo_login(
+    destinatario: str,
+    nombre_destinatario: str,
+    enlace_recuperacion: str,
+    intentos: int = 5,
+) -> bool:
+    """Notifica bloqueo preventivo tras intentos fallidos consecutivos con enlace de restablecimiento."""
+    enlace_recuperacion = _normalizar_enlace_frontend(enlace_recuperacion)
+    asunto = "Alerta de Seguridad: Cuenta Bloqueada — Plataforma DSS Campus San Francisco UCT"
+    cuerpo_interno = f"""
+        <h2 style="margin-top: 0; color: #991b1b; font-size: 18px; font-weight: 700;">
+            Estimado/a {nombre_destinatario or destinatario}:
+        </h2>
+        <p style="color: #334155; font-size: 14px;">
+            Se detectaron <strong>{intentos} intentos fallidos consecutivos</strong> al ingresar la contraseña de su cuenta en el <strong>Sistema DSS Campus San Francisco UCT</strong>.
+        </p>
+        <p style="color: #334155; font-size: 14px;">
+            Como medida preventiva de seguridad, su cuenta fue bloqueada temporalmente por <strong>15 minutos</strong>. Si necesita recuperar el acceso de inmediato o no reconoce estos intentos, puede restablecer su contraseña y desbloquear su cuenta desde el siguiente botón:
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+            <a href="{enlace_recuperacion}" style="background-color: #b91c1c; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block; box-shadow: 0 2px 4px rgba(185,28,28,0.28);">
+                Restablecer Contraseña y Desbloquear
+            </a>
+        </div>
+        <p style="color: #64748b; font-size: 12px; margin-top: 24px;">
+            Por seguridad (OWASP ASVS), este enlace expira en <strong>15 minutos</strong> y es de uso único. También se notificó al Administrador del Sistema sobre este evento.
         </p>
         <p style="color: #94a3b8; font-size: 11px; word-break: break-all;">
             Enlace alternativo:<br>

@@ -1,10 +1,16 @@
 import json
 from datetime import datetime, time, date, timedelta
 from typing import Optional, TYPE_CHECKING, Any
-from sqlalchemy import select
+from sqlalchemy import select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.domain.config_models import ConfiguracionEspacios, HorarioOperacion
-from app.core.security_cipher import encrypt_api_key
+from app.domain.config_models import (
+    ConfiguracionEspacios,
+    ConfiguracionSMTP,
+    CredencialProveedorIA,
+    HorarioOperacion,
+)
+from app.core.security_cipher import decrypt_api_key, encrypt_api_key, mask_api_key
+from app.core.validacion_red import validar_host_smtp, validar_url_proveedor_ia
 
 if TYPE_CHECKING:
     from app.schemas.config_schemas import HorarioOperacionCreate, HorarioOperacionUpdate
@@ -38,8 +44,10 @@ async def update_llm_provider(
     espacio_id: int,
     provider: str,
     default_model: str,
-    api_key: str,
+    api_key: Optional[str],
 ) -> ConfiguracionEspacios:
+    from app.services.llm_client import limpiar_cache_clientes_llm
+
     config = await get_configuracion_espacio(db, espacio_id)
     config.active_provider = provider.strip().lower()
     config.default_model = default_model.strip()
@@ -47,6 +55,7 @@ async def update_llm_provider(
         config.encrypted_api_key = encrypt_api_key(api_key.strip())
     await db.commit()
     await db.refresh(config)
+    limpiar_cache_clientes_llm()
     return config
 
 async def get_espacios_activos_capacidades(db: AsyncSession) -> tuple[dict, str]:
@@ -183,6 +192,8 @@ def _normalizar_subespacio(subespacio: Optional[str]) -> str:
         return "sala_1"
     if s in ("sala2", "sala_2", "csf04"):
         return "sala_2"
+    if s in ("csf11", "csf21", "chs01"):
+        return s.upper()
     if s in ("todas", "todos", "global", "biblioteca", "vehicular"):
         return "todos"
     return subespacio.strip()
@@ -279,6 +290,30 @@ def evaluar_horario_abierto_subespacio(
         )
         return 1 if (abierto_s1 == 1 or abierto_s2 == 1) else 0
 
+    # En Estacionamiento global ('todos'), si solo hay horarios por sector específico está abierto si al menos uno opera
+    if espacio_id == 2 and sub_norm == "todos":
+        reglas_veh_activas = [
+            h for h in (horarios or [])
+            if _obtener_valor_campo(h, "activo", True)
+            and int(_obtener_valor_campo(h, "espacio_id", espacio_id) or espacio_id) == 2
+        ]
+        tiene_regla_todos = any(
+            _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos")) == "todos"
+            for h in reglas_veh_activas
+        )
+        subespacios_veh = sorted({
+            _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos"))
+            for h in reglas_veh_activas
+            if _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos")) != "todos"
+        })
+        if not tiene_regla_todos and subespacios_veh:
+            return 1 if any(
+                evaluar_horario_abierto_subespacio(
+                    dt, espacio_id, sub_veh, horarios, contingencias, es_feriado_oficial, False
+                ) == 1
+                for sub_veh in subespacios_veh
+            ) else 0
+
     fecha_dt = dt.date()
     hora_dt = dt.time()
 
@@ -323,10 +358,15 @@ def evaluar_horario_abierto_subespacio(
         and int(_obtener_valor_campo(h, "espacio_id", espacio_id) or espacio_id) == int(espacio_id)
     ]
 
+    es_24h_auto_valido = (
+        es_24h_automatico
+        and sub_norm == "sala_2"
+        and (dt.weekday() < 5 or (dt.weekday() == 5 and dt.hour < 6))
+    )
+
     # 2. Feriados oficiales: cerrado salvo campaña 24h activa para esa sala
     if es_feriado_oficial:
-        if es_24h_automatico and sub_norm == "sala_2":
-            return 1
+        reglas_24h = []
         for h in reglas_activas:
             h_sub = _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos"))
             f_ini = _obtener_valor_campo(h, "fecha_inicio")
@@ -336,11 +376,12 @@ def evaluar_horario_abierto_subespacio(
                 and _obtener_valor_campo(h, "es_continuo_24h", False)
                 and f_ini and f_fin and (f_ini <= dt <= f_fin)
             ):
-                return 1
+                reglas_24h.append(h)
+        if reglas_24h:
+            return 1 if any(_evaluar_regla_individual(dt, r) for r in reglas_24h) else 0
+        if es_24h_auto_valido:
+            return 1
         return 0
-
-    if es_24h_automatico and sub_norm == "sala_2":
-        return 1
 
     # 3. Reglas temporales por rango (ej. cambio horario mensual en Sala 2 o campaña exámenes)
     reglas_rango_especificas = []
@@ -361,6 +402,9 @@ def evaluar_horario_abierto_subespacio(
     reglas_rango = reglas_rango_especificas if reglas_rango_especificas else reglas_rango_generales
     if reglas_rango:
         return 1 if any(_evaluar_regla_individual(dt, r) for r in reglas_rango) else 0
+
+    if es_24h_auto_valido:
+        return 1
 
     # 4. Reglas habituales vigentes o históricas cerradas (regular / historico_regular)
     reglas_base_especificas = []
@@ -421,84 +465,139 @@ async def delete_horario_operacion(
     return True
 
 
-def es_horario_conforme(dt: datetime, horarios: list[HorarioOperacion]) -> bool:
+def _sumar_minutos_time(t_base: time, minutos: int) -> time:
+    if minutos <= 0:
+        return t_base
+    total_min = t_base.hour * 60 + t_base.minute + minutos
+    if total_min >= 23 * 60 + 59:
+        return time(23, 59, 59)
+    return time(total_min // 60, total_min % 60, t_base.second)
+
+
+def es_horario_conforme(
+    dt: datetime,
+    horarios: list[HorarioOperacion],
+    subespacio: Optional[str] = None,
+    es_salida: bool = False,
+    tolerancia_salida_min: int = 0,
+) -> bool:
     if not horarios:
         return True
-    
-    # 1. Buscar reglas específicas de rango que cubran la fecha
+
+    activas = [h for h in horarios if _obtener_valor_campo(h, "activo", True)]
+    if not activas:
+        return True
+
+    if subespacio is not None:
+        sub_norm = _normalizar_subespacio(subespacio)
+        if sub_norm != "todos":
+            filtradas_sub = [
+                h for h in activas
+                if _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos")) in (sub_norm, "todos")
+            ]
+            if filtradas_sub:
+                activas = filtradas_sub
+
+    # 1. Reglas especiales por rango vigentes en dt (ej. campañas 24h)
     reglas_rango = [
-        h for h in horarios
-        if h.activo and h.fecha_inicio and h.fecha_fin and (h.fecha_inicio <= dt <= h.fecha_fin)
+        h for h in activas
+        if (_obtener_valor_campo(h, "tipo_horario", "regular") or "regular") not in ("regular", "historico_regular")
+        and _obtener_valor_campo(h, "fecha_inicio")
+        and _obtener_valor_campo(h, "fecha_fin")
+        and (_obtener_valor_campo(h, "fecha_inicio") <= dt <= _obtener_valor_campo(h, "fecha_fin"))
     ]
-    
-    # Si existen reglas de rango activas para esa fecha, tienen prioridad
-    reglas_a_evaluar = reglas_rango if reglas_rango else [
-        h for h in horarios if h.activo and h.anio == dt.year
-    ]
-    
+
+    # 2. Reglas habituales vigentes o históricas aplicables a dt
+    reglas_vigentes = []
+    for h in activas:
+        tipo_h = _obtener_valor_campo(h, "tipo_horario", "regular") or "regular"
+        if tipo_h not in ("regular", "historico_regular"):
+            continue
+        f_ini = _obtener_valor_campo(h, "fecha_inicio")
+        f_fin = _obtener_valor_campo(h, "fecha_fin")
+        if f_ini and dt < f_ini:
+            continue
+        if f_fin and dt > f_fin:
+            continue
+        if not (f_ini and f_fin) and _obtener_valor_campo(h, "anio") != dt.year:
+            continue
+        reglas_vigentes.append(h)
+
+    if reglas_rango:
+        reglas_a_evaluar = reglas_rango + reglas_vigentes
+    elif reglas_vigentes:
+        reglas_a_evaluar = reglas_vigentes
+    else:
+        reglas_a_evaluar = [
+            h for h in activas
+            if (_obtener_valor_campo(h, "tipo_horario", "regular") or "regular") in ("regular", "historico_regular")
+            and not _obtener_valor_campo(h, "fecha_fin")
+        ] or activas
+
     if not reglas_a_evaluar:
         return True
 
     t = dt.time()
     dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
     dia_actual = dias_map[dt.weekday()]
-    
-    # Si alguna de las reglas activas aplicables valida el acceso, se considera conforme
+    tolerancia_eff = tolerancia_salida_min if (es_salida and tolerancia_salida_min > 0) else 0
+
+    # Si alguna regla aplicable valida el marcaje, se considera conforme
     for regla in reglas_a_evaluar:
-        if regla.es_continuo_24h:
+        if _obtener_valor_campo(regla, "es_continuo_24h", False):
             return True
 
-        # Verificar si la regla tiene configuración diferenciada por día
         cfg_dias = None
-        if regla.configuracion_dias:
-            if isinstance(regla.configuracion_dias, dict):
-                cfg_dias = regla.configuracion_dias
-            elif isinstance(regla.configuracion_dias, str) and regla.configuracion_dias.strip():
+        raw_cfg = _obtener_valor_campo(regla, "configuracion_dias")
+        if raw_cfg:
+            if isinstance(raw_cfg, dict):
+                cfg_dias = raw_cfg
+            elif isinstance(raw_cfg, str) and raw_cfg.strip():
                 try:
-                    cfg_dias = json.loads(regla.configuracion_dias)
+                    cfg_dias = json.loads(raw_cfg)
                 except Exception:
                     cfg_dias = None
+
+        h_ap_def = _obtener_valor_campo(regla, "hora_apertura", "08:30") or "08:30"
+        h_ci_def = _obtener_valor_campo(regla, "hora_cierre", "20:30") or "20:30"
+        ovn_def = bool(_obtener_valor_campo(regla, "cierre_dia_siguiente", False))
 
         if cfg_dias and isinstance(cfg_dias, dict) and dia_actual in cfg_dias:
             dia_info = cfg_dias[dia_actual]
             if not dia_info.get("abierto", True):
-                # Si el día está expresamente cerrado (ej: domingo cerrado), no valida por esta regla
                 continue
-            
+
             try:
-                hora_ap = dia_info.get("apertura", regla.hora_apertura)
-                hora_ci = dia_info.get("cierre", regla.hora_cierre)
-                h_ap, m_ap = map(int, hora_ap.split(":"))
-                h_ci, m_ci = map(int, hora_ci.split(":"))
+                hora_ap = dia_info.get("apertura", h_ap_def) or h_ap_def
+                hora_ci = dia_info.get("cierre", h_ci_def) or h_ci_def
+                h_ap, m_ap = map(int, str(hora_ap).split(":")[:2])
+                h_ci, m_ci = map(int, str(hora_ci).split(":")[:2])
                 t_apertura = time(h_ap, m_ap)
-                t_cierre = time(h_ci, m_ci)
-                overnight = dia_info.get("cierre_dia_siguiente", regla.cierre_dia_siguiente)
+                t_cierre = _sumar_minutos_time(time(h_ci, m_ci), tolerancia_eff)
+                overnight = bool(dia_info.get("cierre_dia_siguiente", ovn_def))
 
                 if overnight:
                     if t >= t_apertura or t <= t_cierre:
                         return True
-                else:
-                    if t_apertura <= t <= t_cierre:
-                        return True
+                elif t_apertura <= t <= t_cierre:
+                    return True
             except Exception:
                 return True
         else:
-            # Evaluación estándar si no hay desglose por día
             try:
-                h_ap, m_ap = map(int, regla.hora_apertura.split(":"))
-                h_ci, m_ci = map(int, regla.hora_cierre.split(":"))
+                h_ap, m_ap = map(int, str(h_ap_def).split(":")[:2])
+                h_ci, m_ci = map(int, str(h_ci_def).split(":")[:2])
                 t_apertura = time(h_ap, m_ap)
-                t_cierre = time(h_ci, m_ci)
-                
-                if regla.cierre_dia_siguiente:
+                t_cierre = _sumar_minutos_time(time(h_ci, m_ci), tolerancia_eff)
+
+                if ovn_def:
                     if t >= t_apertura or t <= t_cierre:
                         return True
-                else:
-                    if t_apertura <= t <= t_cierre:
-                        return True
+                elif t_apertura <= t <= t_cierre:
+                    return True
             except Exception:
                 return True
-            
+
     return False
 
 
@@ -525,5 +624,363 @@ async def update_espacio_capacidad(db: AsyncSession, espacio_id: int, nueva_capa
     await db.commit()
     await db.refresh(espacio)
     return espacio
+
+
+# ---------------------------------------------------------------------------
+# Gestión Multi-Proveedor de Credenciales IA
+# ---------------------------------------------------------------------------
+def _validar_datos_proveedor_ia(
+    provider_id: str,
+    base_url: Optional[str],
+    api_key: Optional[str],
+    requiere_key_en_alta: bool = True,
+) -> tuple[str, Optional[str]]:
+    from app.services.llm_client import CATALOGO_PROVEEDORES_IA
+
+    pid = (provider_id or "").strip().lower()
+    meta = CATALOGO_PROVEEDORES_IA.get(pid)
+    if not meta:
+        raise ValueError(f"Proveedor de IA '{pid}' no soportado.")
+
+    url_limpia = (base_url or "").strip() or None
+    if meta.get("requires_base_url") and not url_limpia:
+        raise ValueError("Este proveedor requiere especificar la URL base del endpoint.")
+
+    if url_limpia:
+        url_limpia = validar_url_proveedor_ia(url_limpia, permitir_local=bool(meta.get("allows_local_http")))
+    elif meta.get("default_base_url"):
+        url_limpia = meta["default_base_url"]
+
+    if requiere_key_en_alta and meta.get("requires_api_key", True):
+        if not api_key or not api_key.strip():
+            raise ValueError(f"El proveedor '{meta['nombre']}' requiere ingresar una API Key.")
+
+    return pid, url_limpia
+
+
+async def listar_credenciales_ia(db: AsyncSession) -> list[CredencialProveedorIA]:
+    stmt = select(CredencialProveedorIA).order_by(
+        CredencialProveedorIA.es_activa.desc(),
+        CredencialProveedorIA.updated_at.desc(),
+        CredencialProveedorIA.id.desc(),
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def obtener_credencial_ia(db: AsyncSession, cred_id: int) -> Optional[CredencialProveedorIA]:
+    stmt = select(CredencialProveedorIA).where(CredencialProveedorIA.id == cred_id)
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def _sincronizar_espacio_con_credencial(
+    db: AsyncSession, provider_id: str, modelo: str
+) -> None:
+    await db.execute(
+        sql_update(ConfiguracionEspacios).values(
+            active_provider=provider_id,
+            default_model=modelo,
+        )
+    )
+
+
+async def crear_credencial_ia(
+    db: AsyncSession,
+    nombre: str,
+    provider_id: str,
+    modelo: str,
+    base_url: Optional[str],
+    api_key: Optional[str],
+    activar: bool,
+    usuario_id: Optional[int],
+) -> CredencialProveedorIA:
+    from app.services.llm_client import limpiar_cache_clientes_llm
+
+    pid, url_validada = _validar_datos_proveedor_ia(provider_id, base_url, api_key, requiere_key_en_alta=True)
+    modelo_limpio = modelo.strip()
+    if not modelo_limpio:
+        raise ValueError("Debe especificar un identificador de modelo válido.")
+
+    plain_key = (api_key or "").strip()
+    encrypted = encrypt_api_key(plain_key) if plain_key else None
+    hint = mask_api_key(plain_key) if plain_key else "Sin clave"
+
+    if activar:
+        await db.execute(sql_update(CredencialProveedorIA).values(es_activa=False))
+        await _sincronizar_espacio_con_credencial(db, pid, modelo_limpio)
+
+    cred = CredencialProveedorIA(
+        nombre=nombre.strip(),
+        provider_id=pid,
+        modelo=modelo_limpio,
+        base_url=url_validada,
+        encrypted_api_key=encrypted,
+        key_hint=hint,
+        es_activa=bool(activar),
+        creado_por_id=usuario_id,
+    )
+    db.add(cred)
+    await db.commit()
+    await db.refresh(cred)
+    limpiar_cache_clientes_llm()
+    return cred
+
+
+async def actualizar_credencial_ia(
+    db: AsyncSession,
+    cred: CredencialProveedorIA,
+    nombre: Optional[str] = None,
+    provider_id: Optional[str] = None,
+    modelo: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> CredencialProveedorIA:
+    from app.services.llm_client import limpiar_cache_clientes_llm
+
+    pid_nuevo = (provider_id or cred.provider_id).strip().lower()
+    if base_url is not None:
+        url_objetivo = base_url.strip() or None
+    elif pid_nuevo != cred.provider_id:
+        url_objetivo = None
+    else:
+        url_objetivo = cred.base_url
+    tiene_clave = bool(cred.encrypted_api_key) or bool(api_key and api_key.strip())
+    pid_validado, url_validada = _validar_datos_proveedor_ia(
+        pid_nuevo,
+        url_objetivo,
+        api_key,
+        requiere_key_en_alta=not tiene_clave,
+    )
+
+    if nombre is not None:
+        cred.nombre = nombre.strip()
+    cred.provider_id = pid_validado
+    cred.base_url = url_validada
+    if modelo is not None:
+        if not modelo.strip():
+            raise ValueError("El modelo no puede estar vacío.")
+        cred.modelo = modelo.strip()
+    if api_key is not None and api_key.strip():
+        plain_key = api_key.strip()
+        cred.encrypted_api_key = encrypt_api_key(plain_key)
+        cred.key_hint = mask_api_key(plain_key)
+
+    if cred.es_activa:
+        await _sincronizar_espacio_con_credencial(db, cred.provider_id, cred.modelo)
+
+    await db.commit()
+    await db.refresh(cred)
+    limpiar_cache_clientes_llm()
+    return cred
+
+
+async def activar_credencial_ia(db: AsyncSession, cred: CredencialProveedorIA) -> CredencialProveedorIA:
+    from app.services.llm_client import limpiar_cache_clientes_llm
+
+    await db.execute(sql_update(CredencialProveedorIA).values(es_activa=False))
+    cred.es_activa = True
+    await _sincronizar_espacio_con_credencial(db, cred.provider_id, cred.modelo)
+    await db.commit()
+    await db.refresh(cred)
+    limpiar_cache_clientes_llm()
+    return cred
+
+
+async def probar_credencial_ia_guardada(db: AsyncSession, cred: CredencialProveedorIA) -> dict:
+    from app.services.llm_client import CATALOGO_PROVEEDORES_IA, probar_cliente_llm
+
+    meta = CATALOGO_PROVEEDORES_IA.get(cred.provider_id, {})
+    plain_key = decrypt_api_key(cred.encrypted_api_key) if cred.encrypted_api_key else ""
+    if meta.get("requires_api_key", True) and not plain_key:
+        res = {
+            "ok": False,
+            "latencia_ms": 0.0,
+            "mensaje": "La credencial no tiene una API Key válida almacenada.",
+            "provider_id": cred.provider_id,
+            "modelo": cred.modelo,
+        }
+    else:
+        res = await probar_cliente_llm(cred.provider_id, plain_key, cred.modelo, cred.base_url)
+
+    cred.ultimo_test_ok = bool(res["ok"])
+    cred.ultimo_test_en = datetime.utcnow()
+    await db.commit()
+    await db.refresh(cred)
+    return res
+
+
+async def eliminar_credencial_ia(db: AsyncSession, cred: CredencialProveedorIA) -> None:
+    from app.services.llm_client import limpiar_cache_clientes_llm
+
+    era_activa = cred.es_activa
+    await db.delete(cred)
+    if era_activa:
+        await _sincronizar_espacio_con_credencial(db, "gemini", "gemini-3.1-flash-lite")
+    await db.commit()
+    limpiar_cache_clientes_llm()
+
+
+# ---------------------------------------------------------------------------
+# Gestión Segura de Perfiles SMTP Institucionales
+# ---------------------------------------------------------------------------
+def _normalizar_cifrado_smtp(use_tls: bool, use_ssl: bool, port: int) -> tuple[bool, bool]:
+    if use_ssl or (port == 465 and not use_tls):
+        return False, True
+    if use_tls:
+        return True, False
+    return False, False
+
+
+async def listar_configuraciones_smtp(db: AsyncSession) -> list[ConfiguracionSMTP]:
+    stmt = select(ConfiguracionSMTP).order_by(
+        ConfiguracionSMTP.es_activa.desc(),
+        ConfiguracionSMTP.updated_at.desc(),
+        ConfiguracionSMTP.id.desc(),
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def obtener_configuracion_smtp(db: AsyncSession, smtp_id: int) -> Optional[ConfiguracionSMTP]:
+    stmt = select(ConfiguracionSMTP).where(ConfiguracionSMTP.id == smtp_id)
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def crear_configuracion_smtp(
+    db: AsyncSession,
+    nombre: str,
+    host: str,
+    port: int,
+    use_tls: bool,
+    use_ssl: bool,
+    username: str,
+    from_email: str,
+    from_name: str,
+    password: str,
+    activar: bool,
+    usuario_id: Optional[int],
+) -> ConfiguracionSMTP:
+    from app.services.email_service import limpiar_cache_smtp
+
+    host_ok, port_ok = validar_host_smtp(host, port)
+    tls_ok, ssl_ok = _normalizar_cifrado_smtp(use_tls, use_ssl, port_ok)
+    pwd_limpia = (password or "").strip()
+    if not pwd_limpia:
+        raise ValueError("La contraseña SMTP es obligatoria.")
+
+    if activar:
+        await db.execute(sql_update(ConfiguracionSMTP).values(es_activa=False))
+
+    cfg = ConfiguracionSMTP(
+        nombre=nombre.strip(),
+        host=host_ok,
+        port=port_ok,
+        use_tls=tls_ok,
+        use_ssl=ssl_ok,
+        username=username.strip(),
+        from_email=from_email.strip(),
+        from_name=from_name.strip(),
+        encrypted_password=encrypt_api_key(pwd_limpia),
+        password_hint=mask_api_key(pwd_limpia),
+        es_activa=bool(activar),
+        creado_por_id=usuario_id,
+    )
+    db.add(cfg)
+    await db.commit()
+    await db.refresh(cfg)
+    limpiar_cache_smtp()
+    return cfg
+
+
+async def actualizar_configuracion_smtp(
+    db: AsyncSession,
+    cfg: ConfiguracionSMTP,
+    nombre: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    use_tls: Optional[bool] = None,
+    use_ssl: Optional[bool] = None,
+    username: Optional[str] = None,
+    from_email: Optional[str] = None,
+    from_name: Optional[str] = None,
+    password: Optional[str] = None,
+) -> ConfiguracionSMTP:
+    from app.services.email_service import limpiar_cache_smtp
+
+    host_obj = cfg.host if host is None else host
+    port_obj = cfg.port if port is None else port
+    host_ok, port_ok = validar_host_smtp(host_obj, port_obj)
+
+    tls_obj = cfg.use_tls if use_tls is None else use_tls
+    ssl_obj = cfg.use_ssl if use_ssl is None else use_ssl
+    if use_ssl is True and use_tls is None:
+        tls_obj = False
+    elif use_tls is True and use_ssl is None:
+        ssl_obj = False
+    tls_ok, ssl_ok = _normalizar_cifrado_smtp(tls_obj, ssl_obj, port_ok)
+
+    if nombre is not None:
+        cfg.nombre = nombre.strip()
+    cfg.host = host_ok
+    cfg.port = port_ok
+    cfg.use_tls = tls_ok
+    cfg.use_ssl = ssl_ok
+    if username is not None:
+        cfg.username = username.strip()
+    if from_email is not None:
+        cfg.from_email = from_email.strip()
+    if from_name is not None:
+        cfg.from_name = from_name.strip()
+    if password is not None and password.strip():
+        pwd_limpia = password.strip()
+        cfg.encrypted_password = encrypt_api_key(pwd_limpia)
+        cfg.password_hint = mask_api_key(pwd_limpia)
+
+    await db.commit()
+    await db.refresh(cfg)
+    limpiar_cache_smtp()
+    return cfg
+
+
+async def activar_configuracion_smtp(db: AsyncSession, cfg: ConfiguracionSMTP) -> ConfiguracionSMTP:
+    from app.services.email_service import limpiar_cache_smtp
+
+    await db.execute(sql_update(ConfiguracionSMTP).values(es_activa=False))
+    cfg.es_activa = True
+    await db.commit()
+    await db.refresh(cfg)
+    limpiar_cache_smtp()
+    return cfg
+
+
+async def probar_configuracion_smtp_guardada(
+    db: AsyncSession, cfg: ConfiguracionSMTP, destinatario: str
+) -> tuple[bool, str]:
+    from app.services.email_service import probar_envio_smtp
+
+    pwd = decrypt_api_key(cfg.encrypted_password)
+    datos = {
+        "nombre": cfg.nombre,
+        "host": cfg.host,
+        "port": int(cfg.port),
+        "use_tls": bool(cfg.use_tls),
+        "use_ssl": bool(cfg.use_ssl),
+        "username": cfg.username,
+        "password": pwd,
+        "from_email": cfg.from_email,
+        "from_name": cfg.from_name,
+    }
+    ok, msg = await probar_envio_smtp(datos, destinatario)
+    cfg.ultimo_test_ok = bool(ok)
+    cfg.ultimo_test_en = datetime.utcnow()
+    await db.commit()
+    await db.refresh(cfg)
+    return ok, msg
+
+
+async def eliminar_configuracion_smtp(db: AsyncSession, cfg: ConfiguracionSMTP) -> None:
+    from app.services.email_service import limpiar_cache_smtp
+
+    await db.delete(cfg)
+    await db.commit()
+    limpiar_cache_smtp()
 
 

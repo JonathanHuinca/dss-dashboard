@@ -28,6 +28,7 @@ import {
   EventoCalendarioFormulario,
   EventoCalendarioCrearFormulario,
 } from '../../../api/administracion'
+import { obtenerFechaHoyChileIso } from '../../../utils/fechaChile'
 
 const formatIsoDate = (isoStr?: string | null): string => {
   if (!isoStr) return ''
@@ -177,17 +178,20 @@ export const CalendarioSection: React.FC = () => {
   }
 
   // Formulario nuevo evento
-  const [formNuevo, setFormNuevo] = useState<EventoCalendarioCrearFormulario>({
-    fecha_inicio: new Date().toISOString().slice(0, 10),
-    fecha_fin: new Date().toISOString().slice(0, 10),
-    descripcion: '',
-    is_holiday: false,
-    is_break: false,
-    is_exam_period: false,
-    is_class_milestone: false,
-    suspension_actividades: false,
-    is_strike_federado: false,
-    is_strike_carrera: false,
+  const [formNuevo, setFormNuevo] = useState<EventoCalendarioCrearFormulario>(() => {
+    const hoyIso = obtenerFechaHoyChileIso()
+    return {
+      fecha_inicio: hoyIso,
+      fecha_fin: hoyIso,
+      descripcion: '',
+      is_holiday: false,
+      is_break: false,
+      is_exam_period: false,
+      is_class_milestone: false,
+      suspension_actividades: false,
+      is_strike_federado: false,
+      is_strike_carrera: false,
+    }
   })
 
   return (

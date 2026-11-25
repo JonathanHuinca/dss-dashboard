@@ -113,6 +113,9 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
     queryClient.invalidateQueries({ queryKey: ['calendar-status'] })
     queryClient.invalidateQueries({ queryKey: ['calendar-events'] })
     queryClient.invalidateQueries({ queryKey: ['calendario-resumen-anual'] })
+    queryClient.invalidateQueries({ queryKey: ['attendance-presence-curve'] })
+    queryClient.invalidateQueries({ queryKey: ['vehicle-presence-curve'] })
+    queryClient.invalidateQueries({ queryKey: ['occupancy-realtime'] })
     queryClient.invalidateQueries({ queryKey: ['hourly-flow'] })
     queryClient.invalidateQueries({ queryKey: ['vehicle-hourly-flow'] })
     queryClient.invalidateQueries({ queryKey: ['attendance-kpis'] })
@@ -228,7 +231,7 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-bold text-slate-900">{c.titulo}</span>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md border bg-red-50 text-red-700 border-red-200 uppercase">
-                      {c.tipo.replace('_', ' ')}
+                      {c.tipo.replace(/_/g, ' ')}
                     </span>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md border bg-slate-100 text-slate-700 border-slate-300">
                       {c.subespacio === 'sala_1'
@@ -410,10 +413,22 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
                 </label>
                 <select
                   value={contingenciaForm.tipo}
-                  onChange={(e) => setContingenciaForm((prev) => ({ ...prev, tipo: e.target.value }))}
+                  onChange={(e) => {
+                    const nuevoTipo = e.target.value
+                    const cierra = !['falla_sensor', 'apertura_manual', 'sin_demanda', 'otro'].includes(nuevoTipo)
+                    setContingenciaForm((prev) => ({
+                      ...prev,
+                      tipo: nuevoTipo,
+                      implica_cierre_total: cierra,
+                    }))
+                  }}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-red-100 focus:outline-none"
                 >
                   <option value="suspension_sala">Suspensión Puntual de Sala / Sector</option>
+                  <option value="mantencion_cierre">Cierre Imprevisto o Mantención de Sala / Sector</option>
+                  <option value="falla_sensor">Falla de Torniquete / Sensor ANPR / Sincronización</option>
+                  <option value="apertura_manual">Apertura Manual sin Marcaje</option>
+                  <option value="sin_demanda">Recinto Abierto con 0 Visitantes Confirmados</option>
                   <option value="paro_federado">Paro Federado (Huelga General Estudiantil FEUCT)</option>
                   <option value="paro_carrera">Paro por Carrera o Facultad</option>
                   <option value="toma_campus">Toma de Instalaciones / Campus</option>
@@ -555,6 +570,19 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
                   value={contingenciaForm.carreras_afectadas || ''}
                   onChange={(e) => setContingenciaForm((prev) => ({ ...prev, carreras_afectadas: e.target.value }))}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-red-100 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Descripción / Observación de los Hechos
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Ej. Torniquete fuera de línea, cierre por mantención o jornada sin asistencia..."
+                  value={contingenciaForm.descripcion || ''}
+                  onChange={(e) => setContingenciaForm((prev) => ({ ...prev, descripcion: e.target.value }))}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-red-100 focus:outline-none resize-none"
                 />
               </div>
 

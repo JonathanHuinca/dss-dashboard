@@ -34,10 +34,12 @@ from app.schemas.auth_schemas import (
     UsuarioInviteRequest,
     UsuarioInviteResponse,
     UsuarioResponse,
+    UsuarioUpdateRequest,
     UserStatusUpdate,
 )
 from app.services.auth_service import (
     activar_cuenta_usuario,
+    actualizar_usuario_admin,
     authenticate_user,
     create_access_token,
     create_user,
@@ -63,12 +65,17 @@ router = APIRouter()
 @router.post("/login", response_model=TokenResponse, summary="Autenticación y generación de JWT")
 async def login(
     credentials: LoginRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
+    ip_cliente = request.client.host if request.client else None
     user = await authenticate_user(
         db=db,
         email=credentials.email,
         password=credentials.password,
+        ip_origen=ip_cliente,
+        background_tasks=background_tasks,
     )
     if not user:
         raise HTTPException(
@@ -93,6 +100,8 @@ async def login(
         can_export=user.can_export,
         can_ingest=user.can_ingest,
         espacio_id=user.espacio_id,
+        nombre_completo=user.nombre_completo,
+        email=user.email,
     )
 
     try:
@@ -106,6 +115,8 @@ async def login(
         access_token=access_token,
         token_type="bearer",
         user_id=user.id,
+        nombre_completo=user.nombre_completo,
+        email=user.email,
         rol=primary_role,
         roles=roles_list,
         allowed_datasets=user.allowed_datasets,
@@ -242,6 +253,26 @@ async def update_user_status_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Usuario no encontrado",
         )
+    return map_usuario_response(updated)
+
+
+@router.put(
+    "/users/{user_id}",
+    response_model=UsuarioResponse,
+    summary="Editar rol, módulos autorizados y datos de un usuario bajo gobernanza Opción A",
+)
+async def update_user_endpoint(
+    user_id: int,
+    update_in: UsuarioUpdateRequest,
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
+    db: AsyncSession = Depends(get_db),
+) -> UsuarioResponse:
+    updated = await actualizar_usuario_admin(
+        db=db,
+        user_id=user_id,
+        update_in=update_in,
+        current_user=current_user,
+    )
     return map_usuario_response(updated)
 
 

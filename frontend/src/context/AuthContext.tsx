@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import { api } from '../api/client'
 
@@ -19,6 +20,8 @@ export interface UserProfile {
 interface DecodedToken {
   sub?: string
   user_id?: number
+  nombre_completo?: string
+  email?: string
   rol?: string
   roles?: string[]
   allowed_datasets?: string[]
@@ -31,6 +34,8 @@ interface DecodedToken {
 
 interface AuthContextType {
   token: string | null
+  userName: string | null
+  userEmail: string | null
   userRole: string | null
   roles: string[]
   userId: number | null
@@ -75,6 +80,8 @@ function parseJwt(token: string): DecodedToken | null {
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY))
+  const [userName, setUserName] = useState<string | null>(null)
+  const [userEmail, setUserEmail] = useState<string | null>(null)
   const [userRole, setUserRole] = useState<string | null>(null)
   const [roles, setRoles] = useState<string[]>([])
   const [userId, setUserId] = useState<number | null>(null)
@@ -88,15 +95,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     api.defaults.headers.common['X-Espacio-Id'] = currentEspacioId.toString()
   }, [currentEspacioId])
 
+  const queryClient = useQueryClient()
   const expireTimerRef = React.useRef<number | null>(null)
+  const prevUserIdRef = React.useRef<number | null>(null)
 
   const logout = () => {
     if (expireTimerRef.current) {
       clearTimeout(expireTimerRef.current)
       expireTimerRef.current = null
     }
+    prevUserIdRef.current = null
+    void queryClient.cancelQueries()
+    queryClient.clear()
     localStorage.removeItem(TOKEN_KEY)
     setToken(null)
+    setUserName(null)
+    setUserEmail(null)
     setUserRole(null)
     setRoles([])
     setUserId(null)
@@ -126,9 +140,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const primaryRole = decoded.rol || (decoded.roles && decoded.roles[0]) || null
     const allRoles = decoded.roles || (decoded.rol ? [decoded.rol] : [])
-    const uid = decoded.user_id ? Number(decoded.user_id) : (decoded.sub ? Number(decoded.sub) : null)
+    const rawUid = decoded.user_id ?? decoded.sub
+    const parsedUid = rawUid !== undefined && rawUid !== null ? Number(rawUid) : NaN
+    const uid = Number.isFinite(parsedUid) ? parsedUid : null
     const datasets = decoded.allowed_datasets || ['biblioteca', 'estacionamiento']
 
+    if (prevUserIdRef.current !== null && uid !== null && prevUserIdRef.current !== uid) {
+      void queryClient.cancelQueries()
+      queryClient.clear()
+    }
+    prevUserIdRef.current = uid
+
+    setUserName(decoded.nombre_completo || null)
+    setUserEmail(decoded.email || null)
     setUserRole(primaryRole)
     setRoles(allRoles)
     setUserId(uid)
@@ -197,6 +221,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [])
 
+  // Respaldo para sesiones abiertas con tokens previos que no incluían nombre_completo
+  useEffect(() => {
+    if (!token || userName) return
+    const decoded = parseJwt(token)
+    if (!decoded || (decoded.exp && decoded.exp * 1000 <= Date.now())) return
+    let cancelado = false
+    api
+      .get<UserProfile>('/auth/me', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      .then((res) => {
+        if (cancelado) return
+        if (res.data?.nombre_completo) setUserName(res.data.nombre_completo)
+        if (res.data?.email) setUserEmail(res.data.email)
+      })
+      .catch(() => {})
+    return () => {
+      cancelado = true
+    }
+  }, [token, userName])
+
   const login = (newToken: string) => {
     localStorage.setItem(TOKEN_KEY, newToken)
     setToken(newToken)
@@ -240,6 +285,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         token,
+        userName,
+        userEmail,
         userRole,
         roles,
         userId,

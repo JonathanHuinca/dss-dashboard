@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import get_current_user, require_role, validar_acceso_espacio
 from app.core.database import get_db
+from app.core.tiempo import marcar_utc
 from app.domain.models import IngestionJob
 from app.schemas.ingestion_schemas import (
     FileInspectionResponse,
@@ -350,8 +351,8 @@ async def get_ingestion_history(
             estado=j.estado,
             registros_ok=j.registros_ok,
             registros_error=j.registros_error,
-            creado_en=j.creado_en,
-            completado_en=j.completado_en,
+            creado_en=marcar_utc(j.creado_en),
+            completado_en=marcar_utc(j.completado_en),
             file_hash=j.file_hash,
             modo_solapamiento=j.modo_solapamiento,
             clave_enlace=j.clave_enlace,

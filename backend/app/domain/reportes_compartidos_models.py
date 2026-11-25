@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import List, Optional
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, Double, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.mssql import DATETIME2, UNIQUEIDENTIFIER
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -76,6 +76,12 @@ class ReporteCompartido(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    mensajes_ia: Mapped[List["MensajeIAReporte"]] = relationship(
+        "MensajeIAReporte",
+        back_populates="reporte",
+        cascade="all, delete-orphan",
+        lazy="noload",
+    )
 
 
 class AuditoriaAccesoReporte(Base):
@@ -89,6 +95,29 @@ class AuditoriaAccesoReporte(Base):
     fecha_hora: Mapped[datetime] = mapped_column(DATETIME2, default=datetime.now, nullable=False)
     ip_origen: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     accion: Mapped[str] = mapped_column(String(50), default="apertura_reporte", nullable=False)
+    detalle: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     reporte: Mapped["ReporteCompartido"] = relationship("ReporteCompartido", back_populates="accesos")
+
+
+class MensajeIAReporte(Base):
+    """Historial persistente de consultas y respuestas IA confinadas a un reporte compartido."""
+    __tablename__ = "mensajes_ia_reporte"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    reporte_id: Mapped[uuid.UUID] = mapped_column(
+        UNIQUEIDENTIFIER, ForeignKey("reportes_compartidos.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sesion_id: Mapped[str] = mapped_column(String(64), default="principal", nullable=False)
+    usuario_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True
+    )
+    pregunta: Mapped[str] = mapped_column(Text, nullable=False)
+    respuesta: Mapped[str] = mapped_column(Text, nullable=False)
+    modelo_utilizado: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    tiempo_respuesta_ms: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(DATETIME2, default=datetime.now, nullable=False)
+
+    reporte: Mapped["ReporteCompartido"] = relationship("ReporteCompartido", back_populates="mensajes_ia")
 

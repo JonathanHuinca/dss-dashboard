@@ -55,6 +55,15 @@ class UserStatusUpdate(BaseModel):
     can_use_ai: Optional[bool] = None
 
 
+class UsuarioUpdateRequest(BaseModel):
+    nombre_completo: Optional[str] = None
+    roles: Optional[List[str]] = None
+    allowed_datasets: Optional[List[str]] = None
+    can_use_ai: Optional[bool] = None
+    can_export: Optional[bool] = None
+    can_ingest: Optional[bool] = None
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=72)
@@ -64,6 +73,8 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_id: int
+    nombre_completo: Optional[str] = None
+    email: Optional[str] = None
     rol: str
     roles: List[str]
     allowed_datasets: List[str] = Field(default_factory=lambda: ["biblioteca", "estacionamiento"])
@@ -75,6 +86,8 @@ class TokenResponse(BaseModel):
 
 class TokenPayload(BaseModel):
     user_id: int
+    nombre_completo: Optional[str] = None
+    email: Optional[str] = None
     rol: str
     roles: List[str] = Field(default_factory=list)
     allowed_datasets: List[str] = Field(default_factory=lambda: ["biblioteca", "estacionamiento"])

@@ -212,11 +212,24 @@ export const fetchCalendarStatus = () =>
 export const syncCalendarScrape = () =>
   api.post<{ status: string; total_days: number }>('/config/calendar/sync-scrape').then(r => r.data)
 
+export type TipoContingenciaOperativa =
+  | 'paro_federado'
+  | 'paro_carrera'
+  | 'toma_campus'
+  | 'climatica'
+  | 'duelo'
+  | 'suspension_sala'
+  | 'falla_sensor'
+  | 'apertura_manual'
+  | 'mantencion_cierre'
+  | 'sin_demanda'
+  | 'otro'
+
 export interface ContingenciaAcademica {
   id: number
   fecha_inicio: string
   fecha_fin: string
-  tipo: 'paro_federado' | 'paro_carrera' | 'toma_campus' | 'climatica' | 'duelo' | 'suspension_sala' | 'otro'
+  tipo: TipoContingenciaOperativa | string
   titulo: string
   descripcion?: string | null
   espacio_id?: number | null
@@ -226,6 +239,18 @@ export interface ContingenciaAcademica {
   carreras_afectadas?: string | null
   implica_cierre_total: boolean
   creado_en?: string
+}
+
+export interface IncidenciaOperativaResumen {
+  id: number
+  tipo: TipoContingenciaOperativa | string
+  titulo: string
+  descripcion?: string | null
+  espacio_id?: number | null
+  subespacio?: string | null
+  hora_inicio?: string | null
+  hora_fin?: string | null
+  implica_cierre_total: boolean
 }
 
 export interface ContingenciaCrear {
@@ -257,6 +282,7 @@ export interface DiaCalendarioResumen {
   subespacios_suspendidos?: string[]
   espacios_suspendidos?: number[]
   descripcion?: string | null
+  incidencias_operativas?: IncidenciaOperativaResumen[]
 }
 
 export interface EventoCalendarioDetalle extends DiaCalendarioResumen {
@@ -609,6 +635,20 @@ export const deleteUser = async (userId: number): Promise<DeleteUserResponse> =>
   return res.data
 }
 
+export interface UpdateUserPayload {
+  nombre_completo?: string
+  roles?: string[]
+  allowed_datasets?: string[]
+  can_use_ai?: boolean
+  can_export?: boolean
+  can_ingest?: boolean
+}
+
+export const updateUser = async (userId: number, payload: UpdateUserPayload): Promise<any> => {
+  const res = await api.put(`/auth/users/${userId}`, payload)
+  return res.data
+}
+
 // ─── Auditoría y Purga de Datos ────────────────────────────────────────────────
 
 export interface DownloadAuditItem {
@@ -741,4 +781,199 @@ export const descargarPlantillaSalasEstudioExcel = async (params: {
   })
   return res.data
 }
+
+// ─── Gestión Multi-Proveedor IA y Servidor SMTP ───────────────────────────────
+
+export interface ProveedorCatalogoItem {
+  id: string
+  nombre: string
+  protocolo: string
+  default_base_url: string
+  requires_api_key: boolean
+  requires_base_url: boolean
+  allows_local_http: boolean
+  modelos_sugeridos: string[]
+}
+
+export interface CredencialIAItem {
+  id: number
+  nombre: string
+  provider_id: string
+  modelo: string
+  base_url?: string | null
+  has_api_key: boolean
+  key_hint: string
+  es_activa: boolean
+  ultimo_test_ok?: boolean | null
+  ultimo_test_en?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CredencialesIAListResponse {
+  items: CredencialIAItem[]
+  ia_asistente_activo: boolean
+  fallback_env_disponible: boolean
+  origen_activo: 'bd' | 'env' | 'ninguno' | string
+  proveedor_activo_resumen?: string | null
+}
+
+export interface CredencialIACreatePayload {
+  nombre: string
+  provider_id: string
+  modelo: string
+  base_url?: string | null
+  api_key?: string | null
+  activar: boolean
+}
+
+export interface CredencialIAUpdatePayload {
+  nombre?: string
+  provider_id?: string
+  modelo?: string
+  base_url?: string | null
+  api_key?: string | null
+}
+
+export interface TestConexionIAResponse {
+  ok: boolean
+  latencia_ms: number
+  mensaje: string
+  provider_id: string
+  modelo: string
+}
+
+export interface ConfiguracionSMTPItem {
+  id: number
+  nombre: string
+  host: string
+  port: number
+  use_tls: boolean
+  use_ssl: boolean
+  username: string
+  from_email: string
+  from_name: string
+  has_password: boolean
+  password_hint: string
+  es_activa: boolean
+  ultimo_test_ok?: boolean | null
+  ultimo_test_en?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface ConfiguracionSMTPListResponse {
+  items: ConfiguracionSMTPItem[]
+  fallback_env_disponible: boolean
+  fallback_env_host?: string | null
+  fallback_env_user?: string | null
+  origen_activo: 'bd' | 'env' | 'ninguno' | string
+}
+
+export interface ConfiguracionSMTPCreatePayload {
+  nombre: string
+  host: string
+  port: number
+  use_tls: boolean
+  use_ssl: boolean
+  username: string
+  from_email: string
+  from_name: string
+  password: string
+  activar: boolean
+}
+
+export interface ConfiguracionSMTPUpdatePayload {
+  nombre?: string
+  host?: string
+  port?: number
+  use_tls?: boolean
+  use_ssl?: boolean
+  username?: string
+  from_email?: string
+  from_name?: string
+  password?: string
+}
+
+export interface TestConexionSMTPResponse {
+  ok: boolean
+  mensaje: string
+  destinatario: string
+}
+
+export const obtenerCatalogoProveedoresIA = () =>
+  api.get<{ proveedores: ProveedorCatalogoItem[] }>('/config/llm/catalog').then(r => r.data.proveedores)
+
+export const listarCredencialesIA = () =>
+  api.get<CredencialesIAListResponse>('/config/llm/credentials').then(r => r.data)
+
+export const crearCredencialIA = (payload: CredencialIACreatePayload) =>
+  api.post<CredencialIAItem>('/config/llm/credentials', payload).then(r => r.data)
+
+export const actualizarCredencialIA = (id: number, payload: CredencialIAUpdatePayload) =>
+  api.put<CredencialIAItem>(`/config/llm/credentials/${id}`, payload).then(r => r.data)
+
+export const activarCredencialIA = (id: number) =>
+  api.post<CredencialIAItem>(`/config/llm/credentials/${id}/activate`).then(r => r.data)
+
+export const probarCredencialIA = (id: number) =>
+  api.post<TestConexionIAResponse>(`/config/llm/credentials/${id}/test`).then(r => r.data)
+
+export const eliminarCredencialIA = (id: number) =>
+  api.delete<{ mensaje: string }>(`/config/llm/credentials/${id}`).then(r => r.data)
+
+export const listarConfiguracionesSMTP = () =>
+  api.get<ConfiguracionSMTPListResponse>('/config/smtp').then(r => r.data)
+
+export const crearConfiguracionSMTP = (payload: ConfiguracionSMTPCreatePayload) =>
+  api.post<ConfiguracionSMTPItem>('/config/smtp', payload).then(r => r.data)
+
+export const actualizarConfiguracionSMTP = (id: number, payload: ConfiguracionSMTPUpdatePayload) =>
+  api.put<ConfiguracionSMTPItem>(`/config/smtp/${id}`, payload).then(r => r.data)
+
+export const activarConfiguracionSMTP = (id: number) =>
+  api.post<ConfiguracionSMTPItem>(`/config/smtp/${id}/activate`).then(r => r.data)
+
+export const probarConfiguracionSMTP = (id: number, destinatario?: string) =>
+  api
+    .post<TestConexionSMTPResponse>(`/config/smtp/${id}/test`, destinatario ? { destinatario } : {})
+    .then(r => r.data)
+
+export const eliminarConfiguracionSMTP = (id: number) =>
+  api.delete<{ mensaje: string }>(`/config/smtp/${id}`).then(r => r.data)
+
+// ─── Alertas de Seguridad para SuperAdmin ────────────────────────────────────
+
+export interface NotificacionAdminItem {
+  id: number
+  tipo: string
+  titulo: string
+  mensaje: string
+  usuario_afectado_id?: number | null
+  usuario_afectado_email?: string | null
+  usuario_afectado_nombre?: string | null
+  intentos_fallidos: number
+  ip_origen?: string | null
+  leida: boolean
+  leida_en?: string | null
+  creado_en: string
+  cuenta_bloqueada_ahora: boolean
+}
+
+export interface NotificacionesAdminResponse {
+  items: NotificacionAdminItem[]
+  no_leidas: number
+}
+
+export const listarNotificacionesAdmin = () =>
+  api.get<NotificacionesAdminResponse>('/admin/notificaciones').then(r => r.data)
+
+export const marcarNotificacionesAdminVistas = () =>
+  api.post<{ marcadas: number; no_leidas: number }>('/admin/notificaciones/marcar-vistas').then(r => r.data)
+
+export const eliminarNotificacionAdmin = (id: number) =>
+  api.delete<{ eliminada: boolean; id: number }>(`/admin/notificaciones/${id}`).then(r => r.data)
+
+export const desbloquearUsuarioAdmin = (userId: number) =>
+  api.post<{ mensaje: string; user_id: number; desbloqueado: boolean }>(`/auth/users/${userId}/unlock`).then(r => r.data)
 
