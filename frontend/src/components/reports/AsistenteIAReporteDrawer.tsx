@@ -10,19 +10,25 @@ import {
   Bot,
   Loader2,
   MessageSquare,
+  Clock,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react'
 import {
+  CuotaIAReporte,
   MensajeIAReporteItem,
   ReporteCompartidoResumen,
   consultarIAReportePublico,
   fetchHistorialIAReportePublico,
 } from '../../api/reportesCompartidos'
 import { MarkdownRespuestaIA, markdownAHtmlSeguro } from '../ui/MarkdownRespuestaIA'
+import { useResizableDrawer } from '../../hooks/useResizableDrawer'
 
 interface AsistenteIAReporteDrawerProps {
   tokenAcceso: string
   reporte: ReporteCompartidoResumen
   mensajesIniciales?: MensajeIAReporteItem[]
+  cuotaInicial?: CuotaIAReporte | null
 }
 
 const SUGERENCIAS_BIBLIOTECA = [
@@ -52,16 +58,23 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
   tokenAcceso,
   reporte,
   mensajesIniciales = [],
+  cuotaInicial = null,
 }) => {
   const [abierto, setAbierto] = useState(false)
   const [vistaHistorial, setVistaHistorial] = useState(false)
   const [mensajes, setMensajes] = useState<MensajeIAReporteItem[]>(mensajesIniciales)
+  const [cuotaIa, setCuotaIa] = useState<CuotaIAReporte | null>(cuotaInicial)
   const [sesionActiva, setSesionActiva] = useState<string>('principal')
   const [pregunta, setPregunta] = useState('')
   const [consultando, setConsultando] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [cargandoHistorial, setCargandoHistorial] = useState(false)
   const finListaRef = useRef<HTMLDivElement | null>(null)
+  const { drawerWidth, isMaximized, isResizing, isMobile, handlePointerDown, toggleMaximize } = useResizableDrawer({
+    storageKey: 'uct_report_assistant_drawer_width',
+    defaultWidth: 560,
+    minWidth: 400,
+  })
 
   useEffect(() => {
     setMensajes(mensajesIniciales)
@@ -70,6 +83,10 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
     setVistaHistorial(false)
     setErrorMsg(null)
   }, [tokenAcceso, reporte.id, mensajesIniciales])
+
+  useEffect(() => {
+    setCuotaIa(cuotaInicial ?? null)
+  }, [tokenAcceso, reporte.id, cuotaInicial])
 
   useEffect(() => {
     if (abierto && finListaRef.current) {
@@ -109,6 +126,7 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
     try {
       const res = await fetchHistorialIAReportePublico(tokenAcceso)
       setMensajes(res.mensajes || [])
+      if (res.cuota !== undefined) setCuotaIa(res.cuota ?? null)
     } catch {
       // Mantiene historial actual si falla recarga puntual
     } finally {
@@ -116,9 +134,11 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
     }
   }
 
+  const cuotaAgotada = Boolean(cuotaIa && !cuotaIa.ilimitado && (cuotaIa.restantes ?? 0) <= 0)
+
   const enviarConsulta = async (textoPregunta: string) => {
     const limpia = textoPregunta.trim()
-    if (!limpia || consultando) return
+    if (!limpia || consultando || cuotaAgotada) return
     setConsultando(true)
     setErrorMsg(null)
     setPregunta('')
@@ -135,6 +155,9 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
         creado_en: res.timestamp,
       }
       setMensajes((prev) => [...prev, nuevo])
+      if (res.cuota !== undefined && res.cuota !== null) {
+        setCuotaIa(res.cuota)
+      }
     } catch (err: any) {
       setErrorMsg(err?.response?.data?.detail || 'No fue posible procesar la consulta con el asistente IA.')
       setPregunta(limpia)
@@ -206,7 +229,22 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
 
       {abierto && (
         <div className="no-imprimir-reporte print:hidden fixed inset-0 z-50 flex justify-end bg-slate-900/30 backdrop-blur-[1px]">
-          <aside className="w-full max-w-[540px] h-full bg-white shadow-2xl border-l border-slate-200 flex flex-col">
+          <aside
+            style={{ width: drawerWidth }}
+            className={`relative max-w-full h-full bg-white shadow-2xl border-l border-slate-200 flex flex-col ${
+              isResizing ? 'transition-none' : 'transition-[width] duration-150 ease-out'
+            }`}
+          >
+            {!isMobile && (
+              <div
+                onPointerDown={handlePointerDown}
+                onDoubleClick={toggleMaximize}
+                title="Arrastra para ajustar el ancho o haz doble clic para ampliar/restaurar"
+                className="group absolute left-0 top-0 bottom-0 w-2 -translate-x-0.5 cursor-ew-resize z-30 flex items-center justify-center hover:bg-uct-gold/30 transition-colors"
+              >
+                <div className="w-0.5 h-12 rounded-full bg-slate-300/80 group-hover:bg-uct-gold transition-colors" />
+              </div>
+            )}
             {/* Cabecera Institucional azul UCT */}
             <div className="bg-uct-blue-primary text-white px-4 py-3 border-b border-white/10">
               <div className="flex items-center justify-between gap-2">
@@ -260,6 +298,16 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
                   >
                     <Plus className="w-4 h-4" />
                   </button>
+                  {!isMobile && (
+                    <button
+                      type="button"
+                      onClick={toggleMaximize}
+                      className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/15 cursor-pointer"
+                      title={isMaximized ? 'Restaurar ancho del chat' : 'Ampliar chat a pantalla completa'}
+                    >
+                      {isMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setAbierto(false)}
@@ -275,9 +323,29 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
                 <span className="text-white/80">
                   Módulo: <strong className="text-uct-gold">{reporte.espacio_nombre}</strong>
                 </span>
-                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-semibold text-[10px]">
-                  Período sellado: {reporte.fecha_inicio} al {reporte.fecha_fin}
-                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {cuotaIa && (
+                    <span
+                      title="Cuota diaria de consultas analíticas IA"
+                      className="inline-flex items-center gap-1 bg-white/10 text-white/95 text-[10px] px-2 py-0.5 rounded-full border border-white/15"
+                    >
+                      <Clock className="w-3 h-3 text-uct-gold" />
+                      {cuotaIa.ilimitado ? (
+                        <span>Cuota hoy: Ilimitada</span>
+                      ) : (
+                        <span>
+                          Cuota hoy: <strong>{cuotaIa.usadas}</strong>/{cuotaIa.limite}{' '}
+                          <span className={cuotaAgotada ? 'text-rose-300 font-bold' : 'text-emerald-300 font-semibold'}>
+                            ({cuotaIa.restantes} disp.)
+                          </span>
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 font-semibold text-[10px]">
+                    Período sellado: {reporte.fecha_inicio} al {reporte.fecha_fin}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -353,7 +421,7 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
                       <button
                         key={i}
                         type="button"
-                        disabled={consultando}
+                        disabled={consultando || cuotaAgotada}
                         onClick={() => enviarConsulta(sug)}
                         className="px-2.5 py-1 rounded-full bg-white hover:bg-blue-50 border border-slate-200 hover:border-uct-blue-primary/40 text-[11px] text-slate-700 hover:text-uct-blue-primary transition cursor-pointer disabled:opacity-50"
                       >
@@ -421,18 +489,27 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
 
             {/* Pie de composición */}
             <div className="p-3 bg-white border-t border-slate-200 space-y-2">
+              {cuotaAgotada && (
+                <div className="px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                  Has alcanzado tu límite diario de consultas IA ({cuotaIa?.usadas}/{cuotaIa?.limite}). Se restablecerá mañana.
+                </div>
+              )}
               <form onSubmit={handleSubmit} className="flex items-center gap-2">
                 <input
                   type="text"
                   value={pregunta}
                   onChange={(e) => setPregunta(e.target.value)}
-                  disabled={consultando}
-                  placeholder="Pregunta sobre los indicadores o gráficos de este reporte..."
-                  className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-uct-blue-primary"
+                  disabled={consultando || cuotaAgotada}
+                  placeholder={
+                    cuotaAgotada
+                      ? 'Cuota diaria de consultas IA agotada...'
+                      : 'Pregunta sobre los indicadores o gráficos de este reporte...'
+                  }
+                  className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-uct-blue-primary disabled:opacity-60"
                 />
                 <button
                   type="submit"
-                  disabled={consultando || !pregunta.trim()}
+                  disabled={consultando || cuotaAgotada || !pregunta.trim()}
                   className="p-2.5 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-secondary disabled:opacity-40 text-white cursor-pointer"
                   title="Enviar consulta"
                 >

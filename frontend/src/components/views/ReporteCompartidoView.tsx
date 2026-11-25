@@ -1595,12 +1595,13 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
           </section>
         )}
 
-        {/* Botón flotante + Drawer Asistente Analítico IA Confinado (SOLO visible si permitir_ia === true y la IA está activa globalmente) */}
-        {reporte && reporte.permitir_ia && isAiEnabled && tokenReporteActivo && (
+        {/* Botón flotante + Drawer Asistente Analítico IA Confinado (visible si permitir_ia, IA global activa y permiso consultor activo) */}
+        {reporte && reporte.permitir_ia && isAiEnabled && datosReporte?.destinatario_puede_ia !== false && tokenReporteActivo && (
           <AsistenteIAReporteDrawer
             tokenAcceso={tokenReporteActivo}
             reporte={reporte}
             mensajesIniciales={datosReporte?.mensajes_ia || []}
+            cuotaInicial={datosReporte?.cuota_ia ?? null}
           />
         )}
       </main>

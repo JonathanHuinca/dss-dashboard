@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -793,7 +794,7 @@ class ServicioReportesCompartidos:
                 nombre_completo=nombre_dest,
                 is_active=False,
                 allowed_datasets=[],
-                can_use_ai=False,
+                can_use_ai=True,
                 can_export=True,
                 can_ingest=False,
                 espacio_id=None,
@@ -2276,6 +2277,8 @@ class ServicioReportesCompartidos:
         # Verificar si el usuario Consultor_Reporte ya creó su contraseña o si es nuevo y debe definirla
         requiere_crear_password = False
         token_activacion_pendiente: Optional[str] = None
+        destinatario_puede_ia = True
+        usr_dest: Optional[Usuario] = None
         if dest:
             usr_dest, token_act = await cls._asegurar_usuario_consultor_reporte(
                 session=session,
@@ -2284,6 +2287,7 @@ class ServicioReportesCompartidos:
                 creador_id=reporte.creado_por_id,
             )
             await session.commit()
+            destinatario_puede_ia = bool(getattr(usr_dest, "can_use_ai", True))
             if (
                 usr_dest.hashed_password == "PENDIENTE_ACTIVACION"
                 or not usr_dest.hashed_password.startswith("$2")
@@ -2291,8 +2295,10 @@ class ServicioReportesCompartidos:
                 requiere_crear_password = True
                 token_activacion_pendiente = token_act
 
+        cuota_ia: Optional[Dict[str, Any]] = None
         mensajes_ia_resp: List[Dict[str, Any]] = []
-        if reporte.permitir_ia:
+        if reporte.permitir_ia and destinatario_puede_ia:
+            cuota_ia = await cls._obtener_cuota_ia_reporte(session, reporte, usr_dest)
             stmt_msg = (
                 select(MensajeIAReporte)
                 .where(MensajeIAReporte.reporte_id == reporte.id)
@@ -2316,6 +2322,8 @@ class ServicioReportesCompartidos:
             "reporte": cls._formatear_resumen_reporte(reporte, dest),
             "datos": datos_confinados,
             "historial_destinatario": historial_destinatario,
+            "destinatario_puede_ia": destinatario_puede_ia,
+            "cuota_ia": cuota_ia,
             "mensajes_ia": mensajes_ia_resp,
             "requiere_crear_password": requiere_crear_password,
             "token_activacion": token_activacion_pendiente,
@@ -2389,12 +2397,92 @@ class ServicioReportesCompartidos:
         }
 
     @classmethod
+    async def _obtener_usuario_destinatario_con_roles(
+        cls,
+        session: AsyncSession,
+        reporte: ReporteCompartido,
+    ) -> Optional[Usuario]:
+        """Obtiene la cuenta de usuario del destinatario (si existe) con sus roles cargados."""
+        email = getattr(reporte.destinatario, "email", None) if reporte.destinatario else None
+        if not email:
+            return None
+        stmt_usr = (
+            select(Usuario)
+            .options(selectinload(Usuario.roles))
+            .where(Usuario.email == str(email).strip().lower())
+        )
+        usr = (await session.execute(stmt_usr)).scalar_one_or_none()
+        return usr if usr and hasattr(usr, "email") and hasattr(usr, "id") else None
+
+    @classmethod
+    async def _obtener_cuota_ia_reporte(
+        cls,
+        session: AsyncSession,
+        reporte: ReporteCompartido,
+        usuario_dest: Optional[Usuario] = None,
+    ) -> Dict[str, Any]:
+        """Calcula la cuota diaria de consultas IA en reportes compartidos según el rol del consultor."""
+        roles_objs = list(getattr(usuario_dest, "roles", None) or [])
+        if not roles_objs:
+            try:
+                stmt_rol = select(Rol).where(Rol.nombre == "Consultor_Reporte")
+                rol_c = (await session.execute(stmt_rol)).scalar_one_or_none()
+                if rol_c and hasattr(rol_c, "rate_limit_quota"):
+                    roles_objs = [rol_c]
+            except Exception:
+                roles_objs = []
+
+        limite: Optional[int] = None
+        es_ilimitado = False
+        for r in roles_objs:
+            q_str = str(getattr(r, "rate_limit_quota", "") or "50/día").lower().strip()
+            if any(unl in q_str for unl in ("ilimitado", "unlimited", "none", "-1", "100000")):
+                es_ilimitado = True
+            elif not es_ilimitado:
+                m_num = re.search(r"\d+", q_str)
+                if m_num:
+                    val = int(m_num.group(0))
+                    if limite is None or val > limite:
+                        limite = val
+                elif limite is None:
+                    limite = 50
+
+        if not es_ilimitado and limite is None:
+            limite = 50
+
+        inicio_dia = ahora_chile_naive().replace(hour=0, minute=0, second=0, microsecond=0)
+        usadas = 0
+        try:
+            filtro_objetivo = (
+                MensajeIAReporte.usuario_id == usuario_dest.id
+                if usuario_dest and getattr(usuario_dest, "id", None) is not None
+                else MensajeIAReporte.reporte_id == reporte.id
+            )
+            stmt_cnt = select(func.count(MensajeIAReporte.id)).where(
+                filtro_objetivo,
+                MensajeIAReporte.creado_en >= inicio_dia,
+            )
+            res_cnt = await session.execute(stmt_cnt)
+            val_cnt = res_cnt.scalar() if hasattr(res_cnt, "scalar") else res_cnt.scalar_one_or_none()
+            usadas = int(val_cnt) if isinstance(val_cnt, (int, float)) else 0
+        except Exception:
+            usadas = 0
+
+        restantes = None if es_ilimitado else max(0, (limite or 0) - usadas)
+        return {
+            "usadas": usadas,
+            "limite": None if es_ilimitado else limite,
+            "restantes": restantes,
+            "ilimitado": es_ilimitado,
+        }
+
+    @classmethod
     async def obtener_historial_ia_reporte_publico(
         cls,
         session: AsyncSession,
         token_acceso: str,
     ) -> Dict[str, Any]:
-        """Devuelve el historial persistido de conversaciones IA para un reporte público autorizado."""
+        """Devuelve el historial persistido de conversaciones IA y cuota diaria para un reporte autorizado."""
         stmt = (
             select(ReporteCompartido)
             .options(selectinload(ReporteCompartido.destinatario))
@@ -2413,6 +2501,14 @@ class ServicioReportesCompartidos:
                 detail="El asistente de IA no está habilitado para este reporte compartido.",
             )
 
+        usr_dest = await cls._obtener_usuario_destinatario_con_roles(session, reporte)
+        if usr_dest is not None and not getattr(usr_dest, "can_use_ai", True):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El acceso al Asistente IA ha sido deshabilitado para su cuenta por el administrador.",
+            )
+
+        cuota = await cls._obtener_cuota_ia_reporte(session, reporte, usr_dest)
         stmt_msg = (
             select(MensajeIAReporte)
             .where(MensajeIAReporte.reporte_id == reporte.id)
@@ -2420,6 +2516,7 @@ class ServicioReportesCompartidos:
         )
         filas = (await session.execute(stmt_msg)).scalars().all()
         return {
+            "cuota": cuota,
             "mensajes": [
                 {
                     "id": m.id,
@@ -2431,7 +2528,7 @@ class ServicioReportesCompartidos:
                     "creado_en": marcar_chile(m.creado_en).isoformat() if m.creado_en else None,
                 }
                 for m in filas
-            ]
+            ],
         }
 
     @classmethod
@@ -2470,6 +2567,23 @@ class ServicioReportesCompartidos:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="El asistente de IA no está habilitado para este reporte compartido.",
+            )
+
+        usr_dest = await cls._obtener_usuario_destinatario_con_roles(session, reporte)
+        if usr_dest is not None and not getattr(usr_dest, "can_use_ai", True):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El acceso al Asistente IA ha sido deshabilitado para su cuenta por el administrador.",
+            )
+
+        cuota_previa = await cls._obtener_cuota_ia_reporte(session, reporte, usr_dest)
+        if not cuota_previa["ilimitado"] and (cuota_previa["restantes"] or 0) <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    f"Has alcanzado tu límite diario de {cuota_previa['limite']} consultas "
+                    "al Asistente IA. La cuota se restablecerá mañana."
+                ),
             )
 
         filtros_bloqueados = _cargar_json_seguro(reporte.filtros_bloqueados_json, {})
@@ -2583,20 +2697,8 @@ class ServicioReportesCompartidos:
         )
         sesion_limpia = (sesion_id or "principal").strip()[:64] or "principal"
 
-        # Resolver usuario Consultor_Reporte por email del destinatario (o creador como respaldo)
-        usuario_auditoria_id = (
-            getattr(reporte.destinatario, "usuario_id", None)
-            if reporte.destinatario
-            else None
-        )
-        if not usuario_auditoria_id and reporte.destinatario and reporte.destinatario.email:
-            usr_dest = (
-                await session.execute(
-                    select(Usuario).where(Usuario.email == reporte.destinatario.email.lower())
-                )
-            ).scalar_one_or_none()
-            if usr_dest and hasattr(usr_dest, "email"):
-                usuario_auditoria_id = usr_dest.id
+        # Resolver ID del usuario Consultor_Reporte ya cargado (o creador como respaldo)
+        usuario_auditoria_id = usr_dest.id if usr_dest else getattr(reporte.destinatario, "usuario_id", None)
         if not usuario_auditoria_id:
             usuario_auditoria_id = reporte.creado_por_id
 
@@ -2678,6 +2780,16 @@ class ServicioReportesCompartidos:
         except Exception as err_aud:
             logger.warning("No se pudo registrar telemetría IA de reporte compartido: %s", err_aud)
 
+        usadas_post = int(cuota_previa.get("usadas") or 0) + 1
+        limite_post = cuota_previa.get("limite")
+        ilimitado_post = bool(cuota_previa.get("ilimitado"))
+        cuota_post = {
+            "usadas": usadas_post,
+            "limite": limite_post,
+            "restantes": None if ilimitado_post else max(0, int(limite_post or 0) - usadas_post),
+            "ilimitado": ilimitado_post,
+        }
+
         return {
             "id": nuevo_msg.id,
             "sesion_id": sesion_limpia,
@@ -2686,4 +2798,5 @@ class ServicioReportesCompartidos:
             "modelo_utilizado": str(modelo_usado),
             "tiempo_respuesta_ms": elapsed_ms,
             "timestamp": marcar_chile(ahora_msg).isoformat(),
+            "cuota": cuota_post,
         }

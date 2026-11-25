@@ -501,7 +501,7 @@ async def create_user(
     can_ingest = user_in.can_ingest
 
     if _es_solo_consultor(assigned_roles):
-        can_use_ai = False
+        can_use_ai = bool(invite_in.can_use_ai) if "can_use_ai" in invite_in.model_fields_set else True
         can_export = True
         can_ingest = False
     elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
@@ -576,11 +576,6 @@ async def update_user_status(
     if is_active is not None:
         user.is_active = is_active
     if can_use_ai is not None:
-        if _es_solo_consultor(_roles_usuario(user)) and can_use_ai:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Los usuarios con rol único Consultor_Reporte no utilizan el asistente IA global.",
-            )
         user.can_use_ai = can_use_ai
     await db.commit()
     await db.refresh(user)
@@ -685,7 +680,7 @@ async def invitar_usuario(
     can_ingest = invite_in.can_ingest
 
     if _es_solo_consultor(assigned_roles):
-        can_use_ai = False
+        can_use_ai = bool(invite_in.can_use_ai) if "can_use_ai" in invite_in.model_fields_set else True
         can_export = True
         can_ingest = False
     elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
@@ -808,7 +803,8 @@ async def actualizar_usuario_admin(
     user.espacio_id = final_espacio
 
     if _es_solo_consultor(assigned_roles):
-        user.can_use_ai = False
+        if update_in.can_use_ai is not None:
+            user.can_use_ai = update_in.can_use_ai
         user.can_export = True
         user.can_ingest = False
     else:

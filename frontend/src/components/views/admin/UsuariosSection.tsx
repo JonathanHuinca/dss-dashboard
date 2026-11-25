@@ -826,11 +826,19 @@ export const UsuariosSection: React.FC = () => {
                         )}
                       </td>
                       <td className="py-3 px-3">
-                        {puedeGestionar && !esSoloConsultor ? (
+                        {puedeGestionar ? (
                           <button
                             type="button"
                             onClick={() => toggleUserAiMutation.mutate({ userId: u.id, can_use_ai: !u.can_use_ai })}
-                            title={u.can_use_ai ? 'Haga clic para revocar acceso a IA' : 'Haga clic para autorizar uso de IA'}
+                            title={
+                              esSoloConsultor
+                                ? u.can_use_ai
+                                  ? 'Haga clic para revocar acceso a IA en sus reportes compartidos'
+                                  : 'Haga clic para autorizar uso de IA en sus reportes compartidos'
+                                : u.can_use_ai
+                                  ? 'Haga clic para revocar acceso a IA'
+                                  : 'Haga clic para autorizar uso de IA'
+                            }
                             className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border transition cursor-pointer ${
                               u.can_use_ai
                                 ? 'text-purple-700 bg-purple-50 border-purple-200 hover:bg-purple-100'
@@ -843,7 +851,7 @@ export const UsuariosSection: React.FC = () => {
                         ) : (
                           <span className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600 select-none">
                             {u.can_use_ai ? <Bot size={12} className="text-purple-600" /> : <BotOff size={12} className="text-slate-400" />}
-                            <span>{esSoloConsultor ? 'No aplica' : u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
+                            <span>{u.can_use_ai ? 'Habilitado' : 'Deshabilitado'}</span>
                           </span>
                         )}
                       </td>

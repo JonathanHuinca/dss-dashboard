@@ -62,6 +62,13 @@ export interface ReporteCompartidoResumen {
   tiene_campana_24h?: boolean
 }
 
+export interface CuotaIAReporte {
+  usadas: number
+  limite: number | null
+  restantes: number | null
+  ilimitado?: boolean
+}
+
 export interface MensajeIAReporteItem {
   id: number
   sesion_id: string
@@ -176,6 +183,8 @@ export interface RespuestaReportePublico {
   }>
   requiere_crear_password?: boolean
   token_activacion?: string | null
+  destinatario_puede_ia?: boolean
+  cuota_ia?: CuotaIAReporte | null
   mensajes_ia?: MensajeIAReporteItem[]
   catalogos: {
     graficos: CatalogoItemReporte[]
@@ -291,8 +300,8 @@ export async function fetchPortalDestinatarioPorToken(tokenPortal: string): Prom
 
 export async function fetchHistorialIAReportePublico(
   tokenAcceso: string
-): Promise<{ mensajes: MensajeIAReporteItem[] }> {
-  const { data } = await api.get<{ mensajes: MensajeIAReporteItem[] }>(
+): Promise<{ mensajes: MensajeIAReporteItem[]; cuota?: CuotaIAReporte | null }> {
+  const { data } = await api.get<{ mensajes: MensajeIAReporteItem[]; cuota?: CuotaIAReporte | null }>(
     `/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}/ia/historial`
   )
   return data
@@ -310,6 +319,7 @@ export async function consultarIAReportePublico(
   modelo_utilizado?: string | null
   tiempo_respuesta_ms?: number | null
   timestamp: string
+  cuota?: CuotaIAReporte | null
 }> {
   const { data } = await api.post(`/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}/consultar-ia`, {
     pregunta,

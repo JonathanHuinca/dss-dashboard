@@ -28,7 +28,7 @@ interface AssistantContextType {
 const AssistantContext = createContext<AssistantContextType | undefined>(undefined)
 
 export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated, userId, userEmail, canUseAi } = useAuth()
+  const { isAuthenticated, userId, userEmail, canUseAi, userRole, roles, hasDatasetAccess, canAccessAdmin } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
   const [contextoGrafico, setContextoGrafico] = useState<string | undefined>(undefined)
   const [periodo, setPeriodo] = useState<AssistantPeriodo | undefined>(undefined)
@@ -64,7 +64,12 @@ export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   })
 
   const isAiEnabled = statusData ? Boolean(statusData.ia_asistente_activo) : true
-  const canUseAssistant = isAiEnabled && canUseAi
+  const esSoloConsultor =
+    (userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')) &&
+    !hasDatasetAccess('biblioteca') &&
+    !hasDatasetAccess('estacionamiento') &&
+    !canAccessAdmin
+  const canUseAssistant = isAiEnabled && canUseAi && !esSoloConsultor
 
   useEffect(() => {
     if (!canUseAssistant && isOpen) {

@@ -19,7 +19,10 @@ import {
   ChevronLeft,
   ChevronRight,
   AlertCircle,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react'
+import { useResizableDrawer } from '../../hooks/useResizableDrawer'
 import { ChatMessage, ChatMessageData } from './ChatMessage'
 import { capturarElementoGrafico } from '../../utils/exportadorConsulta'
 import {
@@ -188,6 +191,11 @@ export function AssistantDrawer({
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const { drawerWidth, isMaximized, isResizing, isMobile, handlePointerDown, toggleMaximize } = useResizableDrawer({
+    storageKey: 'uct_assistant_drawer_width',
+    defaultWidth: 896,
+    minWidth: 460,
+  })
 
   // Cargar modelos y cuota al inicializar
   useEffect(() => {
@@ -585,7 +593,22 @@ export function AssistantDrawer({
           onClick={onClose}
         />
 
-        <div className="relative w-full max-w-4xl bg-white h-full shadow-2xl flex flex-row z-10 overflow-hidden">
+        <div
+          style={{ width: drawerWidth }}
+          className={`relative max-w-full bg-white h-full shadow-2xl flex flex-row z-10 overflow-hidden ${
+            isResizing ? 'transition-none' : 'transition-[width] duration-150 ease-out'
+          }`}
+        >
+          {!isMobile && (
+            <div
+              onPointerDown={handlePointerDown}
+              onDoubleClick={toggleMaximize}
+              title="Arrastra para ajustar el ancho o haz doble clic para ampliar/restaurar"
+              className="group absolute left-0 top-0 bottom-0 w-2 -translate-x-0.5 cursor-ew-resize z-30 flex items-center justify-center hover:bg-uct-gold/30 transition-colors"
+            >
+              <div className="w-0.5 h-12 rounded-full bg-slate-300/80 group-hover:bg-uct-gold transition-colors" />
+            </div>
+          )}
           {/* Panel Lateral de Historial de Conversaciones */}
           <div
             className={`${
@@ -798,6 +821,16 @@ export function AssistantDrawer({
                   >
                     <Plus size={17} />
                   </button>
+                  {!isMobile && (
+                    <button
+                      type="button"
+                      onClick={toggleMaximize}
+                      title={isMaximized ? 'Restaurar ancho del chat' : 'Ampliar chat a pantalla completa'}
+                      className="p-1.5 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+                    >
+                      {isMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                    </button>
+                  )}
                   <button
                     onClick={onClose}
                     title="Cerrar panel"
