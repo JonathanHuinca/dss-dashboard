@@ -2,8 +2,11 @@ import os
 from typing import Any, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.security import require_permission
+from app.core.validacion_red import sanitizar_error_credencial
 from app.api.v1.endpoints.config import check_ia_active
 
 router = APIRouter(dependencies=[Depends(check_ia_active)])
@@ -128,8 +131,8 @@ _REGLAS_OFFLINE = [
     (
         lambda s: "24" in s and ("hora" in s or "nocturn" in s or "pecera" in s),
         (
-            "La Campaña 24 Horas habilita la Sala 2 Pecera (CSF04, 126 asientos base, calibrada a 226 asientos en régimen nocturno) "
-            "con apertura ininterrumpida de 20:30 a 08:30 hrs durante períodos solemnes de certámenes y exámenes."
+            "La Campaña 24 Horas habilita la Sala 2 Pecera (CSF04, 126 asientos) "
+            "con extensión nocturna de Lunes a Jueves (20:30 a 07:00 hrs) y Viernes (20:30 a 06:00 hrs) durante períodos de campaña."
         ),
     ),
     (
@@ -199,63 +202,35 @@ async def list_available_models():
 
 @router.post("/query", response_model=AssistantResponse)
 @router.post("/chat", response_model=AssistantResponse)
-async def query_assistant(req: AssistantRequest, current_user = Depends(require_permission("can_use_ai"))):
+async def query_assistant(
+    req: AssistantRequest,
+    current_user=Depends(require_permission("can_use_ai")),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.llm_client import build_llm_client
+
     user_msg = (req.message or req.question or "").strip()
     if not user_msg:
         raise HTTPException(status_code=400, detail="Debe proporcionar un mensaje o pregunta")
 
     selected_model = req.model if req.model in SUPPORTED_MODELS else "gemini-3.1-flash-lite"
-    api_key = get_gemini_api_key()
-
-    if not api_key:
-        fallback_reply = build_offline_response(user_msg)
-        return AssistantResponse(
-            reply=fallback_reply,
-            model_requested=selected_model,
-            model_used=selected_model,
-            success=True,
-            live_llm=False,
-            error="GEMINI_API_KEY no configurada. Respondiendo mediante base analitica local del DSS.",
-        )
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=settings.GEMINI_API_KEY.strip())
-
-        history_contents = []
+        llm_client = await build_llm_client(db, espacio_id=1)
+        historial_txt = ""
         if req.history:
-            for item in req.history[-6:]:
-                sdk_role = "user" if item.role == "user" else "model"
-                history_contents.append(
-                    types.Content(
-                        role=sdk_role,
-                        parts=[types.Part.from_text(text=item.content)]
-                    )
-                )
+            lineas = [f"{'Usuario' if h.role == 'user' else 'Asistente'}: {h.content}" for h in req.history[-6:]]
+            historial_txt = "\nContexto reciente:\n" + "\n".join(lineas) + "\n\n"
 
-        history_contents.append(
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=user_msg)]
-            )
-        )
-
-        config = types.GenerateContentConfig(
+        modelo_activo = getattr(llm_client, "default_model", selected_model) or selected_model
+        generated_text = await llm_client.generate_response(
+            prompt=f"{historial_txt}Consulta actual: {user_msg}",
             system_instruction=SYSTEM_PROMPT,
+            model=modelo_activo,
             temperature=0.2,
         )
 
-        candidate_models = list(dict.fromkeys([m for m in [selected_model, "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3-flash-preview"] if m]))
-        generated_text, used_model, last_exception = _ejecutar_generacion_gemini(
-            client=client,
-            candidate_models=candidate_models,
-            contents=history_contents,
-            config=config,
-        )
-
-        if not generated_text and last_exception:
+        if not generated_text:
             fallback_text = build_offline_response(user_msg)
             return AssistantResponse(
                 reply=fallback_text,
@@ -269,11 +244,21 @@ async def query_assistant(req: AssistantRequest, current_user = Depends(require_
         return AssistantResponse(
             reply=generated_text,
             model_requested=selected_model,
-            model_used=used_model,
+            model_used=modelo_activo,
             success=True,
             live_llm=True,
         )
 
+    except HTTPException:
+        fallback_reply = build_offline_response(user_msg)
+        return AssistantResponse(
+            reply=fallback_reply,
+            model_requested=selected_model,
+            model_used="local-analytics",
+            success=True,
+            live_llm=False,
+            error="Proveedor de IA no configurado. Respondiendo mediante base analítica local del DSS.",
+        )
     except Exception as exc:
         fallback_text = build_offline_response(user_msg)
         return AssistantResponse(
@@ -282,5 +267,5 @@ async def query_assistant(req: AssistantRequest, current_user = Depends(require_
             model_used="local-analytics",
             success=True,
             live_llm=False,
-            error=str(exc),
+            error=sanitizar_error_credencial(exc),
         )

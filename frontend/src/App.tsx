@@ -13,6 +13,7 @@ import { DownloadProgressProvider } from './context/DownloadProgressContext'
 import { DownloadProgressModal } from './components/ui/DownloadProgressModal'
 import { DateRange, DATE_PRESETS, buildLatestWeekPreset } from './types/dateRange'
 import { fetchDateBounds, DateBoundsResponse, DataFilters } from './api/client'
+import { buildUserStorageKey } from './utils/userStorage'
 import './index.css'
 
 const BibliotecaView = lazy(() => import('./components/views/BibliotecaView').then(m => ({ default: m.BibliotecaView })))
@@ -53,23 +54,41 @@ function guardarRangoInicialCache(espacioId: number | undefined, fechaMax: strin
   } catch { }
 }
 
-function AppRouter() {
-  const queryClient = useQueryClient()
-  const { isAuthenticated, userRole, roles, hasDatasetAccess, isSuperAdmin, canAccessAdmin, setCurrentEspacioId } = useAuth()
-  const esConsultorReporte = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
-  const esSoloConsultor = esConsultorReporte && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
+const DEFAULT_BIBLIOTECA_FILTERS: DataFilters = {
+  alcance: 'conformes',
+  regimen_horario: 'dentro_horario,24h_delta',
+  direccion: 'completos',
+  dias_semana: '',
+  door: '',
+  perfil_visita: 'todos',
+  marcajes: 'todos',
+  sala: '',
+  carrera: '',
+  facultad: '',
+  cohorte: '',
+  incluir_pausas_bano: true,
+  desduplicar_rafagas: true,
+  incluir_funcionarios: true,
+  incluir_sin_identificar: true,
+}
 
-  const [tab, setTab] = useState<Tab>(() => {
-    if (userRole === 'Consultor_Reporte' && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin) {
+function AuthenticatedApp() {
+  const queryClient = useQueryClient()
+  const { userRole, roles, hasDatasetAccess, isSuperAdmin, canAccessAdmin, setCurrentEspacioId } = useAuth()
+  const esConsultorReporte = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
+
+  const tabInicial: Tab = (() => {
+    if (esConsultorReporte && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin) {
       return 'reportes'
     }
+    if (hasDatasetAccess('biblioteca')) return 'biblioteca'
+    if (hasDatasetAccess('estacionamiento')) return 'estacionamiento'
+    if (canAccessAdmin) return 'admin'
     return 'biblioteca'
-  })
-  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(() => new Set([
-    userRole === 'Consultor_Reporte' && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
-      ? 'reportes'
-      : 'biblioteca'
-  ]))
+  })()
+
+  const [tab, setTab] = useState<Tab>(tabInicial)
+  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(() => new Set([tabInicial]))
 
   useEffect(() => {
     setVisitedTabs(prev => {
@@ -96,7 +115,7 @@ function AppRouter() {
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
-    enabled: isAuthenticated && currentEspacioId !== undefined,
+    enabled: currentEspacioId !== undefined,
   })
 
   const [range, setRange] = useState<DateRange>(() =>
@@ -112,21 +131,7 @@ function AppRouter() {
 
   const bibliotecaRange = tab === 'biblioteca' ? range : lastBibRange
   const estacionamientoRange = tab === 'estacionamiento' ? range : lastEstRange
-  const [bibliotecaFilters, setBibliotecaFilters] = useState<DataFilters>({
-    alcance: 'conformes',
-    regimen_horario: 'dentro_horario,24h_delta',
-    direccion: 'completos',
-    dias_semana: '',
-    door: '',
-    perfil_visita: 'todos',
-    marcajes: 'todos',
-    sala: '',
-    carrera: '',
-    facultad: '',
-    cohorte: '',
-    incluir_pausas_bano: true,
-    desduplicar_rafagas: true,
-  })
+  const [bibliotecaFilters, setBibliotecaFilters] = useState<DataFilters>(() => ({ ...DEFAULT_BIBLIOTECA_FILTERS }))
   const [estacionamientoFilters] = useState<Record<string, any>>({
     calidad: 'conformes',
     tipo_dia: 'todos',
@@ -184,7 +189,7 @@ function AppRouter() {
     }
   }, [tab, bibliotecaFilters, queryClient])
   const rango_fechas_listo = Boolean(fechaMaxCacheada || dateBounds?.fecha_max || errorLimitesFechas || tab === 'admin')
-  const { isOpen, openAssistant, closeAssistant, contextoGrafico } = useAssistant()
+  const { isOpen, openAssistant, closeAssistant, contextoGrafico, canUseAssistant } = useAssistant()
 
   // Sincronizar dinámicamente la última semana registrada según nuevos datos o cambio de espacio
   useEffect(() => {
@@ -203,27 +208,6 @@ function AppRouter() {
       }
     }
   }, [dateBounds?.fecha_max, dateBounds?.fecha_min, currentEspacioId])
-
-  // Rutas públicas para activación y recuperación de contraseñas (RF27)
-  const isActivarCuenta = typeof window !== 'undefined' && window.location.pathname.startsWith('/activar-cuenta')
-  if (isActivarCuenta) {
-    return <ActivateAccountView />
-  }
-
-  const isRecuperarPassword = typeof window !== 'undefined' && window.location.pathname.startsWith('/recuperar-password')
-  if (isRecuperarPassword) {
-    return <ResetPasswordView />
-  }
-
-  const rutaActual = typeof window !== 'undefined' ? window.location.pathname : ''
-  if (rutaActual.startsWith('/reporte-compartido/')) {
-    const tokenRep = decodeURIComponent(rutaActual.replace('/reporte-compartido/', '').split('/')[0] || '')
-    return <ReporteCompartidoView modoRuta="reporte" token={tokenRep} />
-  }
-  if (rutaActual.startsWith('/mis-reportes/')) {
-    const tokenPortal = decodeURIComponent(rutaActual.replace('/mis-reportes/', '').split('/')[0] || '')
-    return <ReporteCompartidoView modoRuta="portal" token={tokenPortal} />
-  }
 
   useEffect(() => {
     if (tab === 'biblioteca' && !hasDatasetAccess('biblioteca')) {
@@ -251,19 +235,11 @@ function AppRouter() {
         setTab('reportes')
       }
     }
-    
+
     // Sincronizar tab con RLS
     if (tab === 'biblioteca') setCurrentEspacioId(1)
     else if (tab === 'estacionamiento') setCurrentEspacioId(2)
   }, [hasDatasetAccess, isSuperAdmin, canAccessAdmin, tab, setCurrentEspacioId, esConsultorReporte])
-
-  if (!isAuthenticated) {
-    return <LoginView />
-  }
-
-  if (esSoloConsultor) {
-    return <ReporteCompartidoView modoRuta="consultor" />
-  }
 
   return (
     <div className="min-h-screen bg-uct-bg-main relative">
@@ -272,7 +248,7 @@ function AppRouter() {
         onChange={setTab}
         selectedRange={range}
         onRangeChange={handleRangeChange}
-        onOpenAssistant={() => openAssistant()}
+        onOpenAssistant={canUseAssistant ? () => openAssistant() : undefined}
         filters={filtrosActivos}
       />
       <main>
@@ -314,16 +290,52 @@ function AppRouter() {
           </Suspense>
       </main>
 
-      <AssistantDrawer
-        isOpen={isOpen}
-        onClose={closeAssistant}
-        contexto_grafico={contextoGrafico}
-        dateRange={range}
-        dataset_tipo={tab === 'estacionamiento' ? 'estacionamiento' : 'biblioteca'}
-        filtros={filtrosActivos}
-      />
+      {canUseAssistant && (
+        <AssistantDrawer
+          isOpen={isOpen}
+          onClose={closeAssistant}
+          contexto_grafico={contextoGrafico}
+          dateRange={range}
+          dataset_tipo={tab === 'estacionamiento' ? 'estacionamiento' : 'biblioteca'}
+          filtros={filtrosActivos}
+        />
+      )}
     </div>
   )
+}
+
+function AppRouter() {
+  const { isAuthenticated, userId, userEmail, userRole, roles, hasDatasetAccess, canAccessAdmin } = useAuth()
+  const esConsultorReporte = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
+  const esSoloConsultor = esConsultorReporte && !hasDatasetAccess('biblioteca') && !hasDatasetAccess('estacionamiento') && !canAccessAdmin
+
+  // Rutas públicas para activación y recuperación de contraseñas (RF27)
+  const rutaActual = typeof window !== 'undefined' ? window.location.pathname : ''
+  if (rutaActual.startsWith('/activar-cuenta')) {
+    return <ActivateAccountView />
+  }
+  if (rutaActual.startsWith('/recuperar-password')) {
+    return <ResetPasswordView />
+  }
+  if (rutaActual.startsWith('/reporte-compartido/')) {
+    const tokenRep = decodeURIComponent(rutaActual.replace('/reporte-compartido/', '').split('/')[0] || '')
+    return <ReporteCompartidoView modoRuta="reporte" token={tokenRep} />
+  }
+  if (rutaActual.startsWith('/mis-reportes/')) {
+    const tokenPortal = decodeURIComponent(rutaActual.replace('/mis-reportes/', '').split('/')[0] || '')
+    return <ReporteCompartidoView modoRuta="portal" token={tokenPortal} />
+  }
+
+  if (!isAuthenticated) {
+    return <LoginView />
+  }
+
+  if (esSoloConsultor) {
+    return <ReporteCompartidoView modoRuta="consultor" />
+  }
+
+  const sessionKey = `${buildUserStorageKey('session', userId, userEmail)}_${userRole || ''}`
+  return <AuthenticatedApp key={sessionKey} />
 }
 
 export default function App() {

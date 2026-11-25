@@ -1,6 +1,7 @@
 import React, { useState, memo, lazy, Suspense } from 'react'
 import { Bot, Table as TableIcon, FileText, FileSpreadsheet } from 'lucide-react'
 import { InteractiveChart } from '../ui/InteractiveChart'
+import { MarkdownRespuestaIA } from '../ui/MarkdownRespuestaIA'
 import { exportarConsultaPdf, exportarConsultaExcel } from '../../utils/exportadorConsulta'
 
 const HeatmapChart = lazy(() => import('../charts/HeatmapChart').then(m => ({ default: m.HeatmapChart })))
@@ -107,7 +108,7 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
               <Suspense fallback={fallbackLoader}>
                 <OccupancyAreaChart
                   data={msg.payload}
-                  capacidad={isEstacionamiento ? 180 : 350}
+                  capacidad={isEstacionamiento ? 125 : 276}
                   unit={isEstacionamiento ? 'vehículos' : 'ocupantes'}
                 />
               </Suspense>
@@ -120,7 +121,7 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
         if (msg.payload) {
           const forecastData = msg.payload.forecast || msg.payload.pronostico_7d || []
           const histData = msg.payload.historico_7d || []
-          const cap = msg.payload.capacidad_asientos ?? (msg.dataset_tipo === 'estacionamiento' ? 180 : 350)
+          const cap = msg.payload.capacidad_asientos ?? msg.payload.capacidad ?? (msg.dataset_tipo === 'estacionamiento' ? 125 : 276)
           return (
             <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-2 mt-2">
               <Suspense fallback={fallbackLoader}>
@@ -407,8 +408,10 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
             <div className="w-1.5 h-1.5 rounded-full bg-uct-gold animate-bounce [animation-delay:0.4s]" />
             <span className="text-[11px] text-slate-400 ml-1">Procesando respuesta analítica...</span>
           </div>
+        ) : isUser ? (
+          <div className="whitespace-pre-wrap leading-relaxed text-white font-medium">{msg.content}</div>
         ) : (
-          <div className={`whitespace-pre-wrap leading-relaxed ${isUser ? 'text-white font-medium' : 'text-slate-800'}`}>{msg.content}</div>
+          <MarkdownRespuestaIA contenido={msg.content} />
         )}
 
         {/* 2. Componente gráfico interactivo: exclusivamente debajo del texto analítico */}

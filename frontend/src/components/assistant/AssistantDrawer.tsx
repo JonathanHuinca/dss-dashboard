@@ -496,11 +496,16 @@ export function AssistantDrawer({
                     : m
                 )
               )
-            } catch {
+            } catch (err: any) {
+              const detalleError = err?.response?.data?.detail
+              const msgError =
+                typeof detalleError === 'string' && detalleError.trim()
+                  ? detalleError
+                  : 'Error de comunicación con el asistente analítico.'
               setMessages(prev =>
                 prev.map(m =>
                   m.id === assistantId
-                    ? { ...m, content: 'Error de comunicación con el asistente analítico.' }
+                    ? { ...m, content: msgError }
                     : m
                 )
               )

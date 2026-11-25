@@ -8,6 +8,7 @@ import {
   exportarSubgraficosCombinadosAExcel,
   SubgraficoDetectado,
 } from '../../utils/excelExport'
+import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
 
 interface Props {
   title: string
@@ -46,7 +47,7 @@ export function ChartCard({
   filtros,
   filters,
 }: Props) {
-  const { openAssistant, isAiEnabled } = useAssistant()
+  const { openAssistant, canUseAssistant } = useAssistant()
   const { ejecutarDescarga } = useDownloadProgress()
   const [isMaximized, setIsMaximized] = useState(false)
   const [isFullWidth, setIsFullWidth] = useState(false)
@@ -278,7 +279,7 @@ export function ChartCard({
       : chartRef.current
     if (!targetElement) return
 
-    const filename = `${resolvedContext}_datos_${new Date().toISOString().slice(0, 10)}`
+    const filename = `${resolvedContext}_datos_${obtenerFechaHoyChileIso()}`
     setIsExportingExcel(true)
 
     try {
@@ -294,6 +295,11 @@ export function ChartCard({
               `${filename}_completo`,
               title,
               setProgreso
+            )
+            window.dispatchEvent(
+              new CustomEvent('uct:chart-exported', {
+                detail: { formato: 'excel', nombreArchivo: `${filename}_completo.xlsx`, titulo: title },
+              })
             )
           },
         })
@@ -332,6 +338,11 @@ export function ChartCard({
                 throw new Error('No se encontraron datos tabulares o visuales en este gráfico para exportar.')
               }
             }
+            window.dispatchEvent(
+              new CustomEvent('uct:chart-exported', {
+                detail: { formato: 'excel', nombreArchivo: `${filename}${sufijo}.xlsx`, titulo: tituloGrafico },
+              })
+            )
             setProgreso(95, 'Descarga del archivo generada exitosamente...')
             await new Promise((r) => setTimeout(r, 300))
           },
@@ -354,7 +365,7 @@ export function ChartCard({
       : chartRef.current
     if (!targetElement) return
 
-    const filename = `${resolvedContext}_datos_${new Date().toISOString().slice(0, 10)}`
+    const filename = `${resolvedContext}_datos_${obtenerFechaHoyChileIso()}`
     setIsExportingCsv(true)
 
     try {
@@ -375,6 +386,11 @@ export function ChartCard({
             const encabezado = `# SISTEMA DE APOYO A LA TOMA DE DECISIONES (DSS) — UNIVERSIDAD CATÓLICA DE TEMUCO\r\n# REPORTE: ${title}\r\n# FECHA DE EXPORTACIÓN: ${new Date().toLocaleString('es-CL')}\r\n\r\n# ============================================================\r\n# 1. ${subgraficos[0].titulo.toUpperCase()}\r\n# ============================================================\r\n${csv1 || '# Sin datos'}\r\n\r\n# ============================================================\r\n# 2. ${subgraficos[1].titulo.toUpperCase()}\r\n# ============================================================\r\n${csv2 || '# Sin datos'}`
 
             downloadCsvBlob(encabezado, `${filename}_completo`)
+            window.dispatchEvent(
+              new CustomEvent('uct:chart-exported', {
+                detail: { formato: 'csv', nombreArchivo: `${filename}_completo.csv`, titulo: title },
+              })
+            )
             setProgreso(95, 'Descarga del archivo CSV finalizada...')
             await new Promise((r) => setTimeout(r, 200))
           },
@@ -415,6 +431,11 @@ export function ChartCard({
               throw new Error('No se encontraron datos estructurados en este gráfico para exportar.')
             }
 
+            window.dispatchEvent(
+              new CustomEvent('uct:chart-exported', {
+                detail: { formato: 'csv', nombreArchivo: `${filename}${sufijo}.csv`, titulo: tituloGrafico },
+              })
+            )
             setProgreso(95, 'Descargando archivo CSV...')
             await new Promise((r) => setTimeout(r, 200))
           },
@@ -437,7 +458,7 @@ export function ChartCard({
       : chartRef.current
     if (!targetElement) return
 
-    const filename = `${resolvedContext}_grafico_${new Date().toISOString().slice(0, 10)}`
+    const filename = `${resolvedContext}_grafico_${obtenerFechaHoyChileIso()}`
     setIsExportingImg(true)
 
     try {
@@ -487,6 +508,11 @@ export function ChartCard({
             link.href = imgData
             link.download = `${filename}.png`
             link.click()
+            window.dispatchEvent(
+              new CustomEvent('uct:chart-exported', {
+                detail: { formato: 'imagen', nombreArchivo: `${filename}.png`, titulo: title },
+              })
+            )
             setProgreso(95, 'Descargando archivo PNG...')
           },
         })
@@ -520,6 +546,11 @@ export function ChartCard({
               link.download = `${filename}${sufijo}.png`
               link.click()
             }
+            window.dispatchEvent(
+              new CustomEvent('uct:chart-exported', {
+                detail: { formato: 'imagen', nombreArchivo: `${filename}${sufijo}.png`, titulo: subTitulo },
+              })
+            )
             setProgreso(95, 'Descarga finalizada...')
           },
         })
@@ -687,7 +718,7 @@ export function ChartCard({
               </button>
             )}
 
-            {!hideAskIA && isAiEnabled && (
+            {!hideAskIA && canUseAssistant && (
               <button
                 type="button"
                 onClick={handleAskClick}
@@ -821,7 +852,7 @@ export function ChartCard({
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {!hideAskIA && isAiEnabled && (
+                {!hideAskIA && canUseAssistant && (
                   <button
                     type="button"
                     onClick={handleAskClick}

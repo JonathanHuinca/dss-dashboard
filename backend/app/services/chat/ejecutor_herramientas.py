@@ -3,13 +3,14 @@ from app.domain.models import CalendarioAcademico
 import json
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from cachetools import TTLCache
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.chat_schemas import ChatRequest
-from app.services.attendance_service import AttendanceService
+from app.services.attendance_service import AttendanceService, obtener_capacidades_salas_cacheadas
+from app.services.calendar_service import CalendarService, TIPOS_INCIDENCIA_OPERATIVA
 from app.services.vehicle_service import VehicleService
 from app.services.prediction_service import get_prophet_forecast, get_prophet_presence_forecast, get_gbr_forecast_14days, get_visit_profiles
 from app.services.chat.fechas_chat import (
@@ -21,8 +22,267 @@ from app.services.chat.fechas_chat import (
 
 logger = logging.getLogger(__name__)
 
-_cache_resultados_herramientas: TTLCache = TTLCache(maxsize=300, ttl=600)
-_cache_graficos_contexto: TTLCache = TTLCache(maxsize=300, ttl=600)
+_cache_resultados_herramientas: TTLCache = TTLCache(maxsize=300, ttl=60)
+_cache_graficos_contexto: TTLCache = TTLCache(maxsize=300, ttl=60)
+
+
+def _fmt_fecha_cl(iso_str: Optional[str]) -> str:
+    if not iso_str:
+        return ""
+    try:
+        return date.fromisoformat(str(iso_str)[:10]).strftime("%d/%m/%Y")
+    except Exception:
+        return str(iso_str)
+
+
+def _fmt_ts_cl(iso_str: Optional[str]) -> str:
+    if not iso_str:
+        return "N/D"
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(iso_str)
+
+
+def _normalizar_sala_objetivo(sala: Optional[str]) -> str:
+    if not sala:
+        return "todos"
+    s = str(sala).strip().lower()
+    if "1" in s or "csf02" in s:
+        return "sala_1"
+    if "2" in s or "csf04" in s or "pecera" in s:
+        return "sala_2"
+    return "todos"
+
+
+def _normalizar_sala_prophet_bib(sala: Optional[str]) -> str:
+    if not sala:
+        return "todas"
+    s = str(sala).strip().lower()
+    if "1" in s or "csf02" in s:
+        return "sala1"
+    if "2" in s or "csf04" in s or "pecera" in s:
+        return "sala2"
+    return "todas"
+
+
+def _normalizar_sector_prophet_veh(sector: Optional[str]) -> str:
+    if not sector:
+        return "todos"
+    s = str(sector).strip().upper()
+    if s in ("CSF11", "CSF21", "CHS01"):
+        return s
+    return "todos"
+
+
+def _resumen_desglose_prophet(data: Dict[str, Any], espacio_id: int) -> str:
+    if not isinstance(data, dict) or data.get("reconciliacion") != "bottom_up":
+        return ""
+    pron = data.get("pronostico_7d") or []
+    if not pron:
+        return ""
+    if espacio_id == 2:
+        p11 = max((float(pt.get("yhat_csf11") or 0) for pt in pron), default=0.0)
+        p21 = max((float(pt.get("yhat_csf21") or 0) for pt in pron), default=0.0)
+        p01 = max((float(pt.get("yhat_chs01") or 0) for pt in pron), default=0.0)
+        return (
+            f"\n- Desglose Bottom-Up por sector (picos proyectados): "
+            f"CSF11={p11:.0f} veh | CSF21={p21:.0f} veh | CHS01={p01:.0f} veh."
+        )
+    ps1 = max((float(pt.get("yhat_sala1") or 0) for pt in pron), default=0.0)
+    ps2 = max((float(pt.get("yhat_sala2") or 0) for pt in pron), default=0.0)
+    return (
+        f"\n- Desglose Bottom-Up por sala (picos proyectados): "
+        f"Sala 1={ps1:.0f} pers. | Sala 2={ps2:.0f} pers."
+    )
+
+
+async def _construir_alerta_operativa_biblioteca(
+    db: AsyncSession,
+    d_ini: Optional[date],
+    d_fin: Optional[date],
+    sala: Optional[str],
+    filtros: Optional[Dict[str, Any]] = None,
+    curva_presencia: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Resume días operativos con 0 marcajes, último marcaje por sala e incidencias registradas."""
+    f_dict = filtros or {}
+    alcance = f_dict.get("alcance") or "conformes"
+    regimen_horario = f_dict.get("regimen_horario") or "todos"
+    direccion = f_dict.get("direccion") or "todos"
+    dias_semana = f_dict.get("dias_semana")
+    door = f_dict.get("torniquetes") or f_dict.get("door") or f_dict.get("puerta")
+    perfil_visita = f_dict.get("perfil_visita") or "todos"
+    marcajes = f_dict.get("marcajes") or "todos"
+    carrera = f_dict.get("carrera")
+    facultad = f_dict.get("facultad")
+    cohorte = f_dict.get("cohorte")
+    incluir_pausas_bano = bool(f_dict.get("incluir_pausas_bano", True))
+    incluir_funcionarios = bool(f_dict.get("incluir_funcionarios", True))
+    incluir_sin_identificar = bool(f_dict.get("incluir_sin_identificar", True))
+
+    try:
+        curva = curva_presencia
+        if curva is None:
+            curva = await AttendanceService.get_realtime_presence_curve(
+                session=db,
+                fecha_inicio=d_ini,
+                fecha_fin=d_fin,
+                espacio_id=1,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+                cohorte=cohorte,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=bool(f_dict.get("desduplicar_rafagas", True)),
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
+            )
+    except Exception:
+        curva = []
+
+    try:
+        vivo = await AttendanceService.get_occupancy_realtime(
+            db,
+            espacio_id=1,
+            sala=sala,
+            incluir_funcionarios=incluir_funcionarios,
+            incluir_sin_identificar=incluir_sin_identificar,
+        )
+    except Exception:
+        vivo = {}
+
+    ts_global = _fmt_ts_cl(vivo.get("timestamp"))
+    ts_s1 = _fmt_ts_cl(vivo.get("ultimo_marcaje_sala1") or (vivo.get("timestamp") if _normalizar_sala_objetivo(sala) == "sala_1" else None))
+    ts_s2 = _fmt_ts_cl(vivo.get("ultimo_marcaje_sala2") or (vivo.get("timestamp") if _normalizar_sala_objetivo(sala) == "sala_2" else None))
+
+    por_fecha: Dict[str, Dict[str, bool]] = {}
+    for p in (curva or []):
+        f_iso = str(p.get("bucket") or "")[:10]
+        if not f_iso:
+            continue
+        st = por_fecha.setdefault(f_iso, {"g": False, "s1": False, "s2": False})
+        if p.get("sin_registros"):
+            st["g"] = True
+        if p.get("sin_registros_sala1"):
+            st["s1"] = True
+        if p.get("sin_registros_sala2"):
+            st["s2"] = True
+
+    if not por_fecha and not vivo:
+        return ""
+
+    anio_ref = (d_fin or d_ini or date.today()).year
+    cal_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        cal_res = await CalendarService().obtener_resumen_anual_calendario(db, anio_ref)
+        cal_map = {str(d.get("fecha")): d for d in cal_res}
+    except Exception:
+        cal_map = {}
+
+    def _incs_para(f_iso: str, sub_obj: str) -> List[Dict[str, Any]]:
+        cal_d = cal_map.get(f_iso) or {}
+        out = []
+        for inc in (cal_d.get("incidencias_operativas") or []):
+            if (inc.get("tipo") or "").lower() not in TIPOS_INCIDENCIA_OPERATIVA:
+                continue
+            esp_i = inc.get("espacio_id")
+            if esp_i is not None and esp_i != 1:
+                continue
+            sub_i = (inc.get("subespacio") or "todos").strip().lower()
+            if sub_i == "todos" or sub_obj == "todos" or sub_i == sub_obj:
+                out.append(inc)
+        return out
+
+    def _ctx_cal_txt(f_iso: str) -> Optional[str]:
+        cal_d = cal_map.get(f_iso) or {}
+        if cal_d.get("is_strike_federado"):
+            return "Paro Federado FEUCT"
+        if cal_d.get("is_strike_carrera"):
+            return "Paro por Carrera"
+        if cal_d.get("is_break"):
+            return "Vacaciones / Receso académico"
+        if cal_d.get("is_holiday"):
+            return "Feriado oficial"
+        if cal_d.get("suspension_actividades"):
+            return "Suspensión institucional"
+        return None
+
+    sala_obj = _normalizar_sala_objetivo(sala)
+    fechas_ord = sorted(por_fecha.keys())
+    lineas: List[str] = ["ESTADO OPERATIVO Y ALERTAS DE MARCAJES (DINÁMICO):"]
+
+    if fechas_ord:
+        f_fin_iso = fechas_ord[-1]
+        st_fin = por_fecha[f_fin_iso]
+        fmt_fin = _fmt_fecha_cl(f_fin_iso)
+
+        def _fmt_motivo(f_iso: str, sub_obj: str) -> str:
+            incs = _incs_para(f_iso, sub_obj)
+            if incs:
+                det = "; ".join(f"{i.get('titulo')} [{i.get('tipo')}]" for i in incs)
+                return f"Incidencia operativa registrada: {det}."
+            ctx_c = _ctx_cal_txt(f_iso)
+            return f"Sin motivo operativo registrado (contexto calendario: {ctx_c})." if ctx_c else "Sin motivo operativo registrado."
+
+        if st_fin["g"]:
+            etiq = (
+                "Sala 1 (CSF02 2° Piso)" if sala_obj == "sala_1"
+                else ("Sala 2 (CSF04 Pecera 1° Piso)" if sala_obj == "sala_2" else "Biblioteca CSF (ambas salas)")
+            )
+            ts_use = ts_s1 if sala_obj == "sala_1" else (ts_s2 if sala_obj == "sala_2" else ts_global)
+            lineas.append(
+                f"- ALERTA ÚLTIMO DÍA OPERATIVO ({fmt_fin}): Sin marcajes registrados en {etiq} "
+                f"(horario operativo graficado en 0). Último marcaje registrado: {ts_use}. {_fmt_motivo(f_fin_iso, sala_obj)}"
+            )
+        elif sala_obj == "todos":
+            if st_fin["s1"]:
+                lineas.append(
+                    f"- ALERTA ÚLTIMO DÍA OPERATIVO ({fmt_fin}): Sin marcajes registrados en Sala 1 (CSF02 2° Piso) "
+                    f"(horario operativo graficado en 0). Último marcaje registrado: {ts_s1}. {_fmt_motivo(f_fin_iso, 'sala_1')}"
+                )
+            if st_fin["s2"]:
+                lineas.append(
+                    f"- ALERTA ÚLTIMO DÍA OPERATIVO ({fmt_fin}): Sin marcajes registrados en Sala 2 (CSF04 Pecera 1° Piso) "
+                    f"(horario operativo graficado en 0). Último marcaje registrado: {ts_s2}. {_fmt_motivo(f_fin_iso, 'sala_2')}"
+                )
+
+        vacios_sin_motivo: List[str] = []
+        for f_iso in sorted(por_fecha.keys(), reverse=True):
+            st = por_fecha[f_iso]
+            if not (st["g"] or st["s1"] or st["s2"]):
+                continue
+            if _ctx_cal_txt(f_iso):
+                continue
+            sub_ev = sala_obj if sala_obj != "todos" else ("todos" if st["g"] else ("sala_1" if st["s1"] else "sala_2"))
+            if _incs_para(f_iso, sub_ev):
+                continue
+            etiq_sub = "Ambas salas" if st["g"] and sala_obj == "todos" else ("Sala 1" if (sala_obj == "sala_1" or st["s1"]) else "Sala 2")
+            vacios_sin_motivo.append(f"{_fmt_fecha_cl(f_iso)} ({etiq_sub})")
+
+        if vacios_sin_motivo:
+            muestra = ", ".join(vacios_sin_motivo[:6])
+            extra = f" (+{len(vacios_sin_motivo) - 6} más)" if len(vacios_sin_motivo) > 6 else ""
+            lineas.append(
+                f"- Días operativos sin marcajes y sin motivo registrado en el período ({len(vacios_sin_motivo)}): {muestra}{extra}."
+            )
+
+    if sala_obj == "todos":
+        lineas.append(f"- Últimos marcajes registrados por sala: Sala 1 (CSF02) {ts_s1} | Sala 2 (CSF04 Pecera) {ts_s2}.")
+    elif sala_obj == "sala_1":
+        lineas.append(f"- Último marcaje registrado Sala 1 (CSF02): {ts_s1}.")
+    else:
+        lineas.append(f"- Último marcaje registrado Sala 2 (CSF04 Pecera): {ts_s2}.")
+
+    return "\n".join(lineas)
 
 async def _resolver_datos_grafico_contexto_interno(
     grafico_id: str,
@@ -65,34 +325,61 @@ async def _resolver_datos_grafico_contexto_interno(
     marcajes = filtros.get("marcajes") or "todos"
     sector = filtros.get("sector")
     tipo_vehiculo = filtros.get("tipo_vehiculo")
+    incluir_pausas_bano = bool(filtros.get("incluir_pausas_bano", True))
+    desduplicar_rafagas = bool(filtros.get("desduplicar_rafagas", True))
+    incluir_funcionarios = bool(filtros.get("incluir_funcionarios", True))
+    incluir_sin_identificar = bool(filtros.get("incluir_sin_identificar", True))
     nombre_espacio = "Estacionamiento CSF" if espacio_id == 2 else "Biblioteca CSF"
 
-    # Capacidades físicas y calibradas oficiales Campus San Francisco
-    CAP_SALA_1 = 150  # CSF02 2° Piso (Estudio y Biblioteca con Locker)
-    CAP_SALA_2 = 126  # CSF04 1° Piso (Pecera de Estudio 24h régimen habitual)
-    CAP_SALA_2_NOCTURNA = 226  # CSF04 1° Piso durante régimen de exámenes nocturnos
-    CAP_CAMPUS_CALIBRADA = 276  # Suma calibrada 150 + 126
-    CAP_CAMPUS_REFERENCIA = 350  # Capacidad máxima histórica de referencia
-
-    if sala and ("1" in str(sala) or "csf02" in str(sala).lower()):
-        cap_activa = CAP_SALA_1
-        sala_desc = "Sala 1 — CSF02 (2° Piso, Estudio y Biblioteca con Locker: 150 asientos calibrados)"
-    elif sala and ("2" in str(sala) or "csf04" in str(sala).lower() or "pecera" in str(sala).lower()):
-        cap_activa = CAP_SALA_2_NOCTURNA if regimen_horario == "24h_delta" else CAP_SALA_2
-        sala_desc = f"Sala 2 — CSF04 Pecera (1° Piso, Estudio 24h: {cap_activa} asientos calibrados)"
+    # Capacidades reales desde BD (con respaldo determinista para pruebas mock)
+    caps_veh = {"CSF11": 40, "CSF21": 50, "CHS01": 35, "total": 125}
+    if espacio_id == 1:
+        caps = await obtener_capacidades_salas_cacheadas(db, espacio_id=1)
+        CAP_SALA_1 = int(caps.get("sala_1") or 150)
+        CAP_SALA_2 = int(caps.get("sala_2") or 126)
+        CAP_CAMPUS_CALIBRADA = int(caps.get("total") or (CAP_SALA_1 + CAP_SALA_2))
+        if sala and ("1" in str(sala) or "csf02" in str(sala).lower()):
+            cap_activa = CAP_SALA_1
+            sala_desc = f"Sala 1 — CSF02 (2° Piso, Estudio y Biblioteca con Locker: {CAP_SALA_1} asientos)"
+        elif sala and ("2" in str(sala) or "csf04" in str(sala).lower() or "pecera" in str(sala).lower()):
+            cap_activa = CAP_SALA_2
+            sala_desc = f"Sala 2 — CSF04 Pecera (1° Piso, Estudio 24h: {CAP_SALA_2} asientos)"
+        else:
+            cap_activa = CAP_CAMPUS_CALIBRADA
+            sala_desc = f"Campus San Francisco Completo (Sala 1: {CAP_SALA_1} as. + Sala 2: {CAP_SALA_2} as. = {CAP_CAMPUS_CALIBRADA} asientos)"
     else:
-        cap_activa = CAP_CAMPUS_CALIBRADA
-        sala_desc = "Campus San Francisco Completo (Sala 1: 150 as. + Sala 2: 126 as. = 276 asientos calibrados)"
+        CAP_SALA_1 = 150
+        CAP_SALA_2 = 126
+        try:
+            caps_veh_bd = await VehicleService._obtener_capacidades_sectores_vehiculares(db, 2)
+            if isinstance(caps_veh_bd, dict) and caps_veh_bd.get("total"):
+                caps_veh = caps_veh_bd
+        except Exception:
+            pass
+        sector_cod = _normalizar_sector_prophet_veh(sector)
+        if sector_cod != "todos" and sector_cod in caps_veh:
+            cap_activa = int(caps_veh[sector_cod])
+            sala_desc = f"Sector {sector_cod} ({cap_activa} plazas)"
+        else:
+            cap_activa = int(caps_veh.get("total") or 125)
+            sala_desc = (
+                f"Estacionamiento Campus San Francisco Completo "
+                f"(CSF11: {caps_veh.get('CSF11', 40)} + CSF21: {caps_veh.get('CSF21', 50)} + CHS01: {caps_veh.get('CHS01', 35)} = {cap_activa} plazas)"
+            )
 
-    regimen_desc = ""
-    if regimen_horario == "24h_delta":
-        regimen_desc = "Régimen Horario Activo: Turno Nocturno Delta 24h (L-J 23:00-07:00 h | Vie 22:00-06:00 h en Sala 2 Pecera, 226 asientos)."
-    elif regimen_horario == "examenes":
+    reg_tokens = {t.strip().lower() for t in str(regimen_horario or "todos").split(",") if t.strip()}
+    if "dentro_horario" in reg_tokens and "24h_delta" in reg_tokens:
+        regimen_desc = "Régimen Horario Activo: Horario Oficial Regular + Extensión Nocturna Delta 24h (Sala 2 Pecera)."
+    elif "24h_delta" in reg_tokens or "nocturno_24h" in reg_tokens:
+        regimen_desc = "Régimen Horario Activo: Turno Nocturno Delta 24h (Sala 2 Pecera)."
+    elif "dentro_horario" in reg_tokens or "diurno" in reg_tokens or "regular" in reg_tokens:
+        regimen_desc = "Régimen Horario Activo: Horario Oficial Regular."
+    elif "fuera_horario" in reg_tokens:
+        regimen_desc = "Régimen Horario Activo: Fuera de Horario Oficial."
+    elif "examen" in reg_tokens or "extendido_24h" in reg_tokens:
         regimen_desc = "Régimen Horario Activo: Extensión Horaria Especial Exámenes."
-    elif regimen_horario == "diurno":
-        regimen_desc = "Régimen Horario Activo: Diurno Habitual (07:00 a 20:30 h)."
     else:
-        regimen_desc = "Régimen Horario Activo: Ciclo Continuo 24 Horas."
+        regimen_desc = "Régimen Horario Activo: Todos los horarios."
 
     detalle_hardware_torniquetes = (
         "Puntos de Control Físico (4 canales activos CSF):\n"
@@ -105,6 +392,11 @@ async def _resolver_datos_grafico_contexto_interno(
     hitos_calendario = await obtener_contexto_calendario_rango(db, d_ini, d_fin, espacio_id=espacio_id)
     resumen_hechos = await obtener_resumen_hechos_institucionales(db, d_ini, d_fin, espacio_id=espacio_id)
     contexto_hitos = resumen_hechos
+    es_presencia_bib = espacio_id == 1 and any(k in slug for k in ["presencia_intervalos", "aforo_presencia", "realtime_presence"])
+    if espacio_id == 1 and not es_presencia_bib:
+        alerta_bib = await _construir_alerta_operativa_biblioteca(db, d_ini, d_fin, sala, filtros)
+        if alerta_bib:
+            contexto_hitos = f"{contexto_hitos}\n{alerta_bib}"
 
     component = None
     payload = None
@@ -148,21 +440,34 @@ async def _resolver_datos_grafico_contexto_interno(
                 cap = cap_activa if cap_activa else 125
                 max_val = 0
                 max_time = "N/D"
+                max_csf11 = 0
+                max_csf21 = 0
+                max_chs01 = 0
                 tot_in = 0
                 tot_out = 0
                 for r in (data or []):
                     tot_in += r.get("entradas", 0) or r.get("ingresos", 0) or 0
                     tot_out += r.get("salidas", 0) or 0
                     val = r.get("vehiculos_presentes") or r.get("personas_unicas") or 0
+                    max_csf11 = max(max_csf11, r.get("vehiculos_csf11") or 0)
+                    max_csf21 = max(max_csf21, r.get("vehiculos_csf21") or 0)
+                    max_chs01 = max(max_chs01, r.get("vehiculos_chs01") or 0)
                     if val > max_val:
                         max_val = val
                         max_time = r.get("bucket", "N/D")
                 pct_cap = (max_val / cap * 100) if cap else 0
+                desglose_sec_txt = ""
+                if _normalizar_sector_prophet_veh(sector) == "todos":
+                    desglose_sec_txt = (
+                        f"\n- Picos por sector: CSF11={max_csf11}/{caps_veh.get('CSF11', 40)} veh | "
+                        f"CSF21={max_csf21}/{caps_veh.get('CSF21', 50)} veh | "
+                        f"CHS01={max_chs01}/{caps_veh.get('CHS01', 35)} veh."
+                    )
                 resumen_metricas = (
                     f"Gráfico enfocado: Curva de Presencia Vehicular por Intervalos de Sesión ({nombre_espacio}).\n"
-                    f"- Metodología: Conteo de patentes activas [entrada <= T y salida >= T] por vehículo único.\n"
-                    f"- Entorno y Capacidad Calibrada: {cap} plazas ({sector or 'Todos los Sectores'}).\n"
-                    f"- Pico máximo de presencia vehicular simultánea: {max_val} vehículos ({pct_cap:.1f}% sobre capacidad calibrada de {cap} plazas) el {max_time}.\n"
+                    f"- Metodología: Conteo minuto a minuto de patentes activas [entrada <= T < salida] por vehículo único.\n"
+                    f"- Entorno y Capacidad Calibrada: {cap} plazas ({sala_desc}).\n"
+                    f"- Pico máximo de presencia vehicular simultánea: {max_val} vehículos ({pct_cap:.1f}% sobre capacidad calibrada de {cap} plazas) el {max_time}.{desglose_sec_txt}\n"
                     f"- Total de ingresos vehiculares en el período: {tot_in:,}.\n"
                     f"- Total de salidas vehiculares en el período: {tot_out:,}.\n"
                     f"- Intervalos horarios evaluados: {len(data or [])} registros.\n"
@@ -186,32 +491,71 @@ async def _resolver_datos_grafico_contexto_interno(
                     carrera=carrera,
                     facultad=facultad,
                     cohorte=cohorte,
+                    incluir_pausas_bano=incluir_pausas_bano,
+                    desduplicar_rafagas=desduplicar_rafagas,
+                    incluir_funcionarios=incluir_funcionarios,
+                    incluir_sin_identificar=incluir_sin_identificar,
                 )
                 component = "OccupancyAreaChart"
                 payload = data
                 cap = cap_activa
                 max_val = 0
                 max_time = "N/D"
+                s1_en_pico = 0
+                s2_en_pico = 0
+                max_s1 = 0
+                max_time_s1 = "N/D"
+                max_s2 = 0
+                max_time_s2 = "N/D"
                 tot_in = 0
+                tot_in_s1 = 0
+                tot_in_s2 = 0
                 tot_out = 0
                 for r in (data or []):
                     tot_in += r.get("ingresos", 0) or r.get("entradas", 0) or 0
+                    tot_in_s1 += r.get("ingresos_sala1", 0) or 0
+                    tot_in_s2 += r.get("ingresos_sala2", 0) or 0
                     tot_out += r.get("salidas", 0) or 0
                     val = r.get("personas_unicas") or 0
+                    v_s1 = r.get("personas_sala1") or 0
+                    v_s2 = r.get("personas_sala2") or 0
+                    b_str = r.get("bucket", "N/D")
                     if val > max_val:
                         max_val = val
-                        max_time = r.get("bucket", "N/D")
+                        max_time = b_str
+                        s1_en_pico = v_s1
+                        s2_en_pico = v_s2
+                    if v_s1 > max_s1:
+                        max_s1 = v_s1
+                        max_time_s1 = b_str
+                    if v_s2 > max_s2:
+                        max_s2 = v_s2
+                        max_time_s2 = b_str
                 pct_cap = (max_val / cap * 100) if cap else 0
+                pct_s1 = (max_s1 / CAP_SALA_1 * 100) if CAP_SALA_1 else 0
+                pct_s2 = (max_s2 / CAP_SALA_2 * 100) if CAP_SALA_2 else 0
+
+                alerta_op = await _construir_alerta_operativa_biblioteca(
+                    db, d_ini, d_fin, sala, filtros, curva_presencia=data
+                )
+                ctx_completo = f"{contexto_hitos}\n{alerta_op}" if alerta_op else contexto_hitos
+                desglose_salas_txt = ""
+                if not sala:
+                    desglose_salas_txt = (
+                        f"\n- Desglose en pico combinado ({max_time}): Sala 1 = {s1_en_pico} personas | Sala 2 = {s2_en_pico} personas.\n"
+                        f"- Pico individual Sala 1 (CSF02 2° Piso, {CAP_SALA_1} asientos): {max_s1} personas ({pct_s1:.1f}%) el {max_time_s1}; ingresos acumulados: {tot_in_s1:,}.\n"
+                        f"- Pico individual Sala 2 (CSF04 Pecera 1° Piso, {CAP_SALA_2} asientos): {max_s2} personas ({pct_s2:.1f}%) el {max_time_s2}; ingresos acumulados: {tot_in_s2:,}."
+                    )
                 resumen_metricas = (
                     f"Gráfico enfocado: Curva de Presencia Física en Sala por Intervalos de Sesión ({nombre_espacio}).\n"
                     f"- Metodología: Conteo de sesiones activas [entrada <= T y salida >= T] por usuario único.\n"
-                    f"- Entorno y Capacidad Calibrada: {sala_desc}.\n"
+                    f"- Entorno y Capacidad: {sala_desc}.\n"
                     f"- {regimen_desc}\n"
-                    f"- Pico máximo de presencia física simultánea: {max_val} personas ({pct_cap:.1f}% sobre capacidad calibrada de {cap} asientos) el {max_time}.\n"
+                    f"- Pico máximo de presencia física simultánea: {max_val} personas ({pct_cap:.1f}% sobre capacidad de {cap} asientos) el {max_time}.{desglose_salas_txt}\n"
                     f"- Total de ingresos registrados en el período: {tot_in:,}.\n"
                     f"- Total de salidas registradas en el período: {tot_out:,}.\n"
                     f"- Intervalos horarios evaluados: {len(data or [])} registros.\n"
-                    f"{contexto_hitos}"
+                    f"{ctx_completo}"
                 )
                 table_data = data[:50] if isinstance(data, list) else None
 
@@ -233,7 +577,7 @@ async def _resolver_datos_grafico_contexto_interno(
                 )
                 component = "OccupancyAreaChart"
                 payload = data
-                cap = 180
+                cap = cap_activa if cap_activa else 125
                 max_val = 0
                 max_time = "N/D"
                 tot_in = 0
@@ -273,6 +617,10 @@ async def _resolver_datos_grafico_contexto_interno(
                     carrera=carrera,
                     facultad=facultad,
                     cohorte=cohorte,
+                    incluir_pausas_bano=incluir_pausas_bano,
+                    desduplicar_rafagas=desduplicar_rafagas,
+                    incluir_funcionarios=incluir_funcionarios,
+                    incluir_sin_identificar=incluir_sin_identificar,
                 )
                 component = "OccupancyAreaChart"
                 payload = data
@@ -303,27 +651,31 @@ async def _resolver_datos_grafico_contexto_interno(
 
         # 2a. Pronóstico Prophet de Presencia Física
         elif any(k in slug for k in ["prophet_presencia", "presencia_prophet"]):
-            data = await get_prophet_presence_forecast(db, sala=sala or "todas")
+            data = await get_prophet_presence_forecast(db, sala=_normalizar_sala_prophet_bib(sala))
             component = "ForecastLineChart"
             payload = data
             pron = data.get("pronostico_7d") or data.get("forecast") or []
             max_p = max((pt.get("yhat", 0) for pt in pron), default=0)
             avg_p = sum(pt.get("yhat", 0) for pt in pron) / len(pron) if pron else 0
             m_stat = data.get("model_status", {})
+            desglose_bu = _resumen_desglose_prophet(data, 1)
             resumen_metricas = (
-                f"Gráfico enfocado: Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado).\n"
-                f"- Modelo: Prophet con saturación sigmoide acotada a capacidad física ({data.get('capacidad_asientos')} asientos).\n"
+                f"Gráfico enfocado: Pronóstico Continuo de Presencia Física en Sala ({m_stat.get('model_type', 'Prophet Jerárquico Bottom-Up')}).\n"
+                f"- Modelo: Prophet horario condicional entrenado sobre horario operativo con capacidad física de referencia ({data.get('capacidad_asientos')} asientos).\n"
                 f"- Alcance: 7 días históricos de presencia por intervalos y 7 días proyectados.\n"
                 f"- Pico de ocupación física proyectado: {max_p:.0f} ocupantes simultáneos.\n"
-                f"- Demanda media: {avg_p:.0f} ocupantes.\n"
+                f"- Demanda media: {avg_p:.0f} ocupantes.{desglose_bu}\n"
                 f"- Estado del modelo: {m_stat.get('status', 'ok')} ({m_stat.get('model_date', 'reciente')}).\n"
                 f"{contexto_hitos}"
             )
             table_data = pron[:40] if pron else None
 
-        # 2. Pronóstico Prophet Flujo
+        # 2. Pronóstico Prophet Continuo (Presencia Física)
         elif any(k in slug for k in ["prophet", "pronostico_prophet", "prediccion_prophet"]):
-            data = await get_prophet_forecast(db, recinto="vehicular" if espacio_id == 2 else "biblioteca")
+            if espacio_id == 2:
+                data = await get_prophet_forecast(db, recinto="vehicular", sala=_normalizar_sector_prophet_veh(sector))
+            else:
+                data = await get_prophet_presence_forecast(db, sala=_normalizar_sala_prophet_bib(sala))
             component = "ForecastLineChart"
             payload = data
             pron = data.get("pronostico_7d") or data.get("forecast") or []
@@ -338,12 +690,16 @@ async def _resolver_datos_grafico_contexto_interno(
                     max_t = pt.get("bucket", pt.get("ds", "N/D"))
             avg_p = (sum_p / len(pron)) if pron else 0
             m_stat = data.get("model_status", {})
+            cap_ref = data.get("capacidad_asientos") or data.get("capacidad") or cap_activa
+            unidad_cap = "plazas" if espacio_id == 2 else "asientos"
+            unidad_occ = "vehículos presentes" if espacio_id == 2 else "ocupantes simultáneos"
+            desglose_bu = _resumen_desglose_prophet(data, espacio_id)
             resumen_metricas = (
-                f"Gráfico enfocado: Pronóstico Continuo Prophet ({nombre_espacio}).\n"
-                f"- Alcance: 7 días de serie histórica y 7 días de proyección futura continua.\n"
-                f"- Capacidad institucional calibrada de referencia: {cap_activa} asientos ({sala_desc}).\n"
-                f"- Pico proyectado más elevado: {max_p:.0f} ocupantes proyectados en fecha/hora {max_t}.\n"
-                f"- Demanda promedio estimada en el horizonte: {avg_p:.0f} ocupantes.\n"
+                f"Gráfico enfocado: Pronóstico Continuo Prophet ({nombre_espacio} — {m_stat.get('model_type', 'Prophet Jerárquico')}).\n"
+                f"- Alcance: 7 días de serie histórica de presencia y 7 días de proyección futura continua.\n"
+                f"- Capacidad institucional calibrada de referencia: {cap_ref} {unidad_cap} ({sala_desc}).\n"
+                f"- Pico proyectado más elevado: {max_p:.0f} {unidad_occ} en fecha/hora {max_t}.\n"
+                f"- Demanda promedio estimada en el horizonte: {avg_p:.0f} {unidad_occ}.{desglose_bu}\n"
                 f"- Estado del modelo: {m_stat.get('status', 'ok')} (Entrenado el {m_stat.get('model_date', 'reciente')}).\n"
                 f"{contexto_hitos}"
             )
@@ -382,6 +738,10 @@ async def _resolver_datos_grafico_contexto_interno(
                     carrera=carrera,
                     facultad=facultad,
                     cohorte=cohorte,
+                    incluir_pausas_bano=incluir_pausas_bano,
+                    desduplicar_rafagas=desduplicar_rafagas,
+                    incluir_funcionarios=incluir_funcionarios,
+                    incluir_sin_identificar=incluir_sin_identificar,
                 )
             component = "HourlyBarChart"
             payload = data
@@ -431,6 +791,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 carrera=carrera,
                 facultad=facultad,
                 cohorte=cohorte,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "HeatmapChart"
             payload = data
@@ -466,6 +830,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 marcajes=marcajes,
                 carrera=carrera,
                 facultad=facultad,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "RoomComparisonPlotlyChart"
             payload = data
@@ -479,12 +847,11 @@ async def _resolver_datos_grafico_contexto_interno(
             pct_s1 = res_s1.get("porcentaje_afluencia", 0)
             pct_s2 = res_s2.get("porcentaje_afluencia", 0)
             predom = "Sala 1 (CSF02 2° Piso)" if tot_s1 >= tot_s2 else "Sala 2 (CSF04 Pecera 1° Piso)"
-            cap_s2_efectiva = CAP_SALA_2_NOCTURNA if regimen_horario == "24h_delta" else CAP_SALA_2
             resumen_metricas = (
                 f"Gráfico enfocado: Comparativa de Afluencia entre Salas (Sala 1 vs Sala 2).\n"
-                f"- Sala 1 (CSF02 2° Piso, Estudio y Biblioteca con Locker): {tot_s1:,} accesos ({u_s1:,} alumnos únicos, {pct_s1:.1f}% de afluencia, capacidad calibrada: {CAP_SALA_1} asientos).\n"
-                f"- Sala 2 (CSF04 Pecera 1° Piso, Estudio 24h): {tot_s2:,} accesos ({u_s2:,} alumnos únicos, {pct_s2:.1f}% de afluencia, capacidad calibrada: {cap_s2_efectiva} asientos).\n"
-                f"- Capacidad combinada calibrada: {CAP_CAMPUS_CALIBRADA} asientos (referencia histórica agregada: {CAP_CAMPUS_REFERENCIA} asientos).\n"
+                f"- Sala 1 (CSF02 2° Piso, Estudio y Biblioteca con Locker): {tot_s1:,} accesos ({u_s1:,} alumnos únicos, {pct_s1:.1f}% de afluencia, capacidad: {CAP_SALA_1} asientos).\n"
+                f"- Sala 2 (CSF04 Pecera 1° Piso, Estudio 24h): {tot_s2:,} accesos ({u_s2:,} alumnos únicos, {pct_s2:.1f}% de afluencia, capacidad: {CAP_SALA_2} asientos).\n"
+                f"- Capacidad combinada: {CAP_CAMPUS_CALIBRADA} asientos.\n"
                 f"- Sala predominante en el período: {predom}.\n"
                 f"- {detalle_hardware_torniquetes}\n"
                 f"{contexto_hitos}"
@@ -508,6 +875,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 sala=sala,
                 carrera=carrera,
                 facultad=facultad,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "DoorUsagePlotlyChart"
             payload = data
@@ -543,6 +914,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 sala=sala,
                 carrera=carrera,
                 facultad=facultad,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "CheckinDistributionPlotlyChart"
             payload = data
@@ -575,6 +950,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 marcajes=marcajes,
                 carrera=carrera,
                 facultad=facultad,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "DailyAverageAttendancePlotlyChart"
             payload = data
@@ -626,6 +1005,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 sala=sala,
                 carrera=carrera,
                 facultad=facultad,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "WeeklyEvolutionPlotlyChart"
             payload = data
@@ -675,6 +1058,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 carrera=carrera,
                 facultad=facultad,
                 cohorte=cohorte,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "CurricularDistributionPlotlyChart"
             payload = data
@@ -768,6 +1155,10 @@ async def _resolver_datos_grafico_contexto_interno(
                 sala=sala,
                 carrera=carrera,
                 facultad=facultad,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             component = "VisitProfilesPlotlyChart"
             payload = data
@@ -906,11 +1297,13 @@ async def _resolver_datos_grafico_contexto_interno(
             tot_ing = kpis.get("total_ingresos", 0)
             horas_noct = kpis.get("horas_estudio_nocturnas", 0)
             est_noct = kpis.get("estudiantes_nocturnos_unicos", 0)
+            cap_camp = int((data.get("campana") or {}).get("capacidad_asientos") or CAP_SALA_2)
+            bloque_lbl = data.get("bloque_horario_label") or "Extensión Nocturna 24h"
             resumen_metricas = (
-                f"Gráfico enfocado: Campaña 24 Horas & Análisis de Justificación Operativa (Sala 2 CSF04 Pecera: {CAP_SALA_2_NOCTURNA} Asientos calibrados).\n"
-                f"- Evaluación de demanda nocturna (L-J 23:00 a 07:00 h | Vie 22:00 a 06:00 h) durante régimen de exámenes.\n"
+                f"Gráfico enfocado: Campaña 24 Horas & Análisis de Justificación Operativa (Sala 2 CSF04 Pecera: {cap_camp} Asientos).\n"
+                f"- Bloque horario evaluado ({bloque_lbl}): ver detalle exacto de Campaña 24 Horas en los hechos institucionales.\n"
                 f"- Aporte Nocturno (Delta 24h): {pct_delta:.2f}% ({ing_noct:,} de {tot_ing:,} accesos totales).\n"
-                f"- Concurrencia Máxima Simultánea: {pico.get('aforo_maximo', 0)} alumnos ({pico.get('tasa_ocupacion_asientos_pct', 0):.1f}% sobre 226 asientos, hora pico: {pico.get('hora_pico', 'N/D')}).\n"
+                f"- Concurrencia Máxima Simultánea: {pico.get('aforo_maximo', 0)} alumnos ({pico.get('tasa_ocupacion_asientos_pct', 0):.1f}% sobre {cap_camp} asientos, hora pico: {pico.get('hora_pico', 'N/D')}).\n"
                 f"- Horas de Estudio Nocturnas: {horas_noct:,.0f} hrs ({est_noct:,} estudiantes únicos con permanencia nocturna).\n"
                 f"- Segmentación Curricular Clave: {carr_prin.get('carrera', 'N/D')} ({carr_prin.get('porcentaje', 0):.1f}% del uso nocturno, {carr_prin.get('visitas', 0):,} visitas).\n"
                 f"- Puntos de Control Físico Pecera:\n"
@@ -1004,17 +1397,42 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
             return "PeakValleyPlotlyChart", data, res_m, None, data[:40] if isinstance(data, list) else None
 
     elif tool_name == "consultar_proyeccion_prophet":
-        data = await get_prophet_forecast(db, recinto="vehicular" if espacio == 2 else "biblioteca")
+        filtros_req = (req.filtros if req else None) or {}
+        if espacio == 2:
+            sector_norm = _normalizar_sector_prophet_veh(args.get("sector") or filtros_req.get("sector"))
+            data = await get_prophet_forecast(db, recinto="vehicular", sala=sector_norm)
+            unidad_cap, unidad_occ = "plazas", "vehículos presentes"
+        else:
+            sala_norm = _normalizar_sala_prophet_bib(args.get("sala") or filtros_req.get("sala"))
+            data = await get_prophet_presence_forecast(db, sala=sala_norm)
+            unidad_cap, unidad_occ = "asientos", "ocupantes simultáneos"
         pron = data.get("pronostico_7d") or data.get("forecast") or []
-        res_m = f"Proyección analítica con modelo Prophet calculada para los próximos 7 días ({len(pron)} puntos de pronóstico)."
+        max_p, max_t = 0.0, "N/D"
+        for pt in pron:
+            v = float(pt.get("yhat", 0) or pt.get("aforo_proyectado", 0) or 0)
+            if v > max_p:
+                max_p = v
+                max_t = str(pt.get("ds", pt.get("bucket", "N/D")))
+        cap_ref = data.get("capacidad_asientos") or data.get("capacidad") or (125 if espacio == 2 else 276)
+        desglose_bu = _resumen_desglose_prophet(data, espacio)
+        res_m = (
+            f"Proyección de presencia física con modelo Prophet Jerárquico calculada para los próximos 7 días ({len(pron)} puntos). "
+            f"Capacidad de referencia: {cap_ref} {unidad_cap}. Pico proyectado: {max_p:.0f} {unidad_occ} el {max_t}.{desglose_bu}"
+        )
         return "ForecastLineChart", data, res_m, None, pron[:40] if pron else None
 
     elif tool_name == "consultar_kpis_actuales":
+        filtros_req = req.filtros if req else None
         if espacio == 2:
             data = await VehicleService.get_parking_occupancy(db, espacio_id=2)
+            res_m = f"Métricas instantáneas actuales: {json.dumps(data, default=str)}."
         else:
-            data = await AttendanceService.get_occupancy_realtime(db, espacio_id=1)
-        res_m = f"Métricas instantáneas actuales: {json.dumps(data, default=str)}."
+            sala_req = (filtros_req or {}).get("sala")
+            data = await AttendanceService.get_occupancy_realtime(db, espacio_id=1, sala=sala_req)
+            alerta_op = await _construir_alerta_operativa_biblioteca(db, d_ini, d_fin, sala_req, filtros_req)
+            res_m = f"Métricas instantáneas actuales: {json.dumps(data, default=str)}."
+            if alerta_op:
+                res_m = f"{res_m}\n{alerta_op}"
         return "RawDataTable", data, res_m, None, [data] if isinstance(data, dict) else data
 
     elif tool_name == "consultar_distribucion_carreras":
@@ -1083,7 +1501,22 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
         if busqueda_arg:
             query_cal = query_cal.where(CalendarioAcademico.descripcion.ilike(f"%{busqueda_arg.strip()}%"))
 
-        filas_cal = (await db.execute(query_cal)).scalars().all()
+        filas_cal = [
+            c_row
+            for c_row in (await db.execute(query_cal)).scalars().all()
+            if not (
+                str(getattr(c_row, "fuente", "") or "") == "contingencia_manual"
+                and not any([
+                    bool(c_row.is_break),
+                    bool(c_row.is_holiday),
+                    bool(c_row.suspension_actividades),
+                    bool(c_row.is_exam_period),
+                    bool(getattr(c_row, "is_strike_federado", False)),
+                    bool(getattr(c_row, "is_strike_carrera", False)),
+                    bool(getattr(c_row, "is_class_milestone", False)),
+                ])
+            )
+        ]
 
         if espacio == 2:
             datos_flujo = await VehicleService.get_daily_summary(session=db, espacio_id=2, fecha_inicio=d_ini, fecha_fin=d_fin)
@@ -1299,6 +1732,12 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
 
         prom_diario = round(tot_in / len(rows), 1) if rows else 0
         hitos_texto = "\n".join(hitos_cal) if hitos_cal else "Días hábiles regulares del calendario académico institucional."
+        alerta_hist = ""
+        if espacio == 1:
+            filtros_req = req.filtros if req else None
+            alerta_hist = await _construir_alerta_operativa_biblioteca(
+                db, d_ini, d_fin, (filtros_req or {}).get("sala"), filtros_req
+            )
 
         res_m = (
             f"MÉTRICAS OFICIALES CALCULADAS DESDE LA BASE DE DATOS INSTITUCIONAL (AÑO ACADÉMICO 2026):\n"
@@ -1314,6 +1753,8 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
             f"Contexto del Calendario Académico UCT:\n"
             f"{hitos_texto}"
         )
+        if alerta_hist:
+            res_m = f"{res_m}\n{alerta_hist}"
         return "OccupancyAreaChart", rows, res_m, None, rows
 
 

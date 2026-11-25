@@ -17,6 +17,7 @@ from app.services.servicio_chat_persistente import (
     crear_conversacion,
     obtener_conversacion,
     agregar_mensaje,
+    obtener_ultimos_mensajes_contexto,
     validar_cuota_ia_usuario,
 )
 from app.services.chat.auditoria_chat import registrar_auditoria_chat
@@ -101,10 +102,12 @@ async def procesar_consulta_analitica(
 
     # Resolución o creación de la conversación persistente
     conversacion = None
+    conversacion_existente = False
     if req.conversacion_id:
         try:
             conv_uuid = uuid.UUID(req.conversacion_id)
             conversacion = await obtener_conversacion(db, conv_uuid, user_id, cargar_mensajes=False)
+            conversacion_existente = conversacion is not None
         except Exception:
             conversacion = None
 
@@ -116,6 +119,24 @@ async def procesar_consulta_analitica(
             prompt_inicial=prompt_text,
         )
 
+    # Recuperar memoria conversacional previa ANTES de guardar el turno actual
+    historial_previo = []
+    if conversacion_existente:
+        mensajes_previos = await obtener_ultimos_mensajes_contexto(db, conversacion.id, limite=12)
+        for m in mensajes_previos:
+            txt_m = (m.contenido or "").strip()
+            if not txt_m:
+                continue
+            if len(txt_m) > 1200:
+                txt_m = txt_m[:1200] + "..."
+            historial_previo.append({
+                "role": "assistant" if m.rol == "assistant" else "user",
+                "content": txt_m,
+            })
+
+    llm_client = await build_llm_client(db, req.espacio_id)
+    modelo_efectivo = getattr(llm_client, "default_model", None) or req.model
+
     # Persistencia inmediata del mensaje del usuario
     await agregar_mensaje(
         db,
@@ -123,10 +144,9 @@ async def procesar_consulta_analitica(
         rol="user",
         tipo="text",
         contenido=prompt_text,
-        modelo=req.model,
+        modelo=modelo_efectivo,
     )
 
-    llm_client = await build_llm_client(db, req.espacio_id)
     nombre_espacio = "Estacionamiento CSF" if req.espacio_id == 2 else "Biblioteca CSF"
 
     # Enrutamiento inteligente: verificar si la pregunta aplica al gráfico enfocado o es una consulta libre/fechas
@@ -135,17 +155,15 @@ async def procesar_consulta_analitica(
         texto_bajo = prompt_text.lower()
         slug_ctx = re.sub(r'[^a-z0-9_]', '_', req.grafico_contexto.lower()).strip('_')
         es_consulta_fechas = bool(re.search(r'(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|\d{1,2}\s+(?:al|hasta)\s+\d{1,2})', texto_bajo))
-        
-        if "sala" in slug_ctx:
-            debe_usar_grafico_contexto = any(k in texto_bajo for k in ["sala", "pecera", "csf02", "csf04", "piso"])
-        elif "camara" in slug_ctx:
-            debe_usar_grafico_contexto = any(k in texto_bajo for k in ["camara", "cámara", "anpr"])
-        elif "flota" in slug_ctx:
-            debe_usar_grafico_contexto = any(k in texto_bajo for k in ["flota", "marca", "modelo", "vehiculo", "vehículo"])
-        elif "torniquete" in slug_ctx:
-            debe_usar_grafico_contexto = any(k in texto_bajo for k in ["torniquete", "puerta", "acceso", "universal"])
-        elif es_consulta_fechas:
+
+        if es_consulta_fechas:
             debe_usar_grafico_contexto = False
+        elif "camara" in slug_ctx:
+            debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["flota", "marca", "intercampus", "cluster"])
+        elif "flota" in slug_ctx:
+            debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["camara", "cámara", "anpr", "intercampus", "cluster"])
+        elif "torniquete" in slug_ctx:
+            debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["carrera", "facultad", "prophet", "pronostico", "pronóstico"])
         else:
             debe_usar_grafico_contexto = True
 
@@ -182,18 +200,19 @@ async def procesar_consulta_analitica(
                 fallback_fig = None
                 fallback_table = None
         else:
-            # Consulta libre analizada con Gemini Function Calling y anio activo dinamico
+            # Consulta libre analizada con Function Calling y anio activo dinamico
             anio_activo = await obtener_anio_activo_espacio(db, req.espacio_id)
             analysis = await llm_client.analyze_query_with_tools(
                 prompt=prompt_text,
                 espacio_id=req.espacio_id,
                 grafico_contexto=req.grafico_contexto if debe_usar_grafico_contexto else None,
-                model_name=req.model,
+                model_name=modelo_efectivo,
                 fecha_inicio=req.fecha_inicio,
                 fecha_fin=req.fecha_fin,
                 periodo_label=req.periodo_label,
                 filtros=req.filtros,
                 anio_referencia=anio_activo,
+                history=historial_previo,
             )
             is_tool_call = analysis.get("type") == "tool_call"
             tool_name = analysis.get("tool_name", "consultar_aforo_historico") if is_tool_call else "text"
@@ -226,9 +245,12 @@ async def procesar_consulta_analitica(
                 "2. UTILIZA EXCLUSIVAMENTE los números, totales, promedios y desgloses diarios calculados arriba. "
                 "ESTÁ TERMINANTEMENTE PROHIBIDO inventar cifras o aproximar valores no provistos en las métricas oficiales.\n"
                 "3. Si un día del período tuvo 0 ingresos o la base de datos reporta que estuvo cerrado/sin actividad, explícalo con total transparencia.\n"
-                "4. Menciona e integra activamente los hechos institucionales reportados arriba (Feriados Oficiales, Semanas de Receso, Vacaciones, Exámenes/Solemnes, Hitos de Clases, Suspensiones, Paros y Contingencias, y Campaña de Horario 24 Horas) para justificar y correlacionar analíticamente el comportamiento de la concurrencia.\n"
-                f"5. DIRECTIVA DE AISLAMIENTO: Estás operando en el módulo {nombre_espacio}. Prohibido mencionar o inventar información del módulo contrario.\n"
-                "6. Cero emojis."
+                "4. Cuando las métricas incluyan desglose individual de Sala 1 (CSF02) y Sala 2 (CSF04 Pecera) junto al total combinado, reporta explícitamente ambos niveles (total combinado y valores individuales por sala).\n"
+                "5. Cuando exista una sección 'ESTADO OPERATIVO Y ALERTAS DE MARCAJES' indicando días sin marcajes registrados, último marcaje por sala o incidencias operativas, destácalo explícitamente en el análisis con sus fechas y horas exactas.\n"
+                "6. Menciona e integra activamente los hechos institucionales reportados arriba (Feriados Oficiales, Semanas de Receso, Vacaciones, Exámenes/Solemnes, Hitos de Clases, Suspensiones, Paros y Contingencias, y Campaña de Horario 24 Horas con sus horarios exactos) para justificar la concurrencia.\n"
+                "7. Si el usuario hace referencia a mensajes, gráficos o respuestas anteriores de esta conversación, mantén continuidad utilizando el historial previo.\n"
+                f"8. DIRECTIVA DE AISLAMIENTO: Estás operando en el módulo {nombre_espacio}. Prohibido mencionar o inventar información del módulo contrario.\n"
+                "9. Cero emojis."
             )
         else:
             summary_prompt = prompt_text
@@ -250,12 +272,13 @@ async def procesar_consulta_analitica(
                     }
                     yield f"data: {json.dumps(meta_payload, default=str)}\n\n"
 
-                    # Frames sucesivos: tokens narrativos de Gemini
+                    # Frames sucesivos: tokens narrativos de IA
                     full_text = []
                     if is_tool_call:
                         async for chunk in llm_client.generate_narrative_stream(
                             prompt=summary_prompt,
-                            model_name=req.model,
+                            model_name=modelo_efectivo,
+                            history=historial_previo,
                         ):
                             full_text.append(chunk)
                             yield f"data: {json.dumps({'type': 'text', 'chunk': chunk})}\n\n"
@@ -278,7 +301,7 @@ async def procesar_consulta_analitica(
                             contenido=narrativa,
                             herramienta=tool_name if (is_tool_call and tipo == "component") else None,
                             argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
-                            modelo=req.model,
+                            modelo=modelo_efectivo,
                         )
 
                     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
@@ -287,9 +310,12 @@ async def procesar_consulta_analitica(
                         user_id,
                         prompt_text,
                         req.dataset_tipo,
-                        req.model,
+                        modelo_efectivo,
                         "éxito",
                         elapsed_ms,
+                        narrativa,
+                        "dashboard",
+                        None,
                     )
                 except Exception as stream_err:
                     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
@@ -298,7 +324,7 @@ async def procesar_consulta_analitica(
                         user_id,
                         prompt_text,
                         req.dataset_tipo,
-                        req.model,
+                        modelo_efectivo,
                         f"error: {str(stream_err)[:100]}",
                         elapsed_ms,
                     )
@@ -308,7 +334,14 @@ async def procesar_consulta_analitica(
 
         # Flujo REST estándar asíncrono
         if is_tool_call:
-            narrativa = await llm_client.generate_response(prompt=summary_prompt, model=req.model) or "Consulta analítica procesada con éxito."
+            narrativa = (
+                await llm_client.generate_response(
+                    prompt=summary_prompt,
+                    model=modelo_efectivo,
+                    history=historial_previo,
+                )
+                or "Consulta analítica procesada con éxito."
+            )
         else:
             narrativa = analysis.get("text", "No se generó respuesta para la consulta.")
 
@@ -321,7 +354,7 @@ async def procesar_consulta_analitica(
             contenido=narrativa,
             herramienta=tool_name if (is_tool_call and tipo == "component") else None,
             argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
-            modelo=req.model,
+            modelo=modelo_efectivo,
         )
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
@@ -330,9 +363,12 @@ async def procesar_consulta_analitica(
             user_id,
             prompt_text,
             req.dataset_tipo,
-            req.model,
+            modelo_efectivo,
             "éxito",
             elapsed_ms,
+            narrativa,
+            "dashboard",
+            None,
         )
 
         return ChatResponse(
@@ -344,7 +380,7 @@ async def procesar_consulta_analitica(
             table_data=fallback_table if tipo == "component" else None,
             session_id=req.session_id,
             conversacion_id=str(conv_id_actual),
-            model_used=req.model,
+            model_used=modelo_efectivo,
         )
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
@@ -353,7 +389,7 @@ async def procesar_consulta_analitica(
             user_id if 'user_id' in locals() else getattr(current_user, "id", None),
             prompt_text if 'prompt_text' in locals() else getattr(req, "prompt", ""),
             getattr(req, "dataset_tipo", None),
-            getattr(req, "model", None),
+            modelo_efectivo if 'modelo_efectivo' in locals() else getattr(req, "model", None),
             f"error: {str(exc)[:100]}",
             elapsed_ms,
         )

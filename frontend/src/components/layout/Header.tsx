@@ -1,5 +1,5 @@
-import { BookOpen, Car, MapPin, Sparkles, ShieldCheck, LogOut, FileSpreadsheet } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
+import { BookOpen, Car, MapPin, Sparkles, ShieldCheck, LogOut, FileSpreadsheet, User } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { DateRange } from '../../types/dateRange'
 import { PeriodSelector } from './PeriodSelector'
 import { useAuth } from '../../context/AuthContext'
@@ -7,6 +7,7 @@ import { useAssistant } from '../../context/AssistantContext'
 import { fetchKpiSummary, DataFilters } from '../../api/clienteBase'
 import { fetchAttendanceKpis, fetchAttendancePresenceCurve, fetchRoomsComparison } from '../../api/asistencia'
 import { fetchVehicleKpis, fetchVehiclePresenceCurve } from '../../api/vehiculos'
+import { listarNotificacionesAdmin } from '../../api/administracion'
 
 export type Tab = 'biblioteca' | 'estacionamiento' | 'admin' | 'reportes'
 
@@ -20,10 +21,20 @@ interface Props {
 }
 export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant, filters }: Props) {
   const queryClient = useQueryClient()
-  const { logout, userRole, roles, canAccessAdmin, hasDatasetAccess } = useAuth()
-  const { isAiEnabled } = useAssistant()
+  const { logout, userName, userEmail, userRole, roles, isSuperAdmin, canAccessAdmin, hasDatasetAccess } = useAuth()
+  const nombreVisible = userName || userEmail
+  const { canUseAssistant } = useAssistant()
   const espacioId = active === 'biblioteca' ? 1 : active === 'estacionamiento' ? 2 : undefined
   const tieneRolConsultor = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
+
+  const { data: alertasAdmin } = useQuery({
+    queryKey: ['admin-notificaciones'],
+    queryFn: listarNotificacionesAdmin,
+    enabled: isSuperAdmin,
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  })
+  const noLeidas = isSuperAdmin ? (alertasAdmin?.no_leidas ?? 0) : 0
 
   // Prefetching predictivo con las claves exactas de React Query al abrir el selector o pasar el cursor
   const precargarKpisRango = (range: DateRange) => {
@@ -136,10 +147,19 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
           {canAccessAdmin && (
             <button
               onClick={() => onChange('admin')}
-              className={`tab-btn flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm py-1.5 sm:py-2 px-2.5 sm:px-3.5 whitespace-nowrap ${active === 'admin' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
+              className={`relative tab-btn flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm py-1.5 sm:py-2 px-2.5 sm:px-3.5 whitespace-nowrap ${active === 'admin' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
             >
               <ShieldCheck size={14} className="shrink-0" />
               <span>Administración</span>
+              {noLeidas > 0 && (
+                <span
+                  title={`${noLeidas} alerta(s) de seguridad sin revisar`}
+                  className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none shadow-xs"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping mr-0.5" />
+                  {noLeidas > 9 ? '9+' : noLeidas}
+                </span>
+              )}
             </button>
           )}
           {tieneRolConsultor && (
@@ -154,7 +174,7 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
         </nav>
 
         <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
-          {onOpenAssistant && isAiEnabled && (
+          {onOpenAssistant && canUseAssistant && (
             <button
               onClick={onOpenAssistant}
               title="Abrir Asistente de IA"
@@ -167,6 +187,15 @@ export function Header({ active, onChange, selectedRange, onRangeChange, onOpenA
           )}
 
           <div className="flex items-center gap-1.5 sm:gap-2 pl-2 sm:pl-3 border-l border-white/20">
+            {nombreVisible && (
+              <div
+                title={userEmail && userName ? `${userName} (${userEmail})` : nombreVisible}
+                className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-white/95 bg-white/10 px-2.5 py-1 rounded-md border border-white/15 max-w-[160px] sm:max-w-[220px]"
+              >
+                <User size={13} className="text-uct-gold shrink-0" />
+                <span className="truncate">{nombreVisible}</span>
+              </div>
+            )}
             {userRole && (
               <span className="hidden sm:inline-block text-[10px] sm:text-[11px] font-bold bg-white/10 px-2 py-0.5 sm:py-1 rounded-md text-amber-300 border border-white/10 whitespace-nowrap">
                 {userRole}

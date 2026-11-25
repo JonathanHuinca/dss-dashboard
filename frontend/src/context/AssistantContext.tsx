@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/clienteBase'
+import { useAuth } from './AuthContext'
 
 export interface AssistantPeriodo {
   startDate?: string
@@ -13,6 +14,7 @@ export interface AssistantPeriodo {
 interface AssistantContextType {
   isOpen: boolean
   isAiEnabled: boolean
+  canUseAssistant: boolean
   contextoGrafico?: string
   periodo?: AssistantPeriodo
   filtros?: Record<string, any>
@@ -26,10 +28,26 @@ interface AssistantContextType {
 const AssistantContext = createContext<AssistantContextType | undefined>(undefined)
 
 export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { isAuthenticated, userId, userEmail, canUseAi } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
   const [contextoGrafico, setContextoGrafico] = useState<string | undefined>(undefined)
   const [periodo, setPeriodo] = useState<AssistantPeriodo | undefined>(undefined)
   const [filtros, setFiltros] = useState<Record<string, any> | undefined>(undefined)
+  const prevSessionRef = useRef<string | null>(null)
+
+  // Limpia estado previo del asistente antes de que efectos hijos sincronicen la nueva sesión
+  useLayoutEffect(() => {
+    const currentSession = isAuthenticated
+      ? (userId !== null && userId !== undefined ? `u${userId}` : (userEmail || 'auth'))
+      : null
+    if (prevSessionRef.current !== currentSession) {
+      setIsOpen(false)
+      setContextoGrafico(undefined)
+      setPeriodo(undefined)
+      setFiltros(undefined)
+      prevSessionRef.current = currentSession
+    }
+  }, [isAuthenticated, userId, userEmail])
 
   const { data: statusData } = useQuery<{ ia_asistente_activo: boolean }>({
     queryKey: ['ia-status'],
@@ -46,48 +64,48 @@ export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   })
 
   const isAiEnabled = statusData ? Boolean(statusData.ia_asistente_activo) : true
+  const canUseAssistant = isAiEnabled && canUseAi
 
   useEffect(() => {
-    if (!isAiEnabled && isOpen) {
+    if (!canUseAssistant && isOpen) {
       setIsOpen(false)
     }
-  }, [isAiEnabled, isOpen])
+  }, [canUseAssistant, isOpen])
 
-  const openAssistant = (
+  const openAssistant = useCallback((
     contexto?: string,
     periodoParam?: AssistantPeriodo,
     filtrosParam?: Record<string, any>
   ) => {
-    if (!isAiEnabled) return
+    if (!canUseAssistant) return
     if (contexto !== undefined) setContextoGrafico(contexto)
     if (periodoParam !== undefined) setPeriodo(periodoParam)
     if (filtrosParam !== undefined) setFiltros(filtrosParam)
     setIsOpen(true)
-  }
+  }, [canUseAssistant])
 
-  const setFiltrosActivos = (nuevosFiltros: Record<string, any>) => {
+  const setFiltrosActivos = useCallback((nuevosFiltros: Record<string, any>) => {
     setFiltros(nuevosFiltros)
-  }
+  }, [])
 
-  const setPeriodoActivo = (nuevoPeriodo: AssistantPeriodo) => {
+  const setPeriodoActivo = useCallback((nuevoPeriodo: AssistantPeriodo) => {
     setPeriodo(nuevoPeriodo)
-  }
+  }, [])
 
-  const closeAssistant = () => {
+  const closeAssistant = useCallback(() => {
     setIsOpen(false)
-  }
+  }, [])
 
-  const clearContexto = () => {
+  const clearContexto = useCallback(() => {
     setContextoGrafico(undefined)
-    setPeriodo(undefined)
-    setFiltros(undefined)
-  }
+  }, [])
 
   return (
     <AssistantContext.Provider
       value={{
         isOpen,
         isAiEnabled,
+        canUseAssistant,
         contextoGrafico,
         periodo,
         filtros,
@@ -109,6 +127,7 @@ export const useAssistant = (): AssistantContextType => {
     return {
       isOpen: false,
       isAiEnabled: true,
+      canUseAssistant: false,
       contextoGrafico: undefined,
       periodo: undefined,
       filtros: undefined,
