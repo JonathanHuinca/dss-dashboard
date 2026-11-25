@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, validar_acceso_espacio
+from app.core.security import get_current_user, require_roles, validar_acceso_espacio
 from app.domain.auth_models import Usuario
 from app.services.auth_service import normalizar_rol
 from app.services.servicio_reportes_compartidos import ServicioReportesCompartidos
@@ -93,6 +93,12 @@ class ActualizarDestinatarioEstadoRequest(BaseModel):
 
 class ConsultaIAReporteRequest(BaseModel):
     pregunta: str = Field(..., min_length=2, max_length=1200)
+    sesion_id: Optional[str] = Field("principal", max_length=64)
+
+
+class EventoReportePublicoRequest(BaseModel):
+    accion: str = Field(..., description="descarga_excel | descarga_csv | descarga_pdf | descarga_imagen")
+    detalle: Optional[str] = Field(None, max_length=500)
 
 
 @router.get("/mis-reportes", summary="Bandeja histórica de reportes del usuario Consultor_Reporte autenticado")
@@ -171,6 +177,50 @@ async def crear_reporte_compartido(
     )
 
 
+@router.get("/auditoria", summary="Auditoría gerencial de reportes compartidos y actividad del destinatario")
+async def obtener_auditoria_reportes(
+    espacio_id: Optional[int] = Query(None),
+    emisor_rol: Optional[str] = Query(None, description="directivo | analista | admin"),
+    estado_revision: Optional[str] = Query(None, description="revisado | sin_revisar"),
+    solo_activos: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: Usuario = Depends(require_roles(["Admin_Sistema", "Director_Recinto"])),
+    db: AsyncSession = Depends(get_db),
+):
+    if espacio_id is not None:
+        validar_acceso_espacio(espacio_id, current_user)
+    return await ServicioReportesCompartidos.obtener_auditoria_reportes_emitidos(
+        session=db,
+        usuario_actual=current_user,
+        espacio_id=espacio_id,
+        emisor_rol=emisor_rol,
+        estado_revision=estado_revision,
+        solo_activos=solo_activos,
+        search=search,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/{reporte_id}/eventos", summary="Timeline cronológico de aperturas, descargas e IA de un reporte")
+async def obtener_eventos_reporte(
+    reporte_id: str,
+    accion: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    current_user: Usuario = Depends(require_roles(["Admin_Sistema", "Director_Recinto"])),
+    db: AsyncSession = Depends(get_db),
+):
+    return await ServicioReportesCompartidos.obtener_eventos_reporte(
+        session=db,
+        usuario_actual=current_user,
+        reporte_id=reporte_id,
+        accion=accion,
+        limit=limit,
+    )
+
+
 @router.patch("/{reporte_id}", summary="Habilitar/deshabilitar reporte, IA, notas, gráficos o vigencia")
 async def actualizar_reporte_compartido(
     reporte_id: str,
@@ -236,10 +286,12 @@ async def obtener_reporte_publico(
     db: AsyncSession = Depends(get_db),
 ):
     ip_origen = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     return await ServicioReportesCompartidos.obtener_reporte_publico_por_token(
         session=db,
         token_acceso=token_acceso,
         ip_origen=ip_origen,
+        user_agent=user_agent,
     )
 
 
@@ -254,6 +306,36 @@ async def obtener_portal_destinatario(
     )
 
 
+@router.post("/publico/{token_acceso}/evento", summary="Registrar evento de descarga o exportación desde reporte compartido")
+async def registrar_evento_reporte_publico(
+    token_acceso: str,
+    payload: EventoReportePublicoRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    ip_origen = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    return await ServicioReportesCompartidos.registrar_evento_reporte_publico(
+        session=db,
+        token_acceso=token_acceso,
+        accion=payload.accion,
+        detalle=payload.detalle,
+        ip_origen=ip_origen,
+        user_agent=user_agent,
+    )
+
+
+@router.get("/publico/{token_acceso}/ia/historial", summary="Obtener historial de chat IA persistido del reporte compartido")
+async def obtener_historial_ia_reporte_publico(
+    token_acceso: str,
+    db: AsyncSession = Depends(get_db),
+):
+    return await ServicioReportesCompartidos.obtener_historial_ia_reporte_publico(
+        session=db,
+        token_acceso=token_acceso,
+    )
+
+
 @router.post("/publico/{token_acceso}/consultar-ia", summary="Consultar IA confinada al reporte (si está habilitada)")
 async def consultar_ia_reporte_publico(
     token_acceso: str,
@@ -262,10 +344,13 @@ async def consultar_ia_reporte_publico(
     db: AsyncSession = Depends(get_db),
 ):
     ip_origen = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     return await ServicioReportesCompartidos.consultar_ia_reporte_confinado(
         session=db,
         token_acceso=token_acceso,
         pregunta=payload.pregunta,
+        sesion_id=payload.sesion_id or "principal",
         ip_origen=ip_origen,
+        user_agent=user_agent,
     )
 

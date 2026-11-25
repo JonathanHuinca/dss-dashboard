@@ -5,8 +5,6 @@ import {
   Calendar,
   MapPin,
   Clock,
-  Sparkles,
-  Send,
   Printer,
   AlertTriangle,
   BarChart2,
@@ -34,9 +32,10 @@ import {
   fetchReportePublicoPorToken,
   fetchPortalDestinatarioPorToken,
   fetchMisReportesConsultor,
-  consultarIAReportePublico,
   activarCuentaConsultorDesdeReporte,
 } from '../../api/client'
+import { registrarEventoReportePublico } from '../../api/reportesCompartidos'
+import { AsistenteIAReporteDrawer } from '../reports/AsistenteIAReporteDrawer'
 import { KpiCard } from '../ui/KpiCard'
 import { ChartCard } from '../ui/ChartCard'
 import { useAuth } from '../../context/AuthContext'
@@ -145,11 +144,6 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
   const [errorAcceso, setErrorAcceso] = useState<string | null>(null)
   const [mostrarBandejaHistorica, setMostrarBandejaHistorica] = useState<boolean>(modoRuta !== 'reporte')
 
-  const [preguntaIA, setPreguntaIA] = useState<string>('')
-  const [consultandoIA, setConsultandoIA] = useState<boolean>(false)
-  const [conversacionIA, setConversacionIA] = useState<Array<{ pregunta: string; respuesta: string; hora: string }>>([])
-  const [errorIA, setErrorIA] = useState<string | null>(null)
-
   const [emailIngreso, setEmailIngreso] = useState<string>('')
   const [passwordIngreso, setPasswordIngreso] = useState<string>('')
   const [ingresandoLogin, setIngresandoLogin] = useState<boolean>(false)
@@ -170,6 +164,27 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
       cargarReportePorToken(token)
     }
   }, [modoRuta, token])
+
+  useEffect(() => {
+    if (!tokenReporteActivo) return
+    const manejarDescargaChart = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ formato?: string; nombreArchivo?: string; titulo?: string }>).detail
+      if (!detail?.formato) return
+      const accion =
+        detail.formato === 'excel'
+          ? 'descarga_excel'
+          : detail.formato === 'csv'
+          ? 'descarga_csv'
+          : detail.formato === 'imagen'
+          ? 'descarga_imagen'
+          : null
+      if (!accion) return
+      const resumen = [detail.titulo, detail.nombreArchivo].filter(Boolean).join(' — ')
+      registrarEventoReportePublico(tokenReporteActivo, accion, resumen || undefined).catch(() => {})
+    }
+    window.addEventListener('uct:chart-exported', manejarDescargaChart)
+    return () => window.removeEventListener('uct:chart-exported', manejarDescargaChart)
+  }, [tokenReporteActivo])
 
   const cargarPortalConsultorAutenticado = async () => {
     setCargando(true)
@@ -235,30 +250,6 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
       )
     } finally {
       setCargando(false)
-    }
-  }
-
-  const handleConsultarIA = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!preguntaIA.trim() || !tokenReporteActivo) return
-    setConsultandoIA(true)
-    setErrorIA(null)
-    const pregActual = preguntaIA.trim()
-    setPreguntaIA('')
-    try {
-      const res = await consultarIAReportePublico(tokenReporteActivo, pregActual)
-      setConversacionIA((prev) => [
-        ...prev,
-        {
-          pregunta: pregActual,
-          respuesta: res.respuesta,
-          hora: new Date().toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }),
-        },
-      ])
-    } catch (err: any) {
-      setErrorIA(err?.response?.data?.detail || 'No fue posible procesar la consulta con el asistente IA.')
-    } finally {
-      setConsultandoIA(false)
     }
   }
 
@@ -804,7 +795,16 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
             {reporte?.permitir_exportacion && (
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => {
+                  if (tokenReporteActivo) {
+                    registrarEventoReportePublico(
+                      tokenReporteActivo,
+                      'descarga_pdf',
+                      `Impresión / PDF — ${reporte.titulo_reporte}`
+                    ).catch(() => {})
+                  }
+                  window.print()
+                }}
                 className="no-imprimir-reporte print:hidden px-3 py-1.5 rounded-lg bg-uct-gold hover:bg-amber-500 text-uct-blue-primary text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
               >
                 <Printer size={13} />
@@ -848,9 +848,25 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                   {destinatario.unidad_academica}
                 </p>
                 {reporte && (
-                  <p className="text-xs text-slate-500">
-                    <strong>Finalidad institucional:</strong> {reporte.finalidad_reporte}
-                  </p>
+                  <>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-700">
+                      <span className="font-semibold text-uct-blue-primary">Emitido por:</span>
+                      <span className="font-bold text-slate-900">
+                        {reporte.creador?.nombre_completo || 'Sistema DSS'}
+                      </span>
+                      {reporte.creador?.rol && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-bold bg-slate-100 border border-slate-300 text-slate-700">
+                          {reporte.creador.rol}
+                        </span>
+                      )}
+                      {reporte.creador?.email && (
+                        <span className="text-[11px] text-slate-500">({reporte.creador.email})</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-700">
+                      <strong className="text-slate-900">Finalidad institucional:</strong> {reporte.finalidad_reporte}
+                    </p>
+                  </>
                 )}
               </div>
 
@@ -1135,10 +1151,15 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                             data={grafData.aforo_presencia_intervalos}
                             capacidad={
                               reporte.filtros_bloqueados?.sala === 'CSF02'
-                                ? 200
+                                ? Number(indEjecutivos?.capacidad_sala1 || indEjecutivos?.capacidad_asientos || 150)
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
-                                  ? 226
-                                  : 426
+                                  ? Number(indEjecutivos?.capacidad_sala2 || indEjecutivos?.capacidad_asientos || 126)
+                                  : Number(
+                                      indEjecutivos?.capacidad_asientos ||
+                                      ((indEjecutivos?.capacidad_sala1 && indEjecutivos?.capacidad_sala2)
+                                        ? Number(indEjecutivos.capacidad_sala1) + Number(indEjecutivos.capacidad_sala2)
+                                        : 276)
+                                    )
                             }
                             unit="ocupantes"
                             salaLabel={
@@ -1148,8 +1169,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                                   ? 'Sala 2 Pecera (CSF04)'
                                   : 'Todas las Salas (Campus San Francisco)'
                             }
-                            capSala1={200}
-                            capSala2={226}
+                            capSala1={Number(indEjecutivos?.capacidad_sala1 || 150)}
+                            capSala2={Number(indEjecutivos?.capacidad_sala2 || 126)}
                             comparativaSalas={grafData.comparativa_salas || []}
                           />
                         </Suspense>
@@ -1341,14 +1362,14 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                     <div className="w-full space-y-2">
                       <ChartCard
                         layout="full"
-                        title="Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado) — 14 Días"
+                        title="Pronóstico Continuo de Presencia Física en Sala (Prophet Jerárquico) — 14 Días"
                       >
                         <Suspense fallback={<EsqueletoGraficoInstitucional />}>
                           <ForecastLineChart
                             forecast={grafData.prophet_presencia_14dias.forecast || []}
                             historico7d={grafData.prophet_presencia_14dias.historico_7d || []}
                             pronostico7d={grafData.prophet_presencia_14dias.pronostico_7d || []}
-                            capacidad={grafData.prophet_presencia_14dias.capacidad_asientos || 426}
+                            capacidad={grafData.prophet_presencia_14dias.capacidad_asientos || 276}
                             salaNombre={
                               reporte.filtros_bloqueados?.sala === 'CSF02'
                                 ? 'Sala 1 (CSF02)'
@@ -1371,43 +1392,65 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                     </div>
                   )}
 
-                  {grafVisibles.includes('campana_24_horas') && grafData.campana_24_horas && (
-                    <div className="w-full space-y-3">
-                      <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-sm border border-slate-800 flex items-center justify-between">
-                        <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <Moon className="w-5 h-5 text-uct-gold" />
-                            <h3 className="text-sm font-bold text-white">
-                              Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno
-                            </h3>
+                  {(() => {
+                    const esLegacy24h = grafVisibles.includes('campana_24_horas')
+                    const bloques24hSeleccionados = grafVisibles.filter((g) => g.startsWith('campana_24h_'))
+                    const mostrarCampana24h =
+                      (esLegacy24h || bloques24hSeleccionados.length > 0) && Boolean(grafData.campana_24_horas)
+                    if (!mostrarCampana24h) return null
+                    const bloques24hVisibles = esLegacy24h ? undefined : bloques24hSeleccionados
+                    const notas24h = [
+                      ...obtenerNotasDeSeccion('campana_24_horas'),
+                      ...bloques24hSeleccionados.flatMap((b) => obtenerNotasDeSeccion(b)),
+                    ]
+                    return (
+                      <div className="w-full space-y-3">
+                        <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-sm border border-slate-800 flex items-center justify-between">
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <Moon className="w-5 h-5 text-uct-gold" />
+                              <h3 className="text-sm font-bold text-white">
+                                Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno
+                              </h3>
+                            </div>
+                            <p className="text-xs text-slate-300">
+                              Monitoreo de demanda fuera de horario habitual (20:30 a 07:00 hrs) y justificación de capacidad en Sala 2 Pecera
+                            </p>
                           </div>
-                          <p className="text-xs text-slate-300">
-                            Monitoreo de demanda fuera de horario habitual (20:30 a 07:00 hrs) y justificación de capacidad en Sala 2 Pecera
-                          </p>
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-uct-gold border border-uct-gold/40">
+                            Régimen Continuo 24h
+                          </span>
                         </div>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-uct-gold border border-uct-gold/40">
-                          Régimen Continuo 24h
-                        </span>
+                        {notas24h.map((n) => (
+                          <div
+                            key={n.id}
+                            className="no-imprimir-reporte print:hidden px-4 py-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-slate-800"
+                          >
+                            <strong className="text-uct-blue-primary">Nota del Emisor ({n.titulo}):</strong> {n.contenido}
+                          </div>
+                        ))}
+                        <Suspense fallback={<EsqueletoGraficoInstitucional />}>
+                          <SeccionCampana24Horas
+                            data={grafData.campana_24_horas}
+                            isLoading={false}
+                            selectedCampanaId={grafData.campana_24_horas?.campana?.id ?? 0}
+                            fechaInicioPersonalizada={reporte.fecha_inicio}
+                            fechaFinPersonalizada={reporte.fecha_fin}
+                            bloqueHorario="todos"
+                            currentDateRange={{
+                              inicio: reporte.fecha_inicio,
+                              fin: reporte.fecha_fin,
+                              label: `Período Reporte (${reporte.fecha_inicio} al ${reporte.fecha_fin})`,
+                              isCustom: true,
+                            }}
+                            ocultarAccionesReporte={true}
+                            bloquesVisibles={bloques24hVisibles}
+                            activeFilters={reporte.filtros_bloqueados}
+                          />
+                        </Suspense>
                       </div>
-                      <Suspense fallback={<EsqueletoGraficoInstitucional />}>
-                        <SeccionCampana24Horas
-                          data={grafData.campana_24_horas}
-                          isLoading={false}
-                          selectedCampanaId={grafData.campana_24_horas?.campana?.id ?? 0}
-                          fechaInicioPersonalizada={reporte.fecha_inicio}
-                          fechaFinPersonalizada={reporte.fecha_fin}
-                          bloqueHorario="todos"
-                          currentDateRange={{
-                            inicio: reporte.fecha_inicio,
-                            fin: reporte.fecha_fin,
-                            label: `Período Reporte (${reporte.fecha_inicio} al ${reporte.fecha_fin})`,
-                            isCustom: true,
-                          }}
-                          ocultarAccionesReporte={true}
-                        />
-                      </Suspense>
-                    </div>
-                  )}
+                    )
+                  })()}
                 </>
               )}
 
@@ -1426,6 +1469,9 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                               capacidad={indEjecutivos.capacidad_plazas || 125}
                               unit="vehículos"
                               salaLabel={reporte.filtros_bloqueados?.sector || 'Estacionamiento CSF'}
+                              capCSF11={Number(indEjecutivos?.capacidad_csf11 || 40)}
+                              capCSF21={Number(indEjecutivos?.capacidad_csf21 || 50)}
+                              capCHS01={Number(indEjecutivos?.capacidad_chs01 || 35)}
                             />
                           </Suspense>
                         </ChartCard>
@@ -1516,14 +1562,27 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
 
                   {grafVisibles.includes('prophet_vehicular') && grafData.prophet_vehicular && (
                     <div className="w-full space-y-2">
-                      <ChartCard layout="full" title="Pronóstico Continuo Prophet Vehicular (7 Días)">
+                      <ChartCard layout="full" title="Pronóstico Continuo Prophet Vehicular (14 Días — Presencia en Plazas)">
                         <Suspense fallback={<EsqueletoGraficoInstitucional />}>
                           <ForecastLineChart
                             forecast={grafData.prophet_vehicular.forecast || []}
                             historico7d={grafData.prophet_vehicular.historico_7d || []}
                             pronostico7d={grafData.prophet_vehicular.pronostico_7d || []}
-                            capacidad={grafData.prophet_vehicular.capacidad || 125}
-                            salaNombre="Estacionamiento Campus San Francisco"
+                            capacidad={
+                              grafData.prophet_vehicular.capacidad_asientos ||
+                              grafData.prophet_vehicular.capacidad ||
+                              indEjecutivos.capacidad_plazas ||
+                              125
+                            }
+                            salaNombre={
+                              reporte.filtros_bloqueados?.sector === 'CSF11'
+                                ? 'Sector CSF11'
+                                : reporte.filtros_bloqueados?.sector === 'CSF21'
+                                  ? 'Sector CSF21'
+                                  : reporte.filtros_bloqueados?.sector === 'CHS01'
+                                    ? 'Sector CHS01'
+                                    : 'Todos los Sectores — Estacionamiento CSF'
+                            }
                             recinto="estacionamiento"
                           />
                         </Suspense>
@@ -1536,55 +1595,13 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
           </section>
         )}
 
-        {/* Asistente Analítico IA Confinado (SOLO visible si permitir_ia === true y la IA está activa globalmente) */}
-        {reporte && reporte.permitir_ia && isAiEnabled && (
-          <section className="no-imprimir-reporte print:hidden p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-              <div className="flex items-center gap-2 text-uct-blue-primary font-bold text-sm">
-                <Sparkles className="w-4 h-4 text-uct-gold" />
-                <h3>Asistente Analítico IA (Acotado a este Reporte)</h3>
-              </div>
-              <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-blue-50 text-uct-blue-primary border border-blue-200 font-semibold">
-                Alcance restringido exclusivamente a las cifras de este reporte
-              </span>
-            </div>
-
-            {conversacionIA.length > 0 && (
-              <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                {conversacionIA.map((msg, idx) => (
-                  <div key={idx} className="space-y-2 bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs">
-                    <div className="font-bold text-uct-blue-primary">
-                      Consulta ({msg.hora}): <span className="text-slate-800 font-normal">{msg.pregunta}</span>
-                    </div>
-                    <div className="text-slate-700 leading-relaxed whitespace-pre-line border-t border-slate-200 pt-2">
-                      {msg.respuesta}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {errorIA && <div className="text-xs text-red-600">{errorIA}</div>}
-
-            <form onSubmit={handleConsultarIA} className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Pregunte sobre los indicadores, tendencias o notas de este reporte..."
-                value={preguntaIA}
-                onChange={(e) => setPreguntaIA(e.target.value)}
-                disabled={consultandoIA}
-                className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs text-slate-800"
-              />
-              <button
-                type="submit"
-                disabled={consultandoIA || !preguntaIA.trim()}
-                className="px-4 py-2.5 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-secondary disabled:opacity-50 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5 text-uct-gold" />
-                {consultandoIA ? 'Analizando...' : 'Consultar'}
-              </button>
-            </form>
-          </section>
+        {/* Botón flotante + Drawer Asistente Analítico IA Confinado (SOLO visible si permitir_ia === true y la IA está activa globalmente) */}
+        {reporte && reporte.permitir_ia && isAiEnabled && tokenReporteActivo && (
+          <AsistenteIAReporteDrawer
+            tokenAcceso={tokenReporteActivo}
+            reporte={reporte}
+            mensajesIniciales={datosReporte?.mensajes_ia || []}
+          />
         )}
       </main>
     </div>

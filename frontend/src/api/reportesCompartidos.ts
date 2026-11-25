@@ -59,11 +59,23 @@ export interface ReporteCompartidoResumen {
     email: string
     rol: string
   }
+  tiene_campana_24h?: boolean
+}
+
+export interface MensajeIAReporteItem {
+  id: number
+  sesion_id: string
+  pregunta: string
+  respuesta: string
+  modelo_utilizado?: string | null
+  tiempo_respuesta_ms?: number | null
+  creado_en: string | null
 }
 
 export interface CatalogoItemReporte {
   id: string
   titulo: string
+  seccion?: string
 }
 
 export interface RespuestaListadoReportes {
@@ -164,6 +176,7 @@ export interface RespuestaReportePublico {
   }>
   requiere_crear_password?: boolean
   token_activacion?: string | null
+  mensajes_ia?: MensajeIAReporteItem[]
   catalogos: {
     graficos: CatalogoItemReporte[]
     indicadores: CatalogoItemReporte[]
@@ -276,13 +289,131 @@ export async function fetchPortalDestinatarioPorToken(tokenPortal: string): Prom
   return data
 }
 
+export async function fetchHistorialIAReportePublico(
+  tokenAcceso: string
+): Promise<{ mensajes: MensajeIAReporteItem[] }> {
+  const { data } = await api.get<{ mensajes: MensajeIAReporteItem[] }>(
+    `/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}/ia/historial`
+  )
+  return data
+}
+
 export async function consultarIAReportePublico(
   tokenAcceso: string,
+  pregunta: string,
+  sesionId: string = 'principal'
+): Promise<{
+  id: number
+  sesion_id: string
   pregunta: string
-): Promise<{ respuesta: string; timestamp: string }> {
-  const { data } = await api.post(`/reportes-compartidos/publico/${tokenAcceso}/consultar-ia`, {
+  respuesta: string
+  modelo_utilizado?: string | null
+  tiempo_respuesta_ms?: number | null
+  timestamp: string
+}> {
+  const { data } = await api.post(`/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}/consultar-ia`, {
     pregunta,
+    sesion_id: sesionId,
   })
   return data
+}
+
+export interface EmisorReporteInfo {
+  id: number
+  nombre_completo: string
+  email: string
+  rol: string
+}
+
+export interface AuditoriaReporteResumen extends ReporteCompartidoResumen {
+  emisor?: EmisorReporteInfo | null
+  revisado: boolean
+  total_aperturas: number
+  total_descargas: number
+  total_descargas_excel: number
+  total_descargas_csv: number
+  total_descargas_pdf: number
+  total_descargas_imagen: number
+  total_consultas_ia: number
+  primer_acceso_en?: string | null
+  ultima_ip?: string | null
+  ultimo_user_agent?: string | null
+}
+
+export interface AuditoriaReportesKpis {
+  total_reportes: number
+  reportes_revisados: number
+  reportes_sin_revisar: number
+  tasa_lectura_pct: number
+  total_aperturas: number
+  total_descargas: number
+  total_consultas_ia: number
+}
+
+export interface RespuestaAuditoriaReportes {
+  rol_auditor: string
+  espacios_autorizados: number[] | null
+  kpis: AuditoriaReportesKpis
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+  items: AuditoriaReporteResumen[]
+}
+
+export interface EventoAuditoriaReporte {
+  id: number
+  fecha_hora: string | null
+  accion: string
+  ip_origen?: string | null
+  detalle?: string | null
+  user_agent?: string | null
+}
+
+export interface RespuestaEventosReporte {
+  reporte_id: string
+  codigo_corto: string
+  titulo_reporte: string
+  destinatario: {
+    nombre_completo: string | null
+    email: string | null
+  }
+  eventos: EventoAuditoriaReporte[]
+}
+
+export async function fetchAuditoriaReportes(params?: {
+  espacio_id?: number
+  emisor_rol?: string
+  estado_revision?: string
+  solo_activos?: boolean
+  search?: string
+  page?: number
+  page_size?: number
+}): Promise<RespuestaAuditoriaReportes> {
+  const { data } = await api.get<RespuestaAuditoriaReportes>('/reportes-compartidos/auditoria', {
+    params,
+  })
+  return data
+}
+
+export async function fetchEventosReporte(
+  reporteId: string,
+  params?: { accion?: string; limit?: number }
+): Promise<RespuestaEventosReporte> {
+  const { data } = await api.get<RespuestaEventosReporte>(`/reportes-compartidos/${reporteId}/eventos`, {
+    params,
+  })
+  return data
+}
+
+export async function registrarEventoReportePublico(
+  tokenAcceso: string,
+  accion: 'descarga_excel' | 'descarga_csv' | 'descarga_pdf' | 'descarga_imagen',
+  detalle?: string
+): Promise<void> {
+  await api.post(`/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}/evento`, {
+    accion,
+    detalle,
+  })
 }
 

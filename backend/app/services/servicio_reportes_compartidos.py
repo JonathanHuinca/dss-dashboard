@@ -2,25 +2,29 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings, obtener_url_frontend
+from app.core.tiempo import ahora_chile_naive, marcar_chile
 from app.domain.auth_models import Rol, TokenActivacion, Usuario, UsuarioRol
 from app.domain.models import Espacio
 from app.domain.reportes_compartidos_models import (
     AuditoriaAccesoReporte,
     DestinatarioReporte,
+    MensajeIAReporte,
     ReporteCompartido,
 )
 from app.services.attendance_service import AttendanceService
 from app.services.auth_service import generar_token_activacion, normalizar_rol
+from app.services.chat.auditoria_chat import registrar_auditoria_chat
 from app.services.email_service import (
     enviar_correo_activacion_consultor,
     enviar_correo_reporte_ejecutivo,
@@ -31,21 +35,33 @@ from app.services.vehicle_service import VehicleService
 logger = logging.getLogger(__name__)
 
 
+IDS_CAMPANA_24H_GRANULARES = (
+    "campana_24h_resumen",
+    "campana_24h_curva_calor",
+    "campana_24h_fases_dias",
+    "campana_24h_academico",
+    "campana_24h_comparativa",
+)
+
 CATALOGO_GRAFICOS_BIBLIOTECA = [
-    {"id": "aforo_presencia_intervalos", "titulo": "Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima"},
-    {"id": "prophet_presencia_14dias", "titulo": "Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado)"},
-    {"id": "flujo_horario", "titulo": "Flujo Horario de Ingresos y Salidas"},
-    {"id": "mapa_calor", "titulo": "Mapa de Calor (Día de Semana x Hora)"},
-    {"id": "comparativa_salas", "titulo": "Comparativa Sala 1 vs Sala 2 (Pecera)"},
-    {"id": "uso_torniquetes", "titulo": "Flujo por Torniquetes y Accesos Universales"},
-    {"id": "frecuencia_marcajes", "titulo": "Distribución de Frecuencia de Marcajes"},
-    {"id": "volumen_mensual", "titulo": "Volumen y Promedio Diario Mensual"},
-    {"id": "evolucion_semanal", "titulo": "Evolución Semanal (Semanas ISO)"},
-    {"id": "promedio_dia_semana", "titulo": "Promedio de Ingresos por Día de la Semana"},
-    {"id": "hitos_academicos", "titulo": "Comparativa por Hito del Calendario Académico"},
-    {"id": "distribucion_curricular", "titulo": "Distribución por Carrera y Facultad (Ley 21.719)"},
-    {"id": "perfiles_visita", "titulo": "Perfiles de Estadía y Permanencia (Donut)"},
-    {"id": "campana_24_horas", "titulo": "Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno"},
+    {"id": "aforo_presencia_intervalos", "titulo": "Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima", "seccion": "1. Resumen y Demanda General"},
+    {"id": "prophet_presencia_14dias", "titulo": "Pronóstico Continuo de Presencia Física en Sala (Prophet Jerárquico)", "seccion": "1. Resumen y Demanda General"},
+    {"id": "distribucion_curricular", "titulo": "Distribución por Carrera y Facultad (Ley 21.719)", "seccion": "1. Resumen y Demanda General"},
+    {"id": "perfiles_visita", "titulo": "Perfiles de Estadía y Permanencia (Donut)", "seccion": "1. Resumen y Demanda General"},
+    {"id": "flujo_horario", "titulo": "Flujo Horario de Ingresos y Salidas", "seccion": "1. Resumen y Demanda General"},
+    {"id": "mapa_calor", "titulo": "Mapa de Calor (Día de Semana x Hora)", "seccion": "1. Resumen y Demanda General"},
+    {"id": "comparativa_salas", "titulo": "Comparativa Sala 1 vs Sala 2 (Pecera)", "seccion": "2. Salas y Torniquetes"},
+    {"id": "uso_torniquetes", "titulo": "Flujo por Torniquetes y Accesos Universales", "seccion": "2. Salas y Torniquetes"},
+    {"id": "frecuencia_marcajes", "titulo": "Distribución de Frecuencia de Marcajes", "seccion": "2. Salas y Torniquetes"},
+    {"id": "volumen_mensual", "titulo": "Volumen y Promedio Diario Mensual", "seccion": "3. Evolución e Hitos"},
+    {"id": "evolucion_semanal", "titulo": "Evolución Semanal (Semanas ISO)", "seccion": "3. Evolución e Hitos"},
+    {"id": "promedio_dia_semana", "titulo": "Promedio de Ingresos por Día de la Semana", "seccion": "3. Evolución e Hitos"},
+    {"id": "hitos_academicos", "titulo": "Comparativa por Hito del Calendario Académico", "seccion": "3. Evolución e Hitos"},
+    {"id": "campana_24h_resumen", "titulo": "KPIs Nocturnos, Delta 24h y Dictamen Ejecutivo", "seccion": "5. Campaña 24 Horas Exámenes"},
+    {"id": "campana_24h_curva_calor", "titulo": "Curva Continua Nocturna (20:00-07:00) y Mapa de Calor", "seccion": "5. Campaña 24 Horas Exámenes"},
+    {"id": "campana_24h_fases_dias", "titulo": "Fases de la Noche y Distribución por Día de Semana", "seccion": "5. Campaña 24 Horas Exámenes"},
+    {"id": "campana_24h_academico", "titulo": "Top Carreras y Facultades en Horario Nocturno", "seccion": "5. Campaña 24 Horas Exámenes"},
+    {"id": "campana_24h_comparativa", "titulo": "Comparativa Multicampaña (Históricas vs Actuales)", "seccion": "5. Campaña 24 Horas Exámenes"},
 ]
 
 CATALOGO_INDICADORES_BIBLIOTECA = [
@@ -61,16 +77,16 @@ CATALOGO_INDICADORES_BIBLIOTECA = [
 ]
 
 CATALOGO_GRAFICOS_ESTACIONAMIENTO = [
-    {"id": "presencia_vehicular_intervalos", "titulo": "Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad"},
-    {"id": "prophet_vehicular", "titulo": "Pronóstico Continuo Prophet Vehicular"},
-    {"id": "flujo_horario_vehicular", "titulo": "Flujo Horario de Ingresos y Salidas Vehiculares"},
-    {"id": "composicion_flota", "titulo": "Composición por Tipo de Vehículo"},
-    {"id": "distribucion_marcas", "titulo": "Distribución por Marca de Vehículo"},
-    {"id": "estadisticas_camaras", "titulo": "Distribución por Pórtico y Cámara ANPR"},
-    {"id": "distribucion_estadia", "titulo": "Distribución de Tiempos de Permanencia"},
-    {"id": "hitos_academicos_vehicular", "titulo": "Comparativa por Hito Académico Vehicular"},
-    {"id": "movilidad_intercampus", "titulo": "Movilidad Intercampus CSF - CHS"},
-    {"id": "clusters_comportamiento", "titulo": "Perfiles de Uso Vehicular (Clustering K-Means)"},
+    {"id": "presencia_vehicular_intervalos", "titulo": "Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad", "seccion": "1. Aforo y Pronóstico"},
+    {"id": "prophet_vehicular", "titulo": "Pronóstico Continuo Prophet Vehicular (Presencia en Plazas)", "seccion": "1. Aforo y Pronóstico"},
+    {"id": "flujo_horario_vehicular", "titulo": "Flujo Horario de Ingresos y Salidas Vehiculares", "seccion": "2. Flujo Horario de Accesos"},
+    {"id": "composicion_flota", "titulo": "Composición por Tipo de Vehículo", "seccion": "3. Flota y Cámaras ANPR"},
+    {"id": "distribucion_marcas", "titulo": "Distribución por Marca de Vehículo", "seccion": "3. Flota y Cámaras ANPR"},
+    {"id": "estadisticas_camaras", "titulo": "Distribución por Pórtico y Cámara ANPR", "seccion": "3. Flota y Cámaras ANPR"},
+    {"id": "movilidad_intercampus", "titulo": "Movilidad Intercampus CSF - CHS", "seccion": "4. Movilidad y Calendario"},
+    {"id": "hitos_academicos_vehicular", "titulo": "Comparativa por Hito Académico Vehicular", "seccion": "4. Movilidad y Calendario"},
+    {"id": "clusters_comportamiento", "titulo": "Perfiles de Uso Vehicular (Clustering K-Means)", "seccion": "5. Machine Learning (K-Means) y Estadía"},
+    {"id": "distribucion_estadia", "titulo": "Distribución de Tiempos de Permanencia", "seccion": "5. Machine Learning (K-Means) y Estadía"},
 ]
 
 CATALOGO_INDICADORES_ESTACIONAMIENTO = [
@@ -105,6 +121,37 @@ class ServicioReportesCompartidos:
     """Servicio de negocio para creación, confinamiento, auditoría y consulta de reportes ejecutivos."""
 
     @staticmethod
+    def _es_grafico_campana_24h(grafico_id: str) -> bool:
+        return grafico_id == "campana_24_horas" or str(grafico_id).startswith("campana_24h_")
+
+    @classmethod
+    def _normalizar_clave_grafico_snapshot(cls, grafico_id: str) -> str:
+        return "campana_24_horas" if cls._es_grafico_campana_24h(grafico_id) else grafico_id
+
+    @classmethod
+    async def _rango_tiene_campana_24h(
+        cls,
+        session: AsyncSession,
+        espacio_id: int,
+        fecha_inicio: Optional[date],
+        fecha_fin: Optional[date],
+    ) -> bool:
+        if espacio_id != 1 or not fecha_inicio or not fecha_fin:
+            return False
+        from app.domain.config_models import HorarioOperacion
+
+        f_ini_dt = datetime.combine(fecha_inicio, datetime.min.time())
+        f_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
+        stmt = select(HorarioOperacion.id).where(
+            HorarioOperacion.espacio_id == 1,
+            HorarioOperacion.activo == True,
+            or_(HorarioOperacion.es_continuo_24h == True, HorarioOperacion.tipo_horario == "extendido_24h"),
+            or_(HorarioOperacion.fecha_inicio.is_(None), HorarioOperacion.fecha_inicio <= f_fin_dt),
+            or_(HorarioOperacion.fecha_fin.is_(None), HorarioOperacion.fecha_fin >= f_ini_dt),
+        )
+        return (await session.execute(stmt)).first() is not None
+
+    @staticmethod
     async def calcular_indicadores_ejecutivos_biblioteca(
         session: AsyncSession,
         fecha_inicio: date,
@@ -122,6 +169,8 @@ class ServicioReportesCompartidos:
                 espacio_id=1,
                 fecha_inicio=fecha_inicio,
                 fecha_fin=fecha_fin,
+                incluir_funcionarios=bool(filtros.get("incluir_funcionarios", True)),
+                incluir_sin_identificar=bool(filtros.get("incluir_sin_identificar", True)),
             )
         except Exception as exc:
             logger.warning("Fallo resumen gerencial biblioteca: %s", exc)
@@ -165,8 +214,11 @@ class ServicioReportesCompartidos:
                 sala=filtros.get("sala") or None,
                 carrera=filtros.get("carrera") or None,
                 facultad=filtros.get("facultad") or None,
+                cohorte=filtros.get("cohorte") or None,
                 incluir_pausas_bano=bool(filtros.get("incluir_pausas_bano", True)),
                 desduplicar_rafagas=bool(filtros.get("desduplicar_rafagas", True)),
+                incluir_funcionarios=bool(filtros.get("incluir_funcionarios", True)),
+                incluir_sin_identificar=bool(filtros.get("incluir_sin_identificar", True)),
             )
             if perfiles_donut:
                 if perfiles_donut.get("tasa_rebote_pct") is not None:
@@ -201,6 +253,8 @@ class ServicioReportesCompartidos:
                     cohorte=filtros.get("cohorte") or None,
                     incluir_pausas_bano=bool(filtros.get("incluir_pausas_bano", True)),
                     desduplicar_rafagas=bool(filtros.get("desduplicar_rafagas", True)),
+                    incluir_funcionarios=bool(filtros.get("incluir_funcionarios", True)),
+                    incluir_sin_identificar=bool(filtros.get("incluir_sin_identificar", True)),
                 )
                 carreras_lista = (dist_curr or {}).get("carreras") or []
                 for c_item in carreras_lista:
@@ -213,16 +267,16 @@ class ServicioReportesCompartidos:
 
         # Capacidad de asientos según sala seleccionada (igual que BibliotecaView.tsx)
         sala_raw = str(filtros.get("sala") or "").lower()
-        cap_sala1 = 124
-        cap_sala2 = 226
+        cap_sala1 = 150
+        cap_sala2 = 126
         try:
             salas_bd = await AttendanceService.get_salas_biblioteca(session, 1)
             for s_bd in salas_bd or []:
                 cod_s = str(s_bd.get("codigo") or "")
                 if "CSF02" in cod_s or s_bd.get("id") == 1:
-                    cap_sala1 = int(s_bd.get("capacidad_asientos") or 124)
+                    cap_sala1 = int(s_bd.get("capacidad_asientos") or 150)
                 elif "CSF04" in cod_s or s_bd.get("id") == 2:
-                    cap_sala2 = int(s_bd.get("capacidad_asientos") or 226)
+                    cap_sala2 = int(s_bd.get("capacidad_asientos") or 126)
         except Exception:
             pass
 
@@ -250,6 +304,12 @@ class ServicioReportesCompartidos:
             "usuarios_unicos": usuarios_unicos,
             "aforo_maximo_registrado": max_aforo_historico,
             "capacidad_asientos": capacidad_activa,
+            "capacidad_sala1": cap_sala1,
+            "capacidad_sala2": cap_sala2,
+            "total_registros_sala1": int(kpis_base.get("total_registros_sala1") or 0),
+            "total_registros_sala2": int(kpis_base.get("total_registros_sala2") or 0),
+            "max_aforo_sala1": int(kpis_base.get("max_aforo_sala1") or 0),
+            "max_aforo_sala2": int(kpis_base.get("max_aforo_sala2") or 0),
             "estadia_promedio_min": round(estadia_promedio_min, 0),
             "permanencia_promedio_min": round(estadia_promedio_min, 1),
             "tasa_rebote_pct": round(tasa_rebote_pct, 1),
@@ -337,6 +397,15 @@ class ServicioReportesCompartidos:
             "permanencia_mediana_min": round(permanencia_mediana_min, 0),
             "permanencia_promedio_min": round(permanencia_mediana_min, 0),
             "capacidad_plazas": capacidad_plazas,
+            "total_accesos_csf11": int(kpis_base.get("total_accesos_csf11") or 0),
+            "total_accesos_csf21": int(kpis_base.get("total_accesos_csf21") or 0),
+            "total_accesos_chs01": int(kpis_base.get("total_accesos_chs01") or 0),
+            "max_aforo_csf11": int(kpis_base.get("max_aforo_csf11") or 0),
+            "max_aforo_csf21": int(kpis_base.get("max_aforo_csf21") or 0),
+            "max_aforo_chs01": int(kpis_base.get("max_aforo_chs01") or 0),
+            "capacidad_csf11": int(kpis_base.get("capacidad_csf11") or 40),
+            "capacidad_csf21": int(kpis_base.get("capacidad_csf21") or 50),
+            "capacidad_chs01": int(kpis_base.get("capacidad_chs01") or 35),
             "sector_filtrado": filtros.get("sector") or "Todos los sectores CSF",
             "tipo_vehiculo_filtrado": filtros.get("tipo_vehiculo") or "Toda la flota",
         }
@@ -371,6 +440,8 @@ class ServicioReportesCompartidos:
         tipo_vehiculo = filtros.get("tipo_vehiculo") or None
         incluir_pausas_bano = bool(filtros.get("incluir_pausas_bano", True))
         desduplicar_rafagas = bool(filtros.get("desduplicar_rafagas", True))
+        incluir_funcionarios = bool(filtros.get("incluir_funcionarios", True))
+        incluir_sin_identificar = bool(filtros.get("incluir_sin_identificar", True))
 
         graficos_resultado: Dict[str, Any] = {}
 
@@ -393,6 +464,8 @@ class ServicioReportesCompartidos:
                 cohorte=cohorte,
                 incluir_pausas_bano=incluir_pausas_bano,
                 desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
             indicadores_ejecutivos = await cls.calcular_indicadores_ejecutivos_biblioteca(
                 session=session,
@@ -420,6 +493,8 @@ class ServicioReportesCompartidos:
                 cohorte=cohorte,
                 incluir_pausas_bano=incluir_pausas_bano,
                 desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
             )
 
             from app.services.prediction_service import get_prophet_forecast
@@ -463,37 +538,11 @@ class ServicioReportesCompartidos:
                 graficos_resultado["mapa_calor"] = await AttendanceService.get_heatmap(**kwargs_comunes)
             if "comparativa_salas" in graficos_visibles:
                 graficos_resultado["comparativa_salas"] = await AttendanceService.get_rooms_comparison(
-                    session=session,
-                    espacio_id=1,
-                    fecha_inicio=fecha_inicio,
-                    fecha_fin=fecha_fin,
-                    alcance=alcance,
-                    regimen_horario=regimen_horario,
-                    direccion=direccion,
-                    dias_semana=dias_semana,
-                    door=door,
-                    marcajes=marcajes,
-                    carrera=carrera,
-                    facultad=facultad,
-                    incluir_pausas_bano=incluir_pausas_bano,
-                    desduplicar_rafagas=desduplicar_rafagas,
+                    **kwargs_comunes
                 )
             if "promedio_dia_semana" in graficos_visibles:
                 graficos_resultado["promedio_dia_semana"] = await AttendanceService.get_daily_average_attendance(
-                    session=session,
-                    espacio_id=1,
-                    fecha_inicio=fecha_inicio,
-                    fecha_fin=fecha_fin,
-                    alcance=alcance,
-                    regimen_horario=regimen_horario,
-                    direccion=direccion,
-                    dias_semana=dias_semana,
-                    door=door,
-                    marcajes=marcajes,
-                    carrera=carrera,
-                    facultad=facultad,
-                    incluir_pausas_bano=incluir_pausas_bano,
-                    desduplicar_rafagas=desduplicar_rafagas,
+                    **kwargs_comunes
                 )
             if "distribucion_curricular" in graficos_visibles:
                 graficos_resultado["distribucion_curricular"] = await AttendanceService.get_curricular_distribution(
@@ -501,22 +550,7 @@ class ServicioReportesCompartidos:
                 )
             if "perfiles_visita" in graficos_visibles:
                 graficos_resultado["perfiles_visita"] = await AttendanceService.get_visit_profiles_donut(
-                    session=session,
-                    espacio_id=1,
-                    fecha_inicio=fecha_inicio,
-                    fecha_fin=fecha_fin,
-                    alcance=alcance,
-                    regimen_horario=regimen_horario,
-                    direccion=direccion,
-                    dias_semana=dias_semana,
-                    door=door,
-                    perfil_visita=perfil_visita,
-                    marcajes=marcajes,
-                    sala=sala,
-                    carrera=carrera,
-                    facultad=facultad,
-                    incluir_pausas_bano=incluir_pausas_bano,
-                    desduplicar_rafagas=desduplicar_rafagas,
+                    **kwargs_comunes
                 )
             if "uso_torniquetes" in graficos_visibles:
                 graficos_resultado["uso_torniquetes"] = await AttendanceService.get_door_usage(
@@ -534,8 +568,11 @@ class ServicioReportesCompartidos:
                     sala=sala,
                     carrera=carrera,
                     facultad=facultad,
+                    cohorte=cohorte,
                     incluir_pausas_bano=incluir_pausas_bano,
                     desduplicar_rafagas=desduplicar_rafagas,
+                    incluir_funcionarios=incluir_funcionarios,
+                    incluir_sin_identificar=incluir_sin_identificar,
                 )
             if "hitos_academicos" in graficos_visibles:
                 graficos_resultado["hitos_academicos"] = await AttendanceService.get_academic_milestones_comparison(
@@ -557,21 +594,43 @@ class ServicioReportesCompartidos:
                     sala=sala,
                     carrera=carrera,
                     facultad=facultad,
+                    cohorte=cohorte,
                     incluir_pausas_bano=incluir_pausas_bano,
                     desduplicar_rafagas=desduplicar_rafagas,
+                    incluir_funcionarios=incluir_funcionarios,
+                    incluir_sin_identificar=incluir_sin_identificar,
                 )
-            if "campana_24_horas" in graficos_visibles:
-                try:
-                    graficos_resultado["campana_24_horas"] = await AttendanceService.get_analisis_24h(
-                        session=session,
-                        espacio_id=1,
-                        fecha_inicio=fecha_inicio,
-                        fecha_fin=fecha_fin,
-                        bloque_horario="todos",
-                    )
-                except Exception as exc:
-                    logger.warning("Fallo analisis 24h en reporte confinado: %s", exc)
-                    graficos_resultado["campana_24_horas"] = None
+            if any(cls._es_grafico_campana_24h(g) for g in graficos_visibles):
+                tiene_24h = await cls._rango_tiene_campana_24h(session, 1, fecha_inicio, fecha_fin)
+                if tiene_24h:
+                    try:
+                        graficos_resultado["campana_24_horas"] = await AttendanceService.get_analisis_24h(
+                            session=session,
+                            espacio_id=1,
+                            fecha_inicio=fecha_inicio,
+                            fecha_fin=fecha_fin,
+                            bloque_horario="todos",
+                            alcance=alcance,
+                            regimen_horario=regimen_horario,
+                            direccion=direccion,
+                            dias_semana=dias_semana,
+                            door=door,
+                            perfil_visita=perfil_visita,
+                            marcajes=marcajes,
+                            sala=sala,
+                            carrera=carrera,
+                            facultad=facultad,
+                            cohorte=cohorte,
+                            incluir_pausas_bano=incluir_pausas_bano,
+                            desduplicar_rafagas=desduplicar_rafagas,
+                            incluir_funcionarios=incluir_funcionarios,
+                            incluir_sin_identificar=incluir_sin_identificar,
+                        )
+                    except Exception as exc:
+                        logger.warning("Fallo analisis 24h en reporte confinado: %s", exc)
+                        graficos_resultado["campana_24_horas"] = None
+                else:
+                    graficos_visibles = [g for g in graficos_visibles if not cls._es_grafico_campana_24h(g)]
         else:
             kpis_base = await VehicleService.get_kpis(
                 session=session,
@@ -637,7 +696,7 @@ class ServicioReportesCompartidos:
             if "prophet_vehicular" in graficos_visibles:
                 try:
                     graficos_resultado["prophet_vehicular"] = await get_prophet_forecast(
-                        session, recinto="vehicular"
+                        session, recinto="vehicular", sala=sector or "todos"
                     )
                 except Exception as exc:
                     logger.warning("Fallo prophet vehicular en reporte: %s", exc)
@@ -1105,6 +1164,14 @@ class ServicioReportesCompartidos:
         modo_datos = str(payload.get("modo_datos") or "dinamico_acotado")
         notas_items = payload.get("notas_items") or []
 
+        if any(cls._es_grafico_campana_24h(g) for g in graficos_visibles):
+            if not await cls._rango_tiene_campana_24h(session, espacio_id, fecha_inicio, fecha_fin):
+                graficos_visibles = [g for g in graficos_visibles if not cls._es_grafico_campana_24h(g)]
+                notas_items = [
+                    n for n in notas_items
+                    if not (isinstance(n, dict) and cls._es_grafico_campana_24h(str(n.get("seccion") or "")))
+                ]
+
         # Siempre pre-ensamblamos los datos iniciales al emitir el reporte
         # para que tanto en 'instantanea_fija' como en 'dinamico_acotado'
         # la primera visualizacion y la bandeja respondan de inmediato.
@@ -1199,17 +1266,56 @@ class ServicioReportesCompartidos:
     def _formatear_resumen_reporte(
         reporte: ReporteCompartido,
         destinatario: Optional[DestinatarioReporte] = None,
+        metricas: Optional[Dict[str, Any]] = None,
+        emisor_info: Optional[Dict[str, Any]] = None,
+        espacio_nombre: Optional[str] = None,
+        tiene_campana_24h: Optional[bool] = None,
     ) -> Dict[str, Any]:
         dest = destinatario or reporte.destinatario
         expirado = ServicioReportesCompartidos._es_expirado(reporte.expira_en)
         vigente = bool(reporte.activo and (dest.activo if dest else True) and not expirado)
+
+        aperturas_evento = int(metricas.get("total_aperturas", 0)) if metricas else 0
+        total_aperturas = max(aperturas_evento, int(reporte.total_accesos or 0))
+        desc_excel = int(metricas.get("total_descargas_excel", 0)) if metricas else 0
+        desc_csv = int(metricas.get("total_descargas_csv", 0)) if metricas else 0
+        desc_pdf = int(metricas.get("total_descargas_pdf", 0)) if metricas else 0
+        desc_img = int(metricas.get("total_descargas_imagen", 0)) if metricas else 0
+        total_descargas = desc_excel + desc_csv + desc_pdf + desc_img
+        total_consultas_ia = int(metricas.get("total_consultas_ia", 0)) if metricas else 0
+
+        primer_acceso_dt = metricas.get("primer_acceso_en") if metricas else None
+        ultimo_evento_dt = metricas.get("ultimo_acceso_en") if metricas else None
+        ultimo_dt = reporte.ultimo_acceso_en
+        if ultimo_evento_dt and (ultimo_dt is None or ultimo_evento_dt > ultimo_dt):
+            ultimo_dt = ultimo_evento_dt
+
+        expira_ch = marcar_chile(reporte.expira_en) if reporte.expira_en else None
+        creado_ch = marcar_chile(reporte.creado_en) if reporte.creado_en else None
+        primer_ch = marcar_chile(primer_acceso_dt) if primer_acceso_dt else None
+        ultimo_ch = marcar_chile(ultimo_dt) if ultimo_dt else None
+
+        if emisor_info is not None:
+            creador_data = emisor_info
+        else:
+            creador_obj = getattr(reporte, "creador", None)
+            creador_data = {
+                "id": creador_obj.id if creador_obj else reporte.creado_por_id,
+                "nombre_completo": creador_obj.nombre_completo if creador_obj else "Sistema DSS",
+                "email": creador_obj.email if creador_obj else "",
+                "rol": (
+                    normalizar_rol(creador_obj.roles[0].nombre)
+                    if creador_obj and getattr(creador_obj, "roles", None)
+                    else "Usuario"
+                ),
+            }
 
         return {
             "id": str(reporte.id),
             "codigo_corto": reporte.codigo_corto,
             "token_acceso": reporte.token_acceso,
             "espacio_id": reporte.espacio_id,
-            "espacio_nombre": "Biblioteca CSF" if reporte.espacio_id == 1 else "Estacionamiento CSF",
+            "espacio_nombre": espacio_nombre or ("Biblioteca CSF" if reporte.espacio_id == 1 else "Estacionamiento CSF"),
             "titulo_reporte": reporte.titulo_reporte,
             "finalidad_reporte": reporte.finalidad_reporte,
             "nota_general": reporte.nota_general or "",
@@ -1225,10 +1331,21 @@ class ServicioReportesCompartidos:
             "activo": reporte.activo,
             "expirado": expirado,
             "vigente": vigente,
-            "expira_en": reporte.expira_en.isoformat() if reporte.expira_en else None,
+            "expira_en": expira_ch.isoformat() if expira_ch else None,
             "total_accesos": reporte.total_accesos,
-            "ultimo_acceso_en": reporte.ultimo_acceso_en.isoformat() if reporte.ultimo_acceso_en else None,
-            "creado_en": reporte.creado_en.isoformat() if reporte.creado_en else None,
+            "revisado": total_aperturas > 0,
+            "total_aperturas": total_aperturas,
+            "total_descargas": total_descargas,
+            "total_descargas_excel": desc_excel,
+            "total_descargas_csv": desc_csv,
+            "total_descargas_pdf": desc_pdf,
+            "total_descargas_imagen": desc_img,
+            "total_consultas_ia": total_consultas_ia,
+            "primer_acceso_en": primer_ch.isoformat() if primer_ch else None,
+            "ultimo_acceso_en": ultimo_ch.isoformat() if ultimo_ch else None,
+            "ultima_ip": metricas.get("ultima_ip") if metricas else None,
+            "ultimo_user_agent": metricas.get("ultimo_user_agent") if metricas else None,
+            "creado_en": creado_ch.isoformat() if creado_ch else None,
             "destinatario": {
                 "id": dest.id if dest else None,
                 "nombre_completo": dest.nombre_completo if dest else "",
@@ -1238,12 +1355,9 @@ class ServicioReportesCompartidos:
                 "token_portal": dest.token_portal if dest else "",
                 "activo": dest.activo if dest else True,
             },
-            "creador": {
-                "id": reporte.creador.id if reporte.creador else reporte.creado_por_id,
-                "nombre_completo": reporte.creador.nombre_completo if reporte.creador else "Sistema DSS",
-                "email": reporte.creador.email if reporte.creador else "",
-                "rol": (reporte.creador.roles[0].nombre if reporte.creador and reporte.creador.roles else "Usuario"),
-            },
+            "creador": creador_data,
+            "emisor": creador_data,
+            "tiene_campana_24h": bool(tiene_campana_24h) if tiene_campana_24h is not None else False,
         }
 
     @classmethod
@@ -1254,9 +1368,7 @@ class ServicioReportesCompartidos:
         espacio_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Devuelve la lista de reportes emitidos y el catálogo de destinatarios registrados según jerarquía RLS."""
-        roles_usuario = {r.nombre for r in usuario_actual.roles}
-        es_admin = bool({"Admin_Sistema", "SuperAdmin"}.intersection(roles_usuario))
-        es_directora = bool({"Directora_Recinto", "Director_Recinto"}.intersection(roles_usuario))
+        from app.domain.config_models import HorarioOperacion
 
         stmt = (
             select(ReporteCompartido)
@@ -1266,22 +1378,29 @@ class ServicioReportesCompartidos:
             )
             .order_by(desc(ReporteCompartido.creado_en))
         )
-        if not es_admin:
-            if es_directora:
-                subquery_analistas = select(Usuario.id).where(
-                    (Usuario.created_by_user_id == usuario_actual.id) |
-                    ((Usuario.espacio_id == usuario_actual.espacio_id) & (Usuario.espacio_id != None))
-                )
-                stmt = stmt.where(
-                    (ReporteCompartido.creado_por_id == usuario_actual.id) |
-                    (ReporteCompartido.creado_por_id.in_(subquery_analistas))
-                )
-            else:
-                stmt = stmt.where(ReporteCompartido.creado_por_id == usuario_actual.id)
+        stmt = cls._aplicar_filtro_rls_reportes(stmt, usuario_actual)
         if espacio_id is not None:
             stmt = stmt.where(ReporteCompartido.espacio_id == espacio_id)
 
         filas_reportes = (await session.execute(stmt)).scalars().all()
+
+        stmt_24h = select(HorarioOperacion).where(
+            HorarioOperacion.espacio_id == 1,
+            HorarioOperacion.activo == True,
+            or_(HorarioOperacion.es_continuo_24h == True, HorarioOperacion.tipo_horario == "extendido_24h"),
+        )
+        campanas_24h = (await session.execute(stmt_24h)).scalars().all()
+
+        def _rep_tiene_24h(rep: ReporteCompartido) -> bool:
+            if rep.espacio_id != 1 or not rep.fecha_inicio or not rep.fecha_fin:
+                return False
+            f_ini_dt = datetime.combine(rep.fecha_inicio, datetime.min.time())
+            f_fin_dt = datetime.combine(rep.fecha_fin, datetime.max.time())
+            return any(
+                (c.fecha_inicio is None or c.fecha_inicio <= f_fin_dt)
+                and (c.fecha_fin is None or c.fecha_fin >= f_ini_dt)
+                for c in campanas_24h
+            )
 
         stmt_dest = select(DestinatarioReporte).order_by(desc(DestinatarioReporte.actualizado_en))
         filas_dest = (await session.execute(stmt_dest)).scalars().all()
@@ -1294,7 +1413,10 @@ class ServicioReportesCompartidos:
                 mapa_usuarios[u.email.lower()] = u
 
         return {
-            "reportes": [cls._formatear_resumen_reporte(r, r.destinatario) for r in filas_reportes],
+            "reportes": [
+                cls._formatear_resumen_reporte(r, r.destinatario, tiene_campana_24h=_rep_tiene_24h(r))
+                for r in filas_reportes
+            ],
             "destinatarios": [
                 {
                     "id": d.id,
@@ -1343,17 +1465,30 @@ class ServicioReportesCompartidos:
 
         stmt = (
             select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario))
+            .options(
+                selectinload(ReporteCompartido.destinatario),
+                selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
+            )
             .where(ReporteCompartido.id == uuid_obj)
         )
         reporte = (await session.execute(stmt)).scalar_one_or_none()
         if not reporte:
             raise HTTPException(status_code=404, detail="Reporte compartido no encontrado.")
 
-        roles_usuario = {r.nombre for r in usuario_actual.roles}
-        es_admin = "Admin_Sistema" in roles_usuario or "SuperAdmin" in roles_usuario
-        if not es_admin and reporte.creado_por_id != usuario_actual.id:
+        emisor = reporte.creador
+        if not emisor and reporte.creado_por_id:
+            emisor_stmt = (
+                select(Usuario)
+                .options(selectinload(Usuario.roles))
+                .where(Usuario.id == reporte.creado_por_id)
+            )
+            emisor = (await session.execute(emisor_stmt)).scalar_one_or_none()
+        if not cls._puede_ver_o_gestionar_reporte(usuario_actual, reporte, emisor):
             raise HTTPException(status_code=403, detail="No tiene permisos para modificar este reporte.")
+
+        tiene_24h_rango = await cls._rango_tiene_campana_24h(
+            session, reporte.espacio_id, reporte.fecha_inicio, reporte.fecha_fin
+        )
 
         estaba_activo = bool(reporte.activo)
         se_habilito_ahora = False
@@ -1374,10 +1509,43 @@ class ServicioReportesCompartidos:
             reporte.nota_general = str(payload["nota_general"] or "").strip() or None
         if "notas_items" in payload and payload["notas_items"] is not None:
             reporte.notas_items_json = _serializar_json_seguro(payload["notas_items"])
+
+        cambio_contenido = False
         if "graficos_visibles" in payload and payload["graficos_visibles"] is not None:
-            reporte.graficos_visibles_json = _serializar_json_seguro(payload["graficos_visibles"])
+            graf_nuevos = list(payload["graficos_visibles"])
+            if reporte.espacio_id == 1 and not tiene_24h_rango:
+                graf_nuevos = [g for g in graf_nuevos if not cls._es_grafico_campana_24h(g)]
+            reporte.graficos_visibles_json = _serializar_json_seguro(graf_nuevos)
+            cambio_contenido = True
         if "indicadores_visibles" in payload and payload["indicadores_visibles"] is not None:
             reporte.indicadores_visibles_json = _serializar_json_seguro(payload["indicadores_visibles"])
+            cambio_contenido = True
+
+        if cambio_contenido:
+            graf_act = _cargar_json_seguro(reporte.graficos_visibles_json, [])
+            ind_act = _cargar_json_seguro(reporte.indicadores_visibles_json, [])
+            filtros_act = _cargar_json_seguro(reporte.filtros_bloqueados_json, {})
+            datos_inst = _cargar_json_seguro(reporte.datos_instantanea_json, {})
+            graf_guardados = datos_inst.get("graficos") or {}
+            falta_alguno = any(
+                cls._normalizar_clave_grafico_snapshot(g) not in graf_guardados
+                for g in graf_act
+            )
+            if not datos_inst or falta_alguno:
+                datos_inst = await cls.ensamblar_datos_reporte_confinado(
+                    session=session,
+                    espacio_id=reporte.espacio_id,
+                    fecha_inicio=reporte.fecha_inicio,
+                    fecha_fin=reporte.fecha_fin,
+                    filtros=filtros_act,
+                    graficos_visibles=graf_act,
+                    indicadores_visibles=ind_act,
+                )
+            else:
+                datos_inst["graficos_visibles"] = graf_act
+                datos_inst["indicadores_visibles"] = ind_act
+            reporte.datos_instantanea_json = _serializar_json_seguro(datos_inst)
+
         if "expira_en" in payload:
             val_exp = payload["expira_en"]
             if not val_exp:
@@ -1421,7 +1589,9 @@ class ServicioReportesCompartidos:
                 enlace_activacion_pendiente=enlace_activacion,
             )
 
-        resumen = cls._formatear_resumen_reporte(reporte, reporte.destinatario)
+        resumen = cls._formatear_resumen_reporte(
+            reporte, reporte.destinatario, tiene_campana_24h=tiene_24h_rango
+        )
         resumen["correo_enviado"] = correo_enviado
         return resumen
 
@@ -1451,6 +1621,412 @@ class ServicioReportesCompartidos:
                 "reportes": [],
             }
         return await cls.obtener_portal_destinatario_por_token(session=session, token_portal=dest.token_portal)
+
+    @classmethod
+    def _roles_normalizados(cls, usuario: Optional[Usuario]) -> set[str]:
+        if not usuario:
+            return set()
+        return {normalizar_rol(r.nombre) for r in (getattr(usuario, "roles", None) or [])}
+
+    @classmethod
+    def _es_admin(cls, usuario: Optional[Usuario]) -> bool:
+        return "Admin_Sistema" in cls._roles_normalizados(usuario)
+
+    @classmethod
+    def _es_directivo(cls, usuario: Optional[Usuario]) -> bool:
+        return "Director_Recinto" in cls._roles_normalizados(usuario)
+
+    @classmethod
+    def _espacios_autorizados(cls, usuario: Usuario) -> Optional[List[int]]:
+        """Retorna None si es Admin (sin restricción) o los espacio_id autorizados al usuario."""
+        if cls._es_admin(usuario):
+            return None
+        mapa_modulo = {"biblioteca": 1, "estacionamiento": 2}
+        datasets = [str(d).strip().lower() for d in (getattr(usuario, "allowed_datasets", None) or []) if d]
+        ids_dataset = {mapa_modulo[d] for d in datasets if d in mapa_modulo}
+        esp_id = getattr(usuario, "espacio_id", None)
+        if esp_id is not None:
+            esp_int = int(esp_id)
+            if ids_dataset and esp_int not in ids_dataset:
+                return []
+            return [esp_int]
+        if datasets:
+            return sorted(ids_dataset)
+        return []
+
+    @classmethod
+    def _es_emisor_directivo_o_analista(cls, emisor: Optional[Usuario]) -> bool:
+        roles_emisor = cls._roles_normalizados(emisor)
+        if not roles_emisor or "Admin_Sistema" in roles_emisor:
+            return False
+        return bool(roles_emisor.intersection({"Director_Recinto", "Analista_Consulta"}))
+
+    @classmethod
+    def _puede_ver_o_gestionar_reporte(
+        cls,
+        usuario_actual: Usuario,
+        reporte: ReporteCompartido,
+        emisor: Optional[Usuario] = None,
+    ) -> bool:
+        if cls._es_admin(usuario_actual):
+            return True
+        if cls._es_directivo(usuario_actual):
+            espacios = cls._espacios_autorizados(usuario_actual)
+            if espacios is not None and int(reporte.espacio_id) not in espacios:
+                return False
+            if reporte.creado_por_id == usuario_actual.id:
+                return True
+            return cls._es_emisor_directivo_o_analista(emisor)
+        return reporte.creado_por_id == usuario_actual.id
+
+    @classmethod
+    def _aplicar_filtro_rls_reportes(cls, stmt: Any, usuario_actual: Usuario) -> Any:
+        if cls._es_admin(usuario_actual):
+            return stmt
+        if cls._es_directivo(usuario_actual):
+            espacios = cls._espacios_autorizados(usuario_actual)
+            if not espacios:
+                return stmt.where(text("1 = 0"))
+            roles_permitidos_sql = (
+                "Director_Recinto",
+                "Directivo",
+                "Directora_Recinto",
+                "Analista_Consulta",
+                "Analista",
+            )
+            roles_admin_sql = ("Admin_Sistema", "SuperAdmin")
+            subq_emisor_valido = (
+                select(UsuarioRol.usuario_id)
+                .join(Rol, Rol.id == UsuarioRol.rol_id)
+                .where(Rol.nombre.in_(roles_permitidos_sql))
+            )
+            subq_emisor_admin = (
+                select(UsuarioRol.usuario_id)
+                .join(Rol, Rol.id == UsuarioRol.rol_id)
+                .where(Rol.nombre.in_(roles_admin_sql))
+            )
+            return (
+                stmt.where(ReporteCompartido.espacio_id.in_(espacios))
+                .where(ReporteCompartido.creado_por_id.in_(subq_emisor_valido))
+                .where(~ReporteCompartido.creado_por_id.in_(subq_emisor_admin))
+            )
+        return stmt.where(ReporteCompartido.creado_por_id == usuario_actual.id)
+
+    @classmethod
+    async def _cargar_contexto_resumen_reportes(
+        cls,
+        session: AsyncSession,
+        reportes: List[ReporteCompartido],
+    ) -> tuple[Dict[uuid.UUID, Dict[str, Any]], Dict[int, Dict[str, Any]], Dict[int, str]]:
+        if not reportes:
+            return {}, {}, {}
+        rep_ids = [r.id for r in reportes]
+        emisor_ids = sorted({int(r.creado_por_id) for r in reportes if r.creado_por_id is not None})
+
+        metricas_map: Dict[uuid.UUID, Dict[str, Any]] = {}
+        stmt_ev = (
+            select(AuditoriaAccesoReporte)
+            .where(AuditoriaAccesoReporte.reporte_id.in_(rep_ids))
+            .order_by(AuditoriaAccesoReporte.fecha_hora.asc(), AuditoriaAccesoReporte.id.asc())
+        )
+        eventos = (await session.execute(stmt_ev)).scalars().all()
+        for ev in eventos:
+            m = metricas_map.setdefault(
+                ev.reporte_id,
+                {
+                    "total_aperturas": 0,
+                    "total_descargas_excel": 0,
+                    "total_descargas_csv": 0,
+                    "total_descargas_pdf": 0,
+                    "total_descargas_imagen": 0,
+                    "total_consultas_ia": 0,
+                    "primer_acceso_en": None,
+                    "ultimo_acceso_en": None,
+                    "ultima_ip": None,
+                    "ultimo_user_agent": None,
+                },
+            )
+            accion = (ev.accion or "").strip()
+            if accion == "apertura_reporte":
+                m["total_aperturas"] += 1
+            elif accion == "descarga_excel":
+                m["total_descargas_excel"] += 1
+            elif accion == "descarga_csv":
+                m["total_descargas_csv"] += 1
+            elif accion == "descarga_pdf":
+                m["total_descargas_pdf"] += 1
+            elif accion == "descarga_imagen":
+                m["total_descargas_imagen"] += 1
+            elif accion == "consulta_ia_confinada":
+                m["total_consultas_ia"] += 1
+
+            if m["primer_acceso_en"] is None or (ev.fecha_hora and ev.fecha_hora < m["primer_acceso_en"]):
+                m["primer_acceso_en"] = ev.fecha_hora
+            if m["ultimo_acceso_en"] is None or (ev.fecha_hora and ev.fecha_hora >= m["ultimo_acceso_en"]):
+                m["ultimo_acceso_en"] = ev.fecha_hora
+                if ev.ip_origen:
+                    m["ultima_ip"] = ev.ip_origen
+                if getattr(ev, "user_agent", None):
+                    m["ultimo_user_agent"] = ev.user_agent
+
+        emisores_map: Dict[int, Dict[str, Any]] = {}
+        if emisor_ids:
+            stmt_em = select(Usuario).options(selectinload(Usuario.roles)).where(Usuario.id.in_(emisor_ids))
+            for u in (await session.execute(stmt_em)).scalars().all():
+                roles_u = [normalizar_rol(r.nombre) for r in (u.roles or [])]
+                rol_principal = (
+                    "Admin_Sistema"
+                    if "Admin_Sistema" in roles_u
+                    else ("Director_Recinto" if "Director_Recinto" in roles_u else (roles_u[0] if roles_u else "Analista_Consulta"))
+                )
+                emisores_map[int(u.id)] = {
+                    "id": int(u.id),
+                    "nombre_completo": u.nombre_completo,
+                    "email": u.email,
+                    "rol": rol_principal,
+                }
+
+        espacios_map: Dict[int, str] = {}
+        stmt_esp = select(Espacio)
+        for esp in (await session.execute(stmt_esp)).scalars().all():
+            espacios_map[int(esp.id)] = esp.nombre
+
+        return metricas_map, emisores_map, espacios_map
+
+    @classmethod
+    async def obtener_auditoria_reportes_emitidos(
+        cls,
+        session: AsyncSession,
+        usuario_actual: Usuario,
+        espacio_id: Optional[int] = None,
+        emisor_rol: Optional[str] = None,
+        estado_revision: Optional[str] = None,
+        solo_activos: Optional[bool] = None,
+        search: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
+        stmt = (
+            select(ReporteCompartido)
+            .options(selectinload(ReporteCompartido.destinatario))
+            .order_by(desc(ReporteCompartido.creado_en))
+        )
+        stmt = cls._aplicar_filtro_rls_reportes(stmt, usuario_actual)
+
+        if espacio_id is not None:
+            stmt = stmt.where(ReporteCompartido.espacio_id == espacio_id)
+        if solo_activos is not None:
+            stmt = stmt.where(ReporteCompartido.activo == solo_activos)
+
+        emisor_norm = (emisor_rol or "").strip().lower()
+        if emisor_norm == "directivo":
+            subq_dir = (
+                select(UsuarioRol.usuario_id)
+                .join(Rol, Rol.id == UsuarioRol.rol_id)
+                .where(Rol.nombre.in_(("Director_Recinto", "Directivo", "Directora_Recinto")))
+            )
+            stmt = stmt.where(ReporteCompartido.creado_por_id.in_(subq_dir))
+        elif emisor_norm == "analista":
+            subq_ana = (
+                select(UsuarioRol.usuario_id)
+                .join(Rol, Rol.id == UsuarioRol.rol_id)
+                .where(Rol.nombre.in_(("Analista_Consulta", "Analista")))
+            )
+            stmt = stmt.where(ReporteCompartido.creado_por_id.in_(subq_ana))
+        elif emisor_norm == "admin":
+            subq_adm = (
+                select(UsuarioRol.usuario_id)
+                .join(Rol, Rol.id == UsuarioRol.rol_id)
+                .where(Rol.nombre.in_(("Admin_Sistema", "SuperAdmin")))
+            )
+            stmt = stmt.where(ReporteCompartido.creado_por_id.in_(subq_adm))
+
+        if search and search.strip():
+            termino = f"%{search.strip()}%"
+            stmt = stmt.outerjoin(DestinatarioReporte, ReporteCompartido.destinatario_id == DestinatarioReporte.id).where(
+                or_(
+                    ReporteCompartido.titulo_reporte.ilike(termino),
+                    ReporteCompartido.codigo_corto.ilike(termino),
+                    DestinatarioReporte.nombre_completo.ilike(termino),
+                    DestinatarioReporte.email.ilike(termino),
+                )
+            )
+
+        reportes = (await session.execute(stmt)).scalars().all()
+        metricas_map, emisores_map, espacios_map = await cls._cargar_contexto_resumen_reportes(session, reportes)
+
+        resumenes: List[Dict[str, Any]] = []
+        revisados_total = 0
+        aperturas_total = 0
+        descargas_total = 0
+        consultas_ia_total = 0
+
+        for rep in reportes:
+            m = metricas_map.get(rep.id)
+            item = cls._formatear_resumen_reporte(
+                rep,
+                metricas=m,
+                emisor_info=emisores_map.get(int(rep.creado_por_id)),
+                espacio_nombre=espacios_map.get(int(rep.espacio_id)),
+            )
+            if item["revisado"]:
+                revisados_total += 1
+            aperturas_total += item["total_aperturas"]
+            descargas_total += item["total_descargas"]
+            consultas_ia_total += item["total_consultas_ia"]
+            resumenes.append(item)
+
+        rev_norm = (estado_revision or "").strip().lower()
+        if rev_norm == "revisado":
+            filtrados = [it for it in resumenes if it["revisado"]]
+        elif rev_norm == "sin_revisar":
+            filtrados = [it for it in resumenes if not it["revisado"]]
+        else:
+            filtrados = resumenes
+
+        total_items = len(filtrados)
+        page_safe = max(1, int(page))
+        size_safe = max(1, min(100, int(page_size)))
+        total_pages = max(1, (total_items + size_safe - 1) // size_safe)
+        offset = (page_safe - 1) * size_safe
+        paginados = filtrados[offset : offset + size_safe]
+
+        total_universo = len(resumenes)
+        return {
+            "rol_auditor": (
+                "Admin_Sistema"
+                if cls._es_admin(usuario_actual)
+                else ("Director_Recinto" if cls._es_directivo(usuario_actual) else "Analista_Consulta")
+            ),
+            "espacios_autorizados": cls._espacios_autorizados(usuario_actual),
+            "kpis": {
+                "total_reportes": total_universo,
+                "reportes_revisados": revisados_total,
+                "reportes_sin_revisar": total_universo - revisados_total,
+                "tasa_lectura_pct": round((revisados_total / total_universo) * 100, 1) if total_universo > 0 else 0.0,
+                "total_aperturas": aperturas_total,
+                "total_descargas": descargas_total,
+                "total_consultas_ia": consultas_ia_total,
+            },
+            "total": total_items,
+            "page": page_safe,
+            "page_size": size_safe,
+            "total_pages": total_pages,
+            "items": paginados,
+        }
+
+    @classmethod
+    async def obtener_eventos_reporte(
+        cls,
+        session: AsyncSession,
+        usuario_actual: Usuario,
+        reporte_id: str,
+        accion: Optional[str] = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        try:
+            uuid_obj = uuid.UUID(reporte_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="ID de reporte inválido.")
+
+        reporte = (
+            await session.execute(
+                select(ReporteCompartido)
+                .options(selectinload(ReporteCompartido.destinatario))
+                .where(ReporteCompartido.id == uuid_obj)
+            )
+        ).scalar_one_or_none()
+        if not reporte:
+            raise HTTPException(status_code=404, detail="Reporte compartido no encontrado.")
+
+        emisor = (
+            await session.execute(
+                select(Usuario).options(selectinload(Usuario.roles)).where(Usuario.id == reporte.creado_por_id)
+            )
+        ).scalar_one_or_none()
+        if not cls._puede_ver_o_gestionar_reporte(usuario_actual, reporte, emisor):
+            raise HTTPException(status_code=403, detail="No tiene permisos para auditar este reporte.")
+
+        stmt = (
+            select(AuditoriaAccesoReporte)
+            .where(AuditoriaAccesoReporte.reporte_id == uuid_obj)
+            .order_by(desc(AuditoriaAccesoReporte.fecha_hora), desc(AuditoriaAccesoReporte.id))
+            .limit(max(1, min(500, int(limit))))
+        )
+        if accion and accion.strip():
+            stmt = stmt.where(AuditoriaAccesoReporte.accion == accion.strip())
+
+        eventos = (await session.execute(stmt)).scalars().all()
+        return {
+            "reporte_id": str(reporte.id),
+            "codigo_corto": reporte.codigo_corto,
+            "titulo_reporte": reporte.titulo_reporte,
+            "destinatario": {
+                "nombre_completo": reporte.destinatario.nombre_completo if reporte.destinatario else None,
+                "email": reporte.destinatario.email if reporte.destinatario else None,
+            },
+            "eventos": [
+                {
+                    "id": ev.id,
+                    "fecha_hora": marcar_chile(ev.fecha_hora).isoformat() if ev.fecha_hora else None,
+                    "accion": ev.accion,
+                    "ip_origen": ev.ip_origen,
+                    "detalle": getattr(ev, "detalle", None),
+                    "user_agent": getattr(ev, "user_agent", None),
+                }
+                for ev in eventos
+            ],
+        }
+
+    @classmethod
+    async def registrar_evento_reporte_publico(
+        cls,
+        session: AsyncSession,
+        token_acceso: str,
+        accion: str,
+        detalle: Optional[str] = None,
+        ip_origen: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        acciones_permitidas = {"descarga_excel", "descarga_csv", "descarga_pdf", "descarga_imagen"}
+        if accion not in acciones_permitidas:
+            raise HTTPException(status_code=400, detail="Acción de seguimiento no válida.")
+
+        stmt = (
+            select(ReporteCompartido)
+            .options(selectinload(ReporteCompartido.destinatario))
+            .where(ReporteCompartido.token_acceso == token_acceso)
+        )
+        reporte = (await session.execute(stmt)).scalar_one_or_none()
+        if not reporte:
+            raise HTTPException(status_code=404, detail="El enlace de reporte solicitado no existe.")
+
+        dest = reporte.destinatario
+        if not reporte.activo or (dest and not dest.activo):
+            raise HTTPException(status_code=403, detail="Este reporte ejecutivo ha sido deshabilitado.")
+        if cls._es_expirado(reporte.expira_en):
+            raise HTTPException(status_code=410, detail="El plazo de vigencia de este reporte expiró.")
+        if not reporte.permitir_exportacion:
+            raise HTTPException(status_code=403, detail="La exportación está deshabilitada para este reporte.")
+
+        ahora = ahora_chile_naive()
+        reporte.ultimo_acceso_en = ahora
+        session.add(
+            AuditoriaAccesoReporte(
+                reporte_id=reporte.id,
+                fecha_hora=ahora,
+                ip_origen=ip_origen,
+                accion=accion,
+                detalle=(detalle or "")[:500] or None,
+                user_agent=(user_agent or "")[:255] or None,
+            )
+        )
+        await session.commit()
+        return {
+            "ok": True,
+            "accion": accion,
+            "fecha_hora": marcar_chile(ahora).isoformat(),
+        }
 
     @classmethod
     async def actualizar_estado_destinatario(
@@ -1509,14 +2085,31 @@ class ServicioReportesCompartidos:
             sql_delete(DestinatarioReporte).where(DestinatarioReporte.id == destinatario_id)
         )
 
-        CUENTAS_SISTEMA_PROTEGIDAS = {"admin@uct.cl", "directivo@uct.cl", "analista@uct.cl", "guardia@uct.cl"}
-        stmt_usr = select(Usuario).where(Usuario.email == email_dest)
+        stmt_usr = (
+            select(Usuario)
+            .options(selectinload(Usuario.roles))
+            .where(func.lower(Usuario.email) == email_dest)
+        )
         usr = (await session.execute(stmt_usr)).scalar_one_or_none()
-        if usr and usr.id != usuario_actual.id and email_dest not in CUENTAS_SISTEMA_PROTEGIDAS:
+        if usr:
+            roles_usr = {normalizar_rol(r.nombre) for r in (usr.roles or [])}
+            tiene_otros_roles = bool(roles_usr - {"Consultor_Reporte"})
             limpiar_cache_usuario(usr.id)
-            await session.execute(sql_delete(TokenActivacion).where(TokenActivacion.usuario_id == usr.id))
-            await session.execute(sql_delete(UsuarioRol).where(UsuarioRol.usuario_id == usr.id))
-            await session.execute(sql_delete(Usuario).where(Usuario.id == usr.id))
+            if usr.id != usuario_actual.id and not tiene_otros_roles:
+                await session.execute(sql_delete(TokenActivacion).where(TokenActivacion.usuario_id == usr.id))
+                await session.execute(sql_delete(UsuarioRol).where(UsuarioRol.usuario_id == usr.id))
+                await session.execute(sql_delete(Usuario).where(Usuario.id == usr.id))
+            elif "Consultor_Reporte" in roles_usr:
+                rol_c = (
+                    await session.execute(select(Rol.id).where(Rol.nombre == "Consultor_Reporte"))
+                ).scalar_one_or_none()
+                if rol_c:
+                    await session.execute(
+                        sql_delete(UsuarioRol).where(
+                            UsuarioRol.usuario_id == usr.id,
+                            UsuarioRol.rol_id == rol_c,
+                        )
+                    )
 
         await session.commit()
         return {"eliminado": True, "id": destinatario_id, "email": email_dest}
@@ -1553,6 +2146,7 @@ class ServicioReportesCompartidos:
         session: AsyncSession,
         token_acceso: str,
         ip_origen: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Resuelve un reporte público confinado por su token_acceso.
@@ -1560,7 +2154,10 @@ class ServicioReportesCompartidos:
         """
         stmt = (
             select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario).selectinload(DestinatarioReporte.reportes))
+            .options(
+                selectinload(ReporteCompartido.destinatario).selectinload(DestinatarioReporte.reportes),
+                selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
+            )
             .where(ReporteCompartido.token_acceso == token_acceso)
         )
         reporte = (await session.execute(stmt)).scalar_one_or_none()
@@ -1577,7 +2174,7 @@ class ServicioReportesCompartidos:
                 detail="Este reporte ejecutivo ha sido deshabilitado por el emisor institucional.",
             )
 
-        ahora = datetime.now()
+        ahora = ahora_chile_naive()
         if cls._es_expirado(reporte.expira_en):
             raise HTTPException(
                 status_code=status.HTTP_410_GONE,
@@ -1593,6 +2190,8 @@ class ServicioReportesCompartidos:
                 fecha_hora=ahora,
                 ip_origen=ip_origen,
                 accion="apertura_reporte",
+                detalle=f"Apertura del reporte {reporte.codigo_corto}",
+                user_agent=(user_agent or "")[:255] or None,
             )
         )
         await session.commit()
@@ -1614,7 +2213,10 @@ class ServicioReportesCompartidos:
                 )
             }
             ind_vis_guardados = datos_confinados.get("indicadores_visibles") or []
-            faltan_graficos = any(g in graficos_visibles and g not in graficos_guardados for g in graficos_visibles)
+            faltan_graficos = any(
+                cls._normalizar_clave_grafico_snapshot(g) not in graficos_guardados
+                for g in graficos_visibles
+            )
             if (
                 "dias_operativos" not in ind_ej_guardados
                 or not any(i in ids_cat_actual for i in ind_vis_guardados)
@@ -1689,10 +2291,32 @@ class ServicioReportesCompartidos:
                 requiere_crear_password = True
                 token_activacion_pendiente = token_act
 
+        mensajes_ia_resp: List[Dict[str, Any]] = []
+        if reporte.permitir_ia:
+            stmt_msg = (
+                select(MensajeIAReporte)
+                .where(MensajeIAReporte.reporte_id == reporte.id)
+                .order_by(MensajeIAReporte.creado_en.asc(), MensajeIAReporte.id.asc())
+            )
+            filas_msg = (await session.execute(stmt_msg)).scalars().all()
+            mensajes_ia_resp = [
+                {
+                    "id": m.id,
+                    "sesion_id": m.sesion_id or "principal",
+                    "pregunta": m.pregunta,
+                    "respuesta": m.respuesta,
+                    "modelo_utilizado": m.modelo_utilizado,
+                    "tiempo_respuesta_ms": m.tiempo_respuesta_ms,
+                    "creado_en": marcar_chile(m.creado_en).isoformat() if m.creado_en else None,
+                }
+                for m in filas_msg
+            ]
+
         return {
             "reporte": cls._formatear_resumen_reporte(reporte, dest),
             "datos": datos_confinados,
             "historial_destinatario": historial_destinatario,
+            "mensajes_ia": mensajes_ia_resp,
             "requiere_crear_password": requiere_crear_password,
             "token_activacion": token_activacion_pendiente,
             "catalogos": {
@@ -1765,12 +2389,60 @@ class ServicioReportesCompartidos:
         }
 
     @classmethod
+    async def obtener_historial_ia_reporte_publico(
+        cls,
+        session: AsyncSession,
+        token_acceso: str,
+    ) -> Dict[str, Any]:
+        """Devuelve el historial persistido de conversaciones IA para un reporte público autorizado."""
+        stmt = (
+            select(ReporteCompartido)
+            .options(selectinload(ReporteCompartido.destinatario))
+            .where(ReporteCompartido.token_acceso == token_acceso)
+        )
+        reporte = (await session.execute(stmt)).scalar_one_or_none()
+        if not reporte:
+            raise HTTPException(status_code=404, detail="Reporte no encontrado.")
+        if not reporte.activo or (reporte.destinatario and not reporte.destinatario.activo):
+            raise HTTPException(status_code=403, detail="Este reporte se encuentra deshabilitado.")
+        if cls._es_expirado(reporte.expira_en):
+            raise HTTPException(status_code=410, detail="Este reporte ha expirado.")
+        if not reporte.permitir_ia:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="El asistente de IA no está habilitado para este reporte compartido.",
+            )
+
+        stmt_msg = (
+            select(MensajeIAReporte)
+            .where(MensajeIAReporte.reporte_id == reporte.id)
+            .order_by(MensajeIAReporte.creado_en.asc(), MensajeIAReporte.id.asc())
+        )
+        filas = (await session.execute(stmt_msg)).scalars().all()
+        return {
+            "mensajes": [
+                {
+                    "id": m.id,
+                    "sesion_id": m.sesion_id or "principal",
+                    "pregunta": m.pregunta,
+                    "respuesta": m.respuesta,
+                    "modelo_utilizado": m.modelo_utilizado,
+                    "tiempo_respuesta_ms": m.tiempo_respuesta_ms,
+                    "creado_en": marcar_chile(m.creado_en).isoformat() if m.creado_en else None,
+                }
+                for m in filas
+            ]
+        }
+
+    @classmethod
     async def consultar_ia_reporte_confinado(
         cls,
         session: AsyncSession,
         token_acceso: str,
         pregunta: str,
+        sesion_id: str = "principal",
         ip_origen: Optional[str] = None,
+        user_agent: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ejecuta una consulta al asistente IA estrictamente confinada a los datos del reporte compartido.
@@ -1778,7 +2450,10 @@ class ServicioReportesCompartidos:
         """
         stmt = (
             select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario))
+            .options(
+                selectinload(ReporteCompartido.destinatario),
+                selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
+            )
             .where(ReporteCompartido.token_acceso == token_acceso)
         )
         reporte = (await session.execute(stmt)).scalar_one_or_none()
@@ -1814,7 +2489,10 @@ class ServicioReportesCompartidos:
                 )
             }
             ind_vis_guardados = datos_confinados.get("indicadores_visibles") or []
-            faltan_graficos = any(g in graficos_visibles and g not in graficos_guardados for g in graficos_visibles)
+            faltan_graficos = any(
+                cls._normalizar_clave_grafico_snapshot(g) not in graficos_guardados
+                for g in graficos_visibles
+            )
             if (
                 "dias_operativos" not in ind_ej_guardados
                 or not any(i in ids_cat_actual for i in ind_vis_guardados)
@@ -1870,7 +2548,9 @@ class ServicioReportesCompartidos:
             "ÚNICAMENTE puedes utilizar las cifras, notas e indicadores incluidos en el JSON de contexto adjunto. "
             "Si el usuario pregunta por otras carreras, otros períodos o recintos fuera de este reporte, "
             "indica cortésmente que tu alcance está confinado exclusivamente a los datos sellados en este reporte ejecutivo. "
-            "Responde siempre en español claro, ejecutivo y conciso."
+            "Responde siempre en español claro, directo y ejecutivo, evitando saludos largos repetitivos (como 'Estimado/a Consultor/a'). "
+            "Formatea las cifras numéricas según estándar chileno: punto para miles y coma para decimales (ej. 14.208; 58,0 minutos; 33,8%). "
+            "Cuando enumeres métricas o indicadores clave, preséntalos en formato limpio '- **Nombre del Indicador:** Valor'."
         )
 
         prompt_completo = (
@@ -1878,24 +2558,132 @@ class ServicioReportesCompartidos:
             f"CONSULTA DEL DESTINATARIO:\n{pregunta}"
         )
 
+        ahora_evento = ahora_chile_naive()
         session.add(
             AuditoriaAccesoReporte(
                 reporte_id=reporte.id,
-                fecha_hora=datetime.now(),
+                fecha_hora=ahora_evento,
                 ip_origen=ip_origen,
                 accion="consulta_ia_confinada",
+                detalle=pregunta[:500],
+                user_agent=(user_agent or "")[:255] or None,
             )
         )
+        reporte.ultimo_acceso_en = ahora_evento
         await session.commit()
 
         cliente_llm = await build_llm_client(session, reporte.espacio_id)
-        respuesta_texto = await cliente_llm.generate_response(
-            prompt=prompt_completo,
-            system_instruction=instruccion_sistema,
-            temperature=0.15,
+        t_inicio = time.perf_counter()
+        dataset_tipo = "biblioteca" if reporte.espacio_id == 1 else "estacionamiento"
+        modelo_usado = (
+            getattr(cliente_llm, "default_model", None)
+            or getattr(cliente_llm, "model_name", None)
+            or getattr(cliente_llm, "model", None)
+            or getattr(settings, "MODELO_GEMINI_POR_DEFECTO", "gemini-3.1-flash-lite")
         )
+        sesion_limpia = (sesion_id or "principal").strip()[:64] or "principal"
+
+        # Resolver usuario Consultor_Reporte por email del destinatario (o creador como respaldo)
+        usuario_auditoria_id = (
+            getattr(reporte.destinatario, "usuario_id", None)
+            if reporte.destinatario
+            else None
+        )
+        if not usuario_auditoria_id and reporte.destinatario and reporte.destinatario.email:
+            usr_dest = (
+                await session.execute(
+                    select(Usuario).where(Usuario.email == reporte.destinatario.email.lower())
+                )
+            ).scalar_one_or_none()
+            if usr_dest and hasattr(usr_dest, "email"):
+                usuario_auditoria_id = usr_dest.id
+        if not usuario_auditoria_id:
+            usuario_auditoria_id = reporte.creado_por_id
+
+        # Cargar últimos 6 turnos de esta sesión como contexto conversacional
+        stmt_hist = (
+            select(MensajeIAReporte)
+            .where(
+                MensajeIAReporte.reporte_id == reporte.id,
+                MensajeIAReporte.sesion_id == sesion_limpia,
+            )
+            .order_by(MensajeIAReporte.creado_en.desc(), MensajeIAReporte.id.desc())
+            .limit(6)
+        )
+        res_hist = await session.execute(stmt_hist)
+        previos = list(reversed(res_hist.scalars().all())) if hasattr(res_hist, "scalars") else []
+        historial_llm: List[Dict[str, str]] = []
+        for m in previos:
+            if m.pregunta:
+                historial_llm.append({"role": "user", "content": m.pregunta})
+            if m.respuesta:
+                historial_llm.append({"role": "assistant", "content": m.respuesta})
+
+        estado_chat = "éxito"
+        try:
+            respuesta_texto = await cliente_llm.generate_response(
+                prompt=prompt_completo,
+                system_instruction=instruccion_sistema,
+                temperature=0.15,
+                history=historial_llm or None,
+            )
+            respuesta_texto = respuesta_texto or "No fue posible generar una síntesis con los datos actuales."
+        except Exception as err_llm:
+            estado_chat = "error"
+            elapsed_err_ms = round((time.perf_counter() - t_inicio) * 1000, 2)
+            try:
+                await registrar_auditoria_chat(
+                    usuario_id=usuario_auditoria_id,
+                    prompt_text=f"[Reporte {reporte.codigo_corto}] {pregunta[:400]}",
+                    dataset_tipo=dataset_tipo,
+                    modelo_utilizado=str(modelo_usado),
+                    status=estado_chat,
+                    response_time_ms=elapsed_err_ms,
+                    respuesta_text=f"Error: {str(err_llm)[:300]}",
+                    origen="reporte_compartido",
+                    reporte_codigo=reporte.codigo_corto,
+                )
+            except Exception as err_aud:
+                logger.warning("No se pudo registrar auditoría de error IA en reporte compartido: %s", err_aud)
+            raise
+
+        elapsed_ms = round((time.perf_counter() - t_inicio) * 1000, 2)
+        ahora_msg = ahora_chile_naive()
+        nuevo_msg = MensajeIAReporte(
+            reporte_id=reporte.id,
+            sesion_id=sesion_limpia,
+            usuario_id=usuario_auditoria_id,
+            pregunta=pregunta,
+            respuesta=respuesta_texto,
+            modelo_utilizado=str(modelo_usado),
+            tiempo_respuesta_ms=elapsed_ms,
+            creado_en=ahora_msg,
+        )
+        session.add(nuevo_msg)
+        await session.commit()
+        await session.refresh(nuevo_msg)
+
+        try:
+            await registrar_auditoria_chat(
+                usuario_id=usuario_auditoria_id,
+                prompt_text=f"[Reporte {reporte.codigo_corto}] {pregunta[:400]}",
+                dataset_tipo=dataset_tipo,
+                modelo_utilizado=str(modelo_usado),
+                status=estado_chat,
+                response_time_ms=elapsed_ms,
+                respuesta_text=respuesta_texto,
+                origen="reporte_compartido",
+                reporte_codigo=reporte.codigo_corto,
+            )
+        except Exception as err_aud:
+            logger.warning("No se pudo registrar telemetría IA de reporte compartido: %s", err_aud)
 
         return {
-            "respuesta": respuesta_texto or "No fue posible generar una síntesis con los datos actuales.",
-            "timestamp": datetime.now().isoformat(),
+            "id": nuevo_msg.id,
+            "sesion_id": sesion_limpia,
+            "pregunta": pregunta,
+            "respuesta": respuesta_texto,
+            "modelo_utilizado": str(modelo_usado),
+            "tiempo_respuesta_ms": elapsed_ms,
+            "timestamp": marcar_chile(ahora_msg).isoformat(),
         }

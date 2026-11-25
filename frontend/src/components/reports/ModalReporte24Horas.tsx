@@ -68,7 +68,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
         ['Permanencia Promedio Nocturna', `${data.kpis_comparativa.permanencia_promedio_nocturna_min} min`],
         ['Máxima Concurrencia Nocturna Simultánea', `${data.pico_nocturno.aforo_maximo} personas`],
         ['Hora Crítica de Concurrencia Nocturna', data.pico_nocturno.hora_pico],
-        ['Tasa de Ocupación Máxima sobre Asientos (226)', `${data.pico_nocturno.tasa_ocupacion_asientos_pct}%`],
+        [`Tasa de Ocupación Máxima sobre Asientos (${data.campana?.capacidad_asientos || 226})`, `${data.pico_nocturno.tasa_ocupacion_asientos_pct}%`],
       ]
       const wsResumen = XLSX.utils.aoa_to_sheet(resumenRows)
       XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen Ejecutivo')
@@ -125,7 +125,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
                 Informe Ejecutivo: Justificación Operativa Régimen 24 Horas
               </h2>
               <p className="text-xs text-slate-700 dark:text-slate-300">
-                Documento de soporte para Vicerrectoría Académica y Dirección de Biblioteca · Sala 2 Pecera (226 Asientos)
+                Documento de soporte para Vicerrectoría Académica y Dirección de Biblioteca · Sala 2 Pecera ({data?.campana?.capacidad_asientos || 226} Asientos)
               </p>
             </div>
           </div>
@@ -203,7 +203,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
                     <strong className="text-emerald-700 dark:text-emerald-300">
                       {pico?.aforo_maximo} personas a las {pico?.hora_pico}
                     </strong>{' '}
-                    ({pico?.tasa_ocupacion_asientos_pct}% de aprovechamiento de los 226 asientos disponibles de Sala 2),
+                    ({pico?.tasa_ocupacion_asientos_pct}% de aprovechamiento de los {data?.campana?.capacidad_asientos || 226} asientos disponibles de Sala 2),
                     demostrando alta rentabilidad social y pertinencia académica para justificar la continuidad del servicio.
                   </div>
                 </div>

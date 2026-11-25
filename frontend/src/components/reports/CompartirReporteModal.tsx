@@ -25,6 +25,10 @@ import {
   Search,
   Building2,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Info,
+  SlidersHorizontal,
 } from 'lucide-react'
 import {
   DataFilters,
@@ -62,20 +66,24 @@ const CATALOGO_POR_DEFECTO: Record<
 > = {
   1: {
     graficos: [
-      { id: 'aforo_presencia_intervalos', titulo: 'Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima' },
-      { id: 'prophet_presencia_14dias', titulo: 'Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado)' },
-      { id: 'flujo_horario', titulo: 'Flujo Horario de Ingresos y Salidas' },
-      { id: 'mapa_calor', titulo: 'Mapa de Calor (Día de Semana x Hora)' },
-      { id: 'comparativa_salas', titulo: 'Comparativa Sala 1 vs Sala 2 (Pecera)' },
-      { id: 'uso_torniquetes', titulo: 'Flujo por Torniquetes y Accesos Universales' },
-      { id: 'frecuencia_marcajes', titulo: 'Distribución de Frecuencia de Marcajes' },
-      { id: 'volumen_mensual', titulo: 'Volumen y Promedio Diario Mensual' },
-      { id: 'evolucion_semanal', titulo: 'Evolución Semanal (Semanas ISO)' },
-      { id: 'promedio_dia_semana', titulo: 'Promedio de Ingresos por Día de la Semana' },
-      { id: 'hitos_academicos', titulo: 'Comparativa por Hito del Calendario Académico' },
-      { id: 'distribucion_curricular', titulo: 'Distribución por Carrera y Facultad (Ley 21.719)' },
-      { id: 'perfiles_visita', titulo: 'Perfiles de Estadía y Permanencia (Donut)' },
-      { id: 'campana_24_horas', titulo: 'Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno' },
+      { id: 'aforo_presencia_intervalos', titulo: 'Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima', seccion: '1. Resumen y Demanda General' },
+      { id: 'prophet_presencia_14dias', titulo: 'Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado)', seccion: '1. Resumen y Demanda General' },
+      { id: 'distribucion_curricular', titulo: 'Distribución por Carrera y Facultad (Ley 21.719)', seccion: '1. Resumen y Demanda General' },
+      { id: 'perfiles_visita', titulo: 'Perfiles de Estadía y Permanencia (Donut)', seccion: '1. Resumen y Demanda General' },
+      { id: 'flujo_horario', titulo: 'Flujo Horario de Ingresos y Salidas', seccion: '1. Resumen y Demanda General' },
+      { id: 'mapa_calor', titulo: 'Mapa de Calor (Día de Semana x Hora)', seccion: '1. Resumen y Demanda General' },
+      { id: 'comparativa_salas', titulo: 'Comparativa Sala 1 vs Sala 2 (Pecera)', seccion: '2. Salas y Torniquetes' },
+      { id: 'uso_torniquetes', titulo: 'Flujo por Torniquetes y Accesos Universales', seccion: '2. Salas y Torniquetes' },
+      { id: 'frecuencia_marcajes', titulo: 'Distribución de Frecuencia de Marcajes', seccion: '2. Salas y Torniquetes' },
+      { id: 'volumen_mensual', titulo: 'Volumen y Promedio Diario Mensual', seccion: '3. Evolución e Hitos' },
+      { id: 'evolucion_semanal', titulo: 'Evolución Semanal (Semanas ISO)', seccion: '3. Evolución e Hitos' },
+      { id: 'promedio_dia_semana', titulo: 'Promedio de Ingresos por Día de la Semana', seccion: '3. Evolución e Hitos' },
+      { id: 'hitos_academicos', titulo: 'Comparativa por Hito del Calendario Académico', seccion: '3. Evolución e Hitos' },
+      { id: 'campana_24h_resumen', titulo: 'KPIs Nocturnos, Delta 24h y Dictamen Ejecutivo', seccion: '5. Campaña 24 Horas Exámenes' },
+      { id: 'campana_24h_curva_calor', titulo: 'Curva Continua Nocturna (20:00-07:00) y Mapa de Calor', seccion: '5. Campaña 24 Horas Exámenes' },
+      { id: 'campana_24h_fases_dias', titulo: 'Fases de la Noche y Distribución por Día de Semana', seccion: '5. Campaña 24 Horas Exámenes' },
+      { id: 'campana_24h_academico', titulo: 'Top Carreras y Facultades en Horario Nocturno', seccion: '5. Campaña 24 Horas Exámenes' },
+      { id: 'campana_24h_comparativa', titulo: 'Comparativa Multicampaña (Históricas vs Actuales)', seccion: '5. Campaña 24 Horas Exámenes' },
     ],
     indicadores: [
       { id: 'dias_operativos', titulo: 'Días Operativos' },
@@ -91,16 +99,16 @@ const CATALOGO_POR_DEFECTO: Record<
   },
   2: {
     graficos: [
-      { id: 'presencia_vehicular_intervalos', titulo: 'Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad' },
-      { id: 'prophet_vehicular', titulo: 'Pronóstico Continuo Prophet Vehicular' },
-      { id: 'flujo_horario_vehicular', titulo: 'Flujo Horario de Ingresos y Salidas Vehiculares' },
-      { id: 'composicion_flota', titulo: 'Composición por Tipo de Vehículo' },
-      { id: 'distribucion_marcas', titulo: 'Distribución por Marca de Vehículo' },
-      { id: 'estadisticas_camaras', titulo: 'Distribución por Pórtico y Cámara ANPR' },
-      { id: 'distribucion_estadia', titulo: 'Distribución de Tiempos de Permanencia' },
-      { id: 'hitos_academicos_vehicular', titulo: 'Comparativa por Hito Académico Vehicular' },
-      { id: 'movilidad_intercampus', titulo: 'Movilidad Intercampus CSF - CHS' },
-      { id: 'clusters_comportamiento', titulo: 'Perfiles de Uso Vehicular (Clustering K-Means)' },
+      { id: 'presencia_vehicular_intervalos', titulo: 'Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad', seccion: '1. Aforo y Pronóstico' },
+      { id: 'prophet_vehicular', titulo: 'Pronóstico Continuo Prophet Vehicular', seccion: '1. Aforo y Pronóstico' },
+      { id: 'flujo_horario_vehicular', titulo: 'Flujo Horario de Ingresos y Salidas Vehiculares', seccion: '2. Flujo Horario de Accesos' },
+      { id: 'composicion_flota', titulo: 'Composición por Tipo de Vehículo', seccion: '3. Flota y Cámaras ANPR' },
+      { id: 'distribucion_marcas', titulo: 'Distribución por Marca de Vehículo', seccion: '3. Flota y Cámaras ANPR' },
+      { id: 'estadisticas_camaras', titulo: 'Distribución por Pórtico y Cámara ANPR', seccion: '3. Flota y Cámaras ANPR' },
+      { id: 'movilidad_intercampus', titulo: 'Movilidad Intercampus CSF - CHS', seccion: '4. Movilidad y Calendario' },
+      { id: 'hitos_academicos_vehicular', titulo: 'Comparativa por Hito Académico Vehicular', seccion: '4. Movilidad y Calendario' },
+      { id: 'clusters_comportamiento', titulo: 'Perfiles de Uso Vehicular (Clustering K-Means)', seccion: '5. Machine Learning (K-Means) y Estadía' },
+      { id: 'distribucion_estadia', titulo: 'Distribución de Tiempos de Permanencia', seccion: '5. Machine Learning (K-Means) y Estadía' },
     ],
     indicadores: [
       { id: 'dias_operativos', titulo: 'Días Operativos' },
@@ -231,6 +239,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
   // Selección de gráficos e indicadores
   const [graficosSeleccionados, setGraficosSeleccionados] = useState<string[]>([])
   const [indicadoresSeleccionados, setIndicadoresSeleccionados] = useState<string[]>([])
+  const [seccionesColapsadas, setSeccionesColapsadas] = useState<Record<string, boolean>>({})
 
   // Notas del emisor
   const [notaGeneral, setNotaGeneral] = useState<string>('')
@@ -241,18 +250,57 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
 
   const [reporteRecienCreado, setReporteRecienCreado] = useState<ReporteCompartidoResumen | null>(null)
   const [reporteEditandoNotas, setReporteEditandoNotas] = useState<ReporteCompartidoResumen | null>(null)
+  const [reporteEditandoContenido, setReporteEditandoContenido] = useState<{
+    reporte: ReporteCompartidoResumen
+    graficos: string[]
+    indicadores: string[]
+    colapsadas: Record<string, boolean>
+  } | null>(null)
   const [copiadoClave, setCopiadoClave] = useState<string | null>(null)
 
-  const catalogoActual = useMemo(() => {
-    const cat = catalogos[espacioIdInicial] || CATALOGO_POR_DEFECTO[espacioIdInicial] || CATALOGO_POR_DEFECTO[1]
-    if (espacioIdInicial !== 1 || !tieneCampana24hActiva) {
-      return {
-        ...cat,
-        graficos: cat.graficos.filter((g) => g.id !== 'campana_24_horas'),
-      }
+  const obtenerCatalogoPorEspacio = (espacioId: number, permitir24h: boolean) => {
+    const base = catalogos[espacioId] || CATALOGO_POR_DEFECTO[espacioId] || CATALOGO_POR_DEFECTO[1]
+    const defectoMap = new Map(
+      (CATALOGO_POR_DEFECTO[espacioId]?.graficos || []).map((g) => [g.id, g.seccion])
+    )
+    const graficosConSeccion = base.graficos
+      .filter((g) => {
+        if (espacioId === 1 && !permitir24h) {
+          return g.id !== 'campana_24_horas' && !g.id.startsWith('campana_24h_')
+        }
+        return true
+      })
+      .map((g) => ({
+        ...g,
+        seccion: g.seccion || defectoMap.get(g.id) || 'Gráficos Adicionales',
+      }))
+
+    const mapa = new Map<string, CatalogoItemReporte[]>()
+    for (const graf of graficosConSeccion) {
+      const nombreSec = graf.seccion || 'Gráficos del Reporte'
+      const actuales = mapa.get(nombreSec) || []
+      actuales.push(graf)
+      mapa.set(nombreSec, actuales)
     }
-    return cat
-  }, [catalogos, espacioIdInicial, tieneCampana24hActiva])
+
+    return {
+      ...base,
+      graficos: graficosConSeccion,
+      secciones: Array.from(mapa.entries()).map(([nombre, items]) => ({ nombre, items })),
+    }
+  }
+
+  const catalogoActual = useMemo(
+    () => obtenerCatalogoPorEspacio(espacioIdInicial, tieneCampana24hActiva),
+    [catalogos, espacioIdInicial, tieneCampana24hActiva]
+  )
+  const seccionesGraficos = catalogoActual.secciones
+
+  const catalogoEdicionContenido = useMemo(() => {
+    if (!reporteEditandoContenido) return null
+    const rep = reporteEditandoContenido.reporte
+    return obtenerCatalogoPorEspacio(rep.espacio_id, Boolean(rep.tiene_campana_24h))
+  }, [catalogos, reporteEditandoContenido])
 
   // Resumen legible y dinámico de TODOS los filtros activos en la pantalla del emisor
   const resumenFiltrosPantalla = useMemo(() => {
@@ -372,8 +420,20 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
   useEffect(() => {
     if (!abierto) return
     const cat = CATALOGO_POR_DEFECTO[espacioIdInicial] || CATALOGO_POR_DEFECTO[1]
-    setGraficosSeleccionados(cat.graficos.map((g) => g.id))
+    const graficosIniciales = cat.graficos
+      .filter((g) => !(espacioIdInicial === 1 && !tieneCampana24hActiva && (g.id === 'campana_24_horas' || g.id.startsWith('campana_24h_'))))
+      .map((g) => g.id)
+    setGraficosSeleccionados(graficosIniciales)
     setIndicadoresSeleccionados(cat.indicadores.map((i) => i.id))
+
+    if (espacioIdInicial === 1 && !tieneCampana24hActiva) {
+      setNotasItems((prev) =>
+        prev.filter((n) => n.seccion !== 'campana_24_horas' && !n.seccion.startsWith('campana_24h_'))
+      )
+      setNuevaNotaSeccion((prev) =>
+        prev === 'campana_24_horas' || prev.startsWith('campana_24h_') ? 'general' : prev
+      )
+    }
 
     const nombreRecinto = espacioIdInicial === 1 ? 'Biblioteca CSF' : 'Estacionamiento CSF'
     const partesFoco: string[] = []
@@ -397,7 +457,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
     const foco = partesFoco.length > 0 ? partesFoco.join(' • ') : 'Alcance General'
     setTituloReporte(`Reporte Ejecutivo ${nombreRecinto} — ${foco} (${fechaInicioInicial} a ${fechaFinInicial})`)
     cargarListado()
-  }, [abierto, espacioIdInicial, fechaInicioInicial, fechaFinInicial, filtrosIniciales])
+  }, [abierto, espacioIdInicial, fechaInicioInicial, fechaFinInicial, filtrosIniciales, tieneCampana24hActiva])
 
   const cargarListado = async (idPreferido?: string) => {
     setCargando(true)
@@ -584,6 +644,25 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
     )
   }
 
+  const toggleSeccionGraficos = (items: CatalogoItemReporte[]) => {
+    const idsSec = items.map((g) => g.id)
+    setGraficosSeleccionados((prev) => {
+      const todosMarcados = idsSec.every((id) => prev.includes(id))
+      if (todosMarcados) {
+        return prev.filter((id) => !idsSec.includes(id))
+      }
+      const nuevos = idsSec.filter((id) => !prev.includes(id))
+      return [...prev, ...nuevos]
+    })
+  }
+
+  const toggleColapsarSeccion = (nombreSec: string) => {
+    setSeccionesColapsadas((prev) => ({
+      ...prev,
+      [nombreSec]: !prev[nombreSec],
+    }))
+  }
+
   const toggleIndicador = (id: string) => {
     setIndicadoresSeleccionados((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -751,6 +830,54 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
       await cargarListado()
     } catch (err: any) {
       setErrorMsg(err?.response?.data?.detail || 'No se pudieron actualizar las notas del reporte.')
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const abrirEditorContenido = (rep: ReporteCompartidoResumen) => {
+    const cat = obtenerCatalogoPorEspacio(rep.espacio_id, Boolean(rep.tiene_campana_24h))
+    const idsCatalogo = new Set(cat.graficos.map((g) => g.id))
+    let graficosIni = [...(rep.graficos_visibles || [])]
+    if (graficosIni.includes('campana_24_horas') && rep.espacio_id === 1 && rep.tiene_campana_24h) {
+      const granulares = cat.graficos.filter((g) => g.id.startsWith('campana_24h_')).map((g) => g.id)
+      graficosIni = Array.from(new Set([...graficosIni.filter((id) => id !== 'campana_24_horas'), ...granulares]))
+    } else {
+      graficosIni = graficosIni.filter((id) => idsCatalogo.has(id))
+    }
+
+    const idsInd = new Set(cat.indicadores.map((i) => i.id))
+    const indicadoresIni = (rep.indicadores_visibles || []).filter((id) => idsInd.has(id))
+
+    setReporteEditandoNotas(null)
+    setReporteEditandoContenido({
+      reporte: rep,
+      graficos: graficosIni,
+      indicadores: indicadoresIni,
+      colapsadas: {},
+    })
+  }
+
+  const handleGuardarEdicionContenido = async () => {
+    if (!reporteEditandoContenido) return
+    if (reporteEditandoContenido.graficos.length === 0) {
+      setErrorMsg('Debe mantener al menos un gráfico visible en el reporte.')
+      return
+    }
+    setGuardando(true)
+    setErrorMsg(null)
+    try {
+      await actualizarReporteCompartido(reporteEditandoContenido.reporte.id, {
+        graficos_visibles: reporteEditandoContenido.graficos,
+        indicadores_visibles: reporteEditandoContenido.indicadores,
+      })
+      setExitoMsg(
+        `Gráficos y métricas del reporte ${reporteEditandoContenido.reporte.codigo_corto} actualizados correctamente.`
+      )
+      setReporteEditandoContenido(null)
+      await cargarListado()
+    } catch (err: any) {
+      setErrorMsg(err?.response?.data?.detail || 'No se pudieron actualizar los gráficos y métricas del reporte.')
     } finally {
       setGuardando(false)
     }
@@ -1402,49 +1529,112 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                 </div>
 
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-3">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
                     <h4 className="text-xs font-bold text-uct-blue-primary uppercase tracking-wider flex items-center gap-2">
                       <BarChart3 className="w-4 h-4 text-uct-blue-primary" />
-                      Gráficos Incluidos en el Reporte ({graficosSeleccionados.length})
+                      <span>
+                        Gráficos Incluidos en el Reporte ({graficosSeleccionados.length} / {catalogoActual.graficos.length})
+                      </span>
                     </h4>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setGraficosSeleccionados(
-                          graficosSeleccionados.length === catalogoActual.graficos.length
-                            ? []
-                            : catalogoActual.graficos.map((g) => g.id)
-                        )
-                      }
-                      className="text-[11px] font-semibold text-uct-blue-primary hover:underline cursor-pointer"
-                    >
-                      {graficosSeleccionados.length === catalogoActual.graficos.length
-                        ? 'Desmarcar todos'
-                        : 'Seleccionar todos'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setGraficosSeleccionados(catalogoActual.graficos.map((g) => g.id))}
+                        className="px-2 py-0.5 rounded border border-uct-blue-primary/30 bg-blue-50/70 text-[11px] font-semibold text-uct-blue-primary hover:bg-blue-100 cursor-pointer"
+                      >
+                        Seleccionar todo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGraficosSeleccionados([])}
+                        className="px-2 py-0.5 rounded border border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                      >
+                        Ninguno
+                      </button>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 gap-1.5 max-h-52 overflow-y-auto pr-1">
-                    {catalogoActual.graficos.map((graf) => {
-                      const activo = graficosSeleccionados.includes(graf.id)
+
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {seccionesGraficos.map((sec) => {
+                      const colapsada = Boolean(seccionesColapsadas[sec.nombre])
+                      const cantSel = sec.items.filter((g) => graficosSeleccionados.includes(g.id)).length
+                      const todosSec = cantSel === sec.items.length && sec.items.length > 0
+                      const badgeClase =
+                        cantSel === 0
+                          ? 'bg-slate-100 text-slate-500 border-slate-200'
+                          : todosSec
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-blue-50 text-uct-blue-primary border-uct-blue-primary/30'
+
                       return (
-                        <label
-                          key={graf.id}
-                          className={`flex items-center gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition-colors ${
-                            activo
-                              ? 'bg-blue-50/80 border-uct-blue-primary/40 text-uct-blue-primary font-semibold'
-                              : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={activo}
-                            onChange={() => toggleGrafico(graf.id)}
-                            className="rounded border-slate-300 text-uct-blue-primary"
-                          />
-                          <span>{graf.titulo}</span>
-                        </label>
+                        <div key={sec.nombre} className="rounded-lg border border-slate-200 overflow-hidden bg-slate-50/50">
+                          <div className="flex items-center justify-between gap-2 px-2.5 py-2 bg-slate-100/80 border-b border-slate-200/70">
+                            <button
+                              type="button"
+                              onClick={() => toggleColapsarSeccion(sec.nombre)}
+                              className="flex items-center gap-1.5 text-left text-xs font-bold text-slate-800 hover:text-uct-blue-primary cursor-pointer min-w-0"
+                            >
+                              {colapsada ? (
+                                <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                              )}
+                              <span className="truncate">{sec.nombre}</span>
+                              <span className={`px-1.5 py-0.2 rounded-full border text-[10px] font-semibold shrink-0 ${badgeClase}`}>
+                                {cantSel}/{sec.items.length}
+                              </span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => toggleSeccionGraficos(sec.items)}
+                              className={`px-2 py-0.5 rounded text-[11px] font-semibold shrink-0 transition-colors cursor-pointer ${
+                                todosSec
+                                  ? 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
+                                  : 'bg-uct-blue-primary text-white hover:bg-uct-blue-secondary'
+                              }`}
+                            >
+                              {todosSec ? 'Quitar sección' : 'Toda la sección'}
+                            </button>
+                          </div>
+
+                          {!colapsada && (
+                            <div className="p-2 grid grid-cols-1 gap-1.5 bg-white">
+                              {sec.items.map((graf) => {
+                                const activo = graficosSeleccionados.includes(graf.id)
+                                return (
+                                  <label
+                                    key={graf.id}
+                                    className={`flex items-center gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition-colors ${
+                                      activo
+                                        ? 'bg-blue-50/80 border-uct-blue-primary/40 text-uct-blue-primary font-semibold'
+                                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={activo}
+                                      onChange={() => toggleGrafico(graf.id)}
+                                      className="rounded border-slate-300 text-uct-blue-primary"
+                                    />
+                                    <span>{graf.titulo}</span>
+                                  </label>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
                       )
                     })}
+
+                    {espacioIdInicial === 1 && !tieneCampana24hActiva && (
+                      <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
+                        <Info className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
+                        <span>
+                          La sección <strong>5. Campaña 24 Horas Exámenes</strong> no está disponible porque el período seleccionado no contiene campañas 24 horas activas.
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1483,10 +1673,14 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                       className="sm:col-span-3 bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-800"
                     >
                       <option value="general">Nota General</option>
-                      {catalogoActual.graficos.map((g) => (
-                        <option key={g.id} value={g.id}>
-                          {g.titulo}
-                        </option>
+                      {seccionesGraficos.map((sec) => (
+                        <optgroup key={sec.nombre} label={sec.nombre}>
+                          {sec.items.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.titulo}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                     <input
@@ -1892,6 +2086,251 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
 
           {pestanaActiva === 'historial' && (
             <div className="space-y-4">
+              {reporteEditandoContenido && catalogoEdicionContenido && (
+                <div className="p-4 rounded-xl bg-white border-2 border-uct-blue-primary space-y-4 shadow-md">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                    <div>
+                      <h4 className="text-xs font-bold text-uct-blue-primary uppercase">
+                        Editando Gráficos y Métricas: {reporteEditandoContenido.reporte.codigo_corto} —{' '}
+                        {reporteEditandoContenido.reporte.titulo_reporte}
+                      </h4>
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        {reporteEditandoContenido.reporte.espacio_nombre} | Período:{' '}
+                        {reporteEditandoContenido.reporte.fecha_inicio} al {reporteEditandoContenido.reporte.fecha_fin}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReporteEditandoContenido(null)}
+                      className="text-slate-500 hover:text-slate-800 text-xs font-semibold cursor-pointer"
+                    >
+                      Cerrar edición
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="p-3.5 rounded-xl bg-slate-50/60 border border-slate-200 space-y-2.5">
+                      <div className="flex items-center justify-between border-b border-slate-200/70 pb-1.5">
+                        <span className="text-xs font-bold text-uct-blue-primary">
+                          Métricas / Indicadores ({reporteEditandoContenido.indicadores.length} /{' '}
+                          {catalogoEdicionContenido.indicadores.length})
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setReporteEditandoContenido((prev) =>
+                                prev
+                                  ? { ...prev, indicadores: catalogoEdicionContenido.indicadores.map((i) => i.id) }
+                                  : null
+                              )
+                            }
+                            className="text-[11px] font-semibold text-uct-blue-primary hover:underline cursor-pointer"
+                          >
+                            Todos
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setReporteEditandoContenido((prev) => (prev ? { ...prev, indicadores: [] } : null))
+                            }
+                            className="text-[11px] font-semibold text-slate-500 hover:underline cursor-pointer"
+                          >
+                            Ninguno
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-64 overflow-y-auto pr-1">
+                        {catalogoEdicionContenido.indicadores.map((ind) => {
+                          const activo = reporteEditandoContenido.indicadores.includes(ind.id)
+                          return (
+                            <label
+                              key={ind.id}
+                              className={`flex items-center gap-2 p-2 rounded-lg border text-xs cursor-pointer ${
+                                activo
+                                  ? 'bg-blue-50 border-uct-blue-primary/40 text-uct-blue-primary font-semibold'
+                                  : 'bg-white border-slate-200 text-slate-600'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={activo}
+                                onChange={() =>
+                                  setReporteEditandoContenido((prev) => {
+                                    if (!prev) return null
+                                    const existe = prev.indicadores.includes(ind.id)
+                                    return {
+                                      ...prev,
+                                      indicadores: existe
+                                        ? prev.indicadores.filter((x) => x !== ind.id)
+                                        : [...prev.indicadores, ind.id],
+                                    }
+                                  })
+                                }
+                                className="rounded border-slate-300 text-uct-blue-primary"
+                              />
+                              <span>{ind.titulo}</span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-slate-50/60 border border-slate-200 space-y-2.5">
+                      <div className="flex items-center justify-between border-b border-slate-200/70 pb-1.5">
+                        <span className="text-xs font-bold text-uct-blue-primary">
+                          Gráficos ({reporteEditandoContenido.graficos.length} /{' '}
+                          {catalogoEdicionContenido.graficos.length})
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setReporteEditandoContenido((prev) =>
+                                prev
+                                  ? { ...prev, graficos: catalogoEdicionContenido.graficos.map((g) => g.id) }
+                                  : null
+                              )
+                            }
+                            className="text-[11px] font-semibold text-uct-blue-primary hover:underline cursor-pointer"
+                          >
+                            Seleccionar todo
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setReporteEditandoContenido((prev) => (prev ? { ...prev, graficos: [] } : null))
+                            }
+                            className="text-[11px] font-semibold text-slate-500 hover:underline cursor-pointer"
+                          >
+                            Ninguno
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                        {catalogoEdicionContenido.secciones.map((sec) => {
+                          const colapsada = Boolean(reporteEditandoContenido.colapsadas[sec.nombre])
+                          const cantSel = sec.items.filter((g) =>
+                            reporteEditandoContenido.graficos.includes(g.id)
+                          ).length
+                          const todosSec = cantSel === sec.items.length && sec.items.length > 0
+                          return (
+                            <div key={sec.nombre} className="rounded-lg border border-slate-200 overflow-hidden bg-white">
+                              <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-slate-100/80 border-b border-slate-200/70">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setReporteEditandoContenido((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            colapsadas: {
+                                              ...prev.colapsadas,
+                                              [sec.nombre]: !prev.colapsadas[sec.nombre],
+                                            },
+                                          }
+                                        : null
+                                    )
+                                  }
+                                  className="flex items-center gap-1.5 text-left text-xs font-bold text-slate-800 hover:text-uct-blue-primary cursor-pointer min-w-0"
+                                >
+                                  {colapsada ? (
+                                    <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                                  ) : (
+                                    <ChevronDown className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                                  )}
+                                  <span className="truncate">{sec.nombre}</span>
+                                  <span className="text-[10px] font-semibold text-slate-600">
+                                    ({cantSel}/{sec.items.length})
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const idsSec = sec.items.map((g) => g.id)
+                                    setReporteEditandoContenido((prev) => {
+                                      if (!prev) return null
+                                      const todos = idsSec.every((id) => prev.graficos.includes(id))
+                                      return {
+                                        ...prev,
+                                        graficos: todos
+                                          ? prev.graficos.filter((id) => !idsSec.includes(id))
+                                          : Array.from(new Set([...prev.graficos, ...idsSec])),
+                                      }
+                                    })
+                                  }}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-semibold shrink-0 cursor-pointer ${
+                                    todosSec
+                                      ? 'bg-white border border-slate-300 text-slate-700'
+                                      : 'bg-uct-blue-primary text-white'
+                                  }`}
+                                >
+                                  {todosSec ? 'Quitar sección' : 'Toda la sección'}
+                                </button>
+                              </div>
+                              {!colapsada && (
+                                <div className="p-1.5 grid grid-cols-1 gap-1">
+                                  {sec.items.map((graf) => {
+                                    const activo = reporteEditandoContenido.graficos.includes(graf.id)
+                                    return (
+                                      <label
+                                        key={graf.id}
+                                        className={`flex items-center gap-2 p-1.5 rounded border text-xs cursor-pointer ${
+                                          activo
+                                            ? 'bg-blue-50/80 border-uct-blue-primary/40 text-uct-blue-primary font-semibold'
+                                            : 'bg-slate-50 border-slate-200 text-slate-600'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={activo}
+                                          onChange={() =>
+                                            setReporteEditandoContenido((prev) => {
+                                              if (!prev) return null
+                                              const existe = prev.graficos.includes(graf.id)
+                                              return {
+                                                ...prev,
+                                                graficos: existe
+                                                  ? prev.graficos.filter((x) => x !== graf.id)
+                                                  : [...prev.graficos, graf.id],
+                                              }
+                                            })
+                                          }
+                                          className="rounded border-slate-300 text-uct-blue-primary"
+                                        />
+                                        <span>{graf.titulo}</span>
+                                      </label>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setReporteEditandoContenido(null)}
+                      className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGuardarEdicionContenido}
+                      disabled={guardando}
+                      className="px-4 py-1.5 rounded-lg bg-uct-blue-primary hover:bg-uct-blue-secondary text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                    >
+                      {guardando ? 'Guardando cambios...' : 'Guardar Gráficos y Métricas'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {reporteEditandoNotas && (
                 <div className="p-4 rounded-xl bg-white border-2 border-uct-blue-primary space-y-3 shadow-md">
                   <div className="flex items-center justify-between">
@@ -1966,6 +2405,10 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
                               {rep.permitir_ia ? 'IA Habilitada' : 'IA Deshabilitada'}
                             </span>
                           </div>
+                          <p className="text-xs text-slate-900">
+                            <strong className="font-bold text-slate-900">Finalidad / Motivo del Reporte:</strong>{' '}
+                            {rep.finalidad_reporte || 'Sin finalidad registrada'}
+                          </p>
                           <div className="flex items-center gap-2 pt-0.5 text-xs text-slate-700">
                             <span className="font-semibold text-uct-blue-primary">Emitido por:</span>
                             <span className="font-bold text-slate-900">{rep.creador?.nombre_completo || 'Sistema DSS'}</span>
@@ -2025,7 +2468,20 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
 
                           <button
                             type="button"
-                            onClick={() => setReporteEditandoNotas(rep)}
+                            onClick={() => abrirEditorContenido(rep)}
+                            className="px-2.5 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 border border-uct-blue-primary/30 text-uct-blue-primary text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                            title="Editar gráficos e indicadores incluidos en este reporte"
+                          >
+                            <SlidersHorizontal className="w-3.5 h-3.5" />
+                            Gráficos / Métricas
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReporteEditandoContenido(null)
+                              setReporteEditandoNotas(rep)
+                            }}
                             className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 cursor-pointer"
                           >
                             <Edit3 className="w-3.5 h-3.5" />
