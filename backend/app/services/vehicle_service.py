@@ -1,15 +1,16 @@
 """
 VehicleService — Consultas sobre Continuous Aggregates y tablas de estacionamiento en SQL Server.
 """
+from collections import defaultdict
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Dict, Optional
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import TTLCache
 
-CAPACIDAD_ESTACIONAMIENTO = 180
+CAPACIDAD_ESTACIONAMIENTO = 125
 UMBRAL_ALERTA_90 = 0.90
 
 # Caché en memoria para reutilizar horarios de operación y calendario vehiculares
@@ -70,6 +71,236 @@ def invalidar_cache_horarios(espacio_id: Optional[int] = None) -> None:
 
 
 invalidar_cache_horarios_vehiculos = invalidar_cache_horarios
+
+
+async def _obtener_capacidades_sectores_vehiculares(session: AsyncSession, espacio_id: int = 2) -> Dict[str, int]:
+    """Obtiene dinámicamente capacidades por sector vehicular y total calibrado desde BD con caché."""
+    clave_cache = f"caps_vehiculares_detalle:{espacio_id}"
+    if clave_cache in cache_horarios_espacio:
+        return dict(cache_horarios_espacio[clave_cache])
+
+    caps: Dict[str, int] = {"CSF11": 40, "CSF21": 50, "CHS01": 35, "todos": 125}
+    try:
+        res_sec = await session.execute(
+            text("SELECT codigo, capacidad_max FROM sectores_estacionamiento WHERE activo = 1")
+        )
+        filas_sec = res_sec.fetchall()
+        suma_sec = 0
+        for row in filas_sec:
+            cod = str(getattr(row, "codigo", "") or "").strip().upper()
+            cap_val = int(getattr(row, "capacidad_max", 0) or 0)
+            if cod and cap_val > 0:
+                caps[cod] = cap_val
+                suma_sec += cap_val
+        if suma_sec > 0:
+            caps["todos"] = suma_sec
+    except Exception:
+        pass
+
+    try:
+        from app.domain.models import Espacio
+        cap_esp = (await session.execute(select(Espacio.capacidad_max).where(Espacio.id == espacio_id))).scalar_one_or_none()
+        if cap_esp and int(cap_esp) > 0:
+            caps["todos"] = int(cap_esp)
+    except Exception:
+        pass
+
+    cache_horarios_espacio[clave_cache] = dict(caps)
+    return caps
+
+
+def _extraer_hora_pico_curva_vehicular(curva: list[dict]) -> Optional[str]:
+    """Extrae la hora (HH:00 hrs) correspondiente al máximo de vehículos simultáneos en la curva."""
+    if not curva:
+        return None
+    pico = max(
+        curva,
+        key=lambda r: (int(r.get("vehiculos_presentes", 0) or 0), int(r.get("entradas", 0) or 0)),
+    )
+    if int(pico.get("vehiculos_presentes", 0) or 0) <= 0:
+        return None
+    bucket = str(pico.get("bucket") or "")
+    if len(bucket) >= 13 and "T" in bucket:
+        return f"{bucket[11:13]}:00 hrs"
+    return None
+
+
+def _construir_expr_cierre_vehicular_sql(cond_h24_sql: str) -> str:
+    """Calcula el límite efectivo de salida por jornada para sesiones vehiculares sin marca de salida."""
+    return f"""
+        CASE
+            WHEN ({cond_h24_sql}) THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 23, 59, 59, 0, 0)
+            WHEN DATEPART(WEEKDAY, e.fecha) = 7 THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 14, 0, 0, 0, 0)
+            WHEN DATEPART(WEEKDAY, e.fecha) BETWEEN 2 AND 6 THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 22, 0, 0, 0, 0)
+            ELSE DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 23, 59, 59, 0, 0)
+        END
+    """
+
+
+def _calcular_curva_presencia_vehicular_por_hora(
+    sesiones_rows: list,
+    flujo_rows: list,
+    ahora_servidor: datetime,
+    caps_sector: Dict[str, int],
+    capacidad_total: int,
+) -> list[dict]:
+    """Barrido cronológico minuto/segundo para concurrencia vehicular simultánea real sin solapamiento por hora."""
+    eventos_por_dia: Dict[date, list] = defaultdict(list)
+    for row in sesiones_rows:
+        fecha_raw = row[0] if isinstance(row, tuple) else row.fecha
+        sec_num = int((row[1] if isinstance(row, tuple) else row.sector_num) or 0)
+        t_ent = row[2] if isinstance(row, tuple) else row.t_entrada
+        t_sal = row[3] if isinstance(row, tuple) else row.t_salida
+        if t_ent is None or t_sal is None:
+            continue
+        fecha = fecha_raw if isinstance(fecha_raw, date) and not isinstance(fecha_raw, datetime) else (
+            fecha_raw.date() if isinstance(fecha_raw, datetime) else date.fromisoformat(str(fecha_raw)[:10])
+        )
+        t_sal_adj = t_sal if t_sal > t_ent else t_ent + timedelta(seconds=1)
+        eventos_por_dia[fecha].append((t_ent, 1, sec_num))
+        if t_sal_adj.date() == fecha:
+            eventos_por_dia[fecha].append((t_sal_adj, -1, sec_num))
+
+    flujo_por_bucket: Dict[datetime, tuple] = {}
+    max_hora_flujo_por_dia: Dict[date, int] = {}
+    for row in flujo_rows:
+        b_raw = row[0] if isinstance(row, tuple) else row.bucket
+        b_dt = b_raw if isinstance(b_raw, datetime) else datetime.fromisoformat(str(b_raw))
+        f_raw = row[1] if isinstance(row, tuple) else row.fecha
+        fecha_f = f_raw if isinstance(f_raw, date) and not isinstance(f_raw, datetime) else (
+            f_raw.date() if isinstance(f_raw, datetime) else date.fromisoformat(str(f_raw)[:10])
+        )
+        vals = (
+            int((row[2] if isinstance(row, tuple) else row.entradas) or 0),
+            int((row[3] if isinstance(row, tuple) else row.salidas) or 0),
+            int((row[4] if isinstance(row, tuple) else row.entradas_csf11) or 0),
+            int((row[5] if isinstance(row, tuple) else row.salidas_csf11) or 0),
+            int((row[6] if isinstance(row, tuple) else row.entradas_csf21) or 0),
+            int((row[7] if isinstance(row, tuple) else row.salidas_csf21) or 0),
+            int((row[8] if isinstance(row, tuple) else row.entradas_chs01) or 0),
+            int((row[9] if isinstance(row, tuple) else row.salidas_chs01) or 0),
+        )
+        flujo_por_bucket[b_dt] = vals
+        if fecha_f not in max_hora_flujo_por_dia or b_dt.hour > max_hora_flujo_por_dia[fecha_f]:
+            max_hora_flujo_por_dia[fecha_f] = b_dt.hour
+
+    cap_11 = int(caps_sector.get("CSF11", 40))
+    cap_21 = int(caps_sector.get("CSF21", 50))
+    cap_01 = int(caps_sector.get("CHS01", 35))
+
+    fechas_ordenadas = sorted(set(eventos_por_dia.keys()) | set(max_hora_flujo_por_dia.keys()))
+    hoy_servidor = ahora_servidor.date()
+    resultado: list[dict] = []
+
+    for fecha in fechas_ordenadas:
+        evs = eventos_por_dia.get(fecha, [])
+        evs.sort(key=lambda x: x[0])
+
+        occ_t = occ_11 = occ_21 = occ_01 = 0
+        hour_first: Dict[int, datetime] = {}
+        hour_peak: Dict[int, list] = {}
+        hour_end: Dict[int, tuple] = {}
+
+        idx = 0
+        n_evs = len(evs)
+        while idx < n_evs:
+            ts_actual = evs[idx][0]
+            dtot = d11 = d21 = d01 = 0
+            while idx < n_evs and evs[idx][0] == ts_actual:
+                _, delta, sec_num = evs[idx]
+                dtot += delta
+                if sec_num == 1:
+                    d11 += delta
+                elif sec_num == 2:
+                    d21 += delta
+                elif sec_num == 3:
+                    d01 += delta
+                idx += 1
+
+            occ_t = max(0, occ_t + dtot)
+            occ_11 = max(0, occ_11 + d11)
+            occ_21 = max(0, occ_21 + d21)
+            occ_01 = max(0, occ_01 + d01)
+
+            h = ts_actual.hour
+            if h not in hour_first:
+                hour_first[h] = ts_actual
+            pk = hour_peak.get(h)
+            if pk is None:
+                hour_peak[h] = [occ_t, occ_11, occ_21, occ_01]
+            else:
+                if occ_t > pk[0]:
+                    pk[0] = occ_t
+                if occ_11 > pk[1]:
+                    pk[1] = occ_11
+                if occ_21 > pk[2]:
+                    pk[2] = occ_21
+                if occ_01 > pk[3]:
+                    pk[3] = occ_01
+            hour_end[h] = (occ_t, occ_11, occ_21, occ_01)
+
+        horas_flujo_dia = [b.hour for b in flujo_por_bucket if b.date() == fecha]
+        h_min_candidates = list(hour_first.keys()) + horas_flujo_dia
+        if not h_min_candidates:
+            continue
+        h_min = min(h_min_candidates)
+
+        if fecha == hoy_servidor:
+            h_max = max(max_hora_flujo_por_dia.get(fecha, -1), max(hour_first, default=-1))
+        elif fecha in max_hora_flujo_por_dia:
+            h_max = max_hora_flujo_por_dia[fecha]
+        else:
+            h_max = max(hour_first, default=-1)
+
+        if h_max < h_min:
+            continue
+
+        prev_e = (0, 0, 0, 0)
+        for h in range(h_min, h_max + 1):
+            bucket_dt = datetime.combine(fecha, datetime.min.time()) + timedelta(hours=h)
+            if bucket_dt > ahora_servidor:
+                continue
+
+            if h in hour_peak:
+                ft = hour_first[h]
+                pk = hour_peak[h]
+                if ft.minute > 0 or ft.second > 0 or ft.microsecond > 0:
+                    p_t = max(prev_e[0], pk[0])
+                    p_11 = max(prev_e[1], pk[1])
+                    p_21 = max(prev_e[2], pk[2])
+                    p_01 = max(prev_e[3], pk[3])
+                else:
+                    p_t, p_11, p_21, p_01 = pk[0], pk[1], pk[2], pk[3]
+                prev_e = hour_end[h]
+            else:
+                p_t, p_11, p_21, p_01 = prev_e
+
+            fl = flujo_por_bucket.get(bucket_dt, (0, 0, 0, 0, 0, 0, 0, 0))
+            v_tot = min(capacidad_total, max(0, int(p_t)))
+            if fl[0] > 0 or fl[1] > 0 or v_tot > 0:
+                resultado.append({
+                    "bucket":              bucket_dt.isoformat(),
+                    "vehiculos_presentes": v_tot,
+                    "personas_unicas":     v_tot,
+                    "entradas":            fl[0],
+                    "salidas":             fl[1],
+                    "ingresos":            fl[0],
+                    "vehiculos_csf11":     min(cap_11, max(0, int(p_11))),
+                    "vehiculos_csf21":     min(cap_21, max(0, int(p_21))),
+                    "vehiculos_chs01":     min(cap_01, max(0, int(p_01))),
+                    "entradas_csf11":      fl[2],
+                    "salidas_csf11":       fl[3],
+                    "entradas_csf21":      fl[4],
+                    "salidas_csf21":       fl[5],
+                    "entradas_chs01":      fl[6],
+                    "salidas_chs01":       fl[7],
+                    "capacidad_total":     capacidad_total,
+                    "capacidad_csf11":     cap_11,
+                    "capacidad_csf21":     cap_21,
+                    "capacidad_chs01":     cap_01,
+                })
+
+    return resultado
 
 
 class VehicleService:
@@ -330,6 +561,7 @@ class VehicleService:
                     ) AS prev_same_dir_time
                 FROM eventos_vehiculares
                 WHERE {where_sql}
+                  AND time <= GETDATE()
             ),
             ev_dedup AS (
                 SELECT
@@ -348,6 +580,9 @@ class VehicleService:
                     COUNT(DISTINCT patente_hash)                                   AS vehiculos_unicos,
                     SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END)         AS total_entradas,
                     SUM(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END)          AS total_salidas,
+                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS total_accesos_csf11,
+                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS total_accesos_csf21,
+                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS total_accesos_chs01,
                     COUNT(DISTINCT CAST(time AS DATE))                             AS dias_operativos,
                     ROUND(
                         100.0 * SUM(CASE WHEN calidad_lectura = 'unknown' THEN 1 ELSE 0 END)
@@ -373,6 +608,9 @@ class VehicleService:
                 kp.vehiculos_unicos,
                 kp.total_entradas,
                 kp.total_salidas,
+                kp.total_accesos_csf11,
+                kp.total_accesos_csf21,
+                kp.total_accesos_chs01,
                 kp.dias_operativos,
                 kp.tasa_lectura_fallida_pct,
                 (SELECT hora FROM peak) AS hora_punta_num,
@@ -385,74 +623,122 @@ class VehicleService:
         dias = row_g.dias_operativos or 1
         entradas = row_g.total_entradas or 0
         salidas = row_g.total_salidas or 0
-        hora_punta = f"{row_g.hora_punta_num:02d}:00 hrs" if row_g.hora_punta_num is not None else "08:00 hrs"
+        hora_pico_entradas = f"{row_g.hora_punta_num:02d}:00 hrs" if row_g.hora_punta_num is not None else "08:00 hrs"
         max_entradas = row_g.max_entradas or 0
 
-        # Calibración dinámica de capacidad según sector con caché en RAM
-        clave_cap = f"cap_veh:{espacio_id}:{sector or 'todos'}"
-        if clave_cap in cache_horarios_espacio:
-            capacidad_max = cache_horarios_espacio[clave_cap]
+        caps_dict = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
+        if sector and sector != "todos":
+            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
+            capacidad_max = sum(caps_dict.get(s, 0) for s in sec_keys) or caps_dict.get("todos", 125)
         else:
-            capacidad_max = 125
-            if sector and sector != "todos":
-                sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-                sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
-                try:
-                    sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
-                    cap_sec = (await session.execute(sql_sec_cap)).scalar()
-                    if cap_sec and cap_sec > 0:
-                        capacidad_max = int(cap_sec)
-                except Exception:
-                    pass
-            else:
-                from app.domain.models import Espacio
-                espacio_obj = (await session.execute(select(Espacio.capacidad_max).where(Espacio.id == espacio_id))).scalar_one_or_none()
-                capacidad_max = espacio_obj or 125
-            cache_horarios_espacio[clave_cap] = capacidad_max
+            capacidad_max = caps_dict.get("todos", 125)
 
         turnover = round(entradas / dias / max(1, capacidad_max), 2)
 
-        fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
-        perm_conds = ["ent.espacio_id = :espacio_id"]
-        params_perm = {"espacio_id": espacio_id}
-        if fecha_inicio:
-            perm_conds.append("ent.time >= :inicio AND sal.time >= :inicio")
-            params_perm["inicio"] = fecha_inicio
-        if fin_exclusive:
-            perm_conds.append("ent.time < :fin")
-            params_perm["fin"] = fin_exclusive
-
+        where_perm_sql, params_perm = await VehicleService._build_vehicle_filters(
+            session=session,
+            espacio_id=espacio_id,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            alcance=alcance,
+            regimen_horario=regimen_horario,
+            direccion="todos",
+            dias_semana=dias_semana,
+            door=door,
+            sector=sector,
+            tipo_vehiculo=tipo_vehiculo,
+        )
         sql_perm = text(f"""
+            WITH ev_perm_raw AS (
+                SELECT
+                    patente_hash,
+                    time,
+                    CAST(time AS DATE) AS fecha,
+                    CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END AS es_salida,
+                    LAG(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END)
+                        OVER (PARTITION BY patente_hash, CAST(time AS DATE) ORDER BY time) AS prev_es_salida,
+                    LAG(time)
+                        OVER (PARTITION BY patente_hash, CAST(time AS DATE) ORDER BY time) AS prev_time
+                FROM eventos_vehiculares
+                WHERE {where_perm_sql}
+                  AND time <= GETDATE()
+                  AND patente_hash != 'unknown'
+            ),
+            ev_perm_clean AS (
+                SELECT
+                    patente_hash,
+                    time,
+                    fecha,
+                    es_salida,
+                    LEAD(es_salida) OVER (PARTITION BY patente_hash, fecha ORDER BY time) AS next_es_salida,
+                    LEAD(time) OVER (PARTITION BY patente_hash, fecha ORDER BY time) AS next_time
+                FROM ev_perm_raw
+                WHERE prev_es_salida IS NULL
+                   OR prev_es_salida <> es_salida
+                   OR DATEDIFF(minute, prev_time, time) > 15
+            ),
+            duraciones AS (
+                SELECT DATEDIFF(second, time, next_time) / 60.0 AS stay_min
+                FROM ev_perm_clean
+                WHERE es_salida = 0
+                  AND next_es_salida = 1
+                  AND next_time > time
+                  AND DATEDIFF(minute, time, next_time) BETWEEN 1 AND 1439
+            )
             SELECT TOP 1
-                ROUND(
-                    PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY DATEDIFF(second, ent.time, sal.time) / 60.0
-                    ) OVER (), 2
-                ) AS permanencia_mediana_min
-            FROM eventos_vehiculares ent
-            JOIN eventos_vehiculares sal
-              ON ent.patente_hash = sal.patente_hash
-             AND ent.espacio_id   = sal.espacio_id
-             AND sal.time > ent.time
-             AND sal.time < DATEADD(hour, 24, ent.time)
-             AND ent.direccion = 'entrada'
-             AND sal.direccion = 'salida'
-            WHERE {' AND '.join(perm_conds)}
+                ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY stay_min) OVER (), 2) AS permanencia_mediana_min
+            FROM duraciones
         """)
         row_p = (await session.execute(sql_perm, params_perm)).first()
         mediana_min = float(row_p.permanencia_mediana_min) if row_p and row_p.permanencia_mediana_min is not None else 0.0
+
+        # Fuente única de verdad: el pico concurrente y su hora punta coinciden exactamente con la curva sweep-line
+        curva_presencia = await VehicleService.get_realtime_presence_curve(
+            session=session,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            espacio_id=espacio_id,
+            alcance=alcance,
+            regimen_horario=regimen_horario,
+            direccion=direccion,
+            dias_semana=dias_semana,
+            door=door,
+            sector=sector,
+            tipo_vehiculo=tipo_vehiculo,
+        )
+        punto_pico = max(curva_presencia, key=lambda r: r.get("vehiculos_presentes", 0), default=None)
+        max_ocupacion_concurrente = int(punto_pico["vehiculos_presentes"]) if punto_pico else 0
+        fecha_pico_ocupacion = (
+            punto_pico["bucket"] if (punto_pico and max_ocupacion_concurrente > 0) else None
+        )
+        max_csf11 = max((int(r.get("vehiculos_csf11", 0)) for r in curva_presencia), default=0)
+        max_csf21 = max((int(r.get("vehiculos_csf21", 0)) for r in curva_presencia), default=0)
+        max_chs01 = max((int(r.get("vehiculos_chs01", 0)) for r in curva_presencia), default=0)
+        hora_punta = _extraer_hora_pico_curva_vehicular(curva_presencia) or hora_pico_entradas
 
         return {
             "vehiculos_unicos":          int(row_g.vehiculos_unicos or 0),
             "total_accesos":             int(entradas),
             "total_salidas":             int(salidas),
+            "total_accesos_csf11":       int(getattr(row_g, "total_accesos_csf11", 0) or 0),
+            "total_accesos_csf21":       int(getattr(row_g, "total_accesos_csf21", 0) or 0),
+            "total_accesos_chs01":       int(getattr(row_g, "total_accesos_chs01", 0) or 0),
             "dias_operativos":           int(dias),
             "turnover_rate_diario":      turnover,
             "permanencia_mediana_min":   mediana_min,
             "tasa_lectura_fallida_pct":  float(row_g.tasa_lectura_fallida_pct or 0),
             "hora_punta":                hora_punta,
-            "max_aforo_historico":       int(max_entradas),
+            "hora_pico_entradas":        hora_pico_entradas,
+            "max_aforo_historico":       max_ocupacion_concurrente,
+            "max_aforo_csf11":           max_csf11,
+            "max_aforo_csf21":           max_csf21,
+            "max_aforo_chs01":           max_chs01,
+            "max_entradas_hora":         int(max_entradas),
+            "fecha_pico_ocupacion":      fecha_pico_ocupacion,
             "capacidad_calibrada":       int(capacidad_max),
+            "capacidad_csf11":           int(caps_dict.get("CSF11", 40)),
+            "capacidad_csf21":           int(caps_dict.get("CSF21", 50)),
+            "capacidad_chs01":           int(caps_dict.get("CHS01", 35)),
         }
 
     # ------------------------------------------------------------------
@@ -471,134 +757,153 @@ class VehicleService:
         """)
         target_date = (await session.execute(sql_date, {"espacio_id": espacio_id})).scalar() or date.today()
 
+        caps_dict = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
         where_cam = ""
-        capacidad_max = 125
         if sector and sector != "todos":
             sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
             where_cam = " AND (" + " OR ".join([f"camara LIKE '%{s}%'" for s in sec_keys]) + ")"
-            sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
-            try:
-                sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
-                cap_sec = (await session.execute(sql_sec_cap)).scalar()
-                if cap_sec and cap_sec > 0:
-                    capacidad_max = int(cap_sec)
-            except Exception:
-                pass
+            capacidad_max = sum(caps_dict.get(s, 0) for s in sec_keys) or caps_dict.get("todos", 125)
         else:
-            from app.domain.models import Espacio
-            espacio_obj = (await session.execute(select(Espacio.capacidad_max).where(Espacio.id == espacio_id))).scalar_one_or_none()
-            capacidad_max = espacio_obj or 125
+            capacidad_max = caps_dict.get("todos", 125)
+
+        h24_rows = await obtener_horarios_operacion_cacheados(session, espacio_id)
+        vivo_params: dict = {"espacio_id": espacio_id, "target_date": target_date}
+        h24_conds = []
+        for i, r_24 in enumerate(h24_rows):
+            f_ini = getattr(r_24, "fecha_inicio", None)
+            f_fin = getattr(r_24, "fecha_fin", None)
+            if f_ini and f_fin:
+                vivo_params[f"vh24_ini_{i}"] = f_ini.date() if isinstance(f_ini, datetime) else f_ini
+                vivo_params[f"vh24_fin_{i}"] = f_fin.date() if isinstance(f_fin, datetime) else f_fin
+                h24_conds.append(f"(e.fecha >= :vh24_ini_{i} AND e.fecha <= :vh24_fin_{i})")
+        cond_h24_sql = " OR ".join(h24_conds) if h24_conds else "1=0"
+        expr_cierre_sql = _construir_expr_cierre_vehicular_sql(cond_h24_sql)
 
         sql = text(f"""
             WITH ev_base AS (
                 SELECT
                     time,
+                    CAST(time AS DATE) AS fecha,
                     patente_hash,
-                    direccion,
+                    CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END AS es_salida,
+                    CASE
+                        WHEN camara LIKE '%CSF11%' THEN 1
+                        WHEN camara LIKE '%CSF21%' THEN 2
+                        WHEN camara LIKE '%CHS01%' THEN 3
+                        ELSE 0
+                    END AS sector_num,
+                    LAG(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END) OVER (
+                        PARTITION BY patente_hash, CAST(time AS DATE) ORDER BY time
+                    ) AS prev_es_salida,
                     LAG(time) OVER (
-                        PARTITION BY patente_hash, direccion, CAST(time AS DATE)
-                        ORDER BY time
-                    ) AS prev_same_dir_time
+                        PARTITION BY patente_hash, CAST(time AS DATE) ORDER BY time
+                    ) AS prev_time
                 FROM eventos_vehiculares
                 WHERE espacio_id = :espacio_id
                   AND time >= :target_date
                   AND time < DATEADD(day, 1, CAST(:target_date AS DATETIME))
+                  AND time <= GETDATE()
                   AND calidad_lectura != 'unknown'
+                  AND patente_hash != 'unknown'
                   {where_cam}
             ),
             ev_dedup AS (
                 SELECT
                     time,
+                    fecha,
                     patente_hash,
-                    direccion,
-                    LEAD(direccion) OVER (
-                        PARTITION BY patente_hash, CAST(time AS DATE)
-                        ORDER BY time
-                    ) AS next_dir,
+                    es_salida,
+                    sector_num,
                     LEAD(time) OVER (
-                        PARTITION BY patente_hash, CAST(time AS DATE)
-                        ORDER BY time
-                    ) AS next_event_time
+                        PARTITION BY patente_hash, fecha ORDER BY time
+                    ) AS next_time
                 FROM ev_base
-                WHERE patente_hash = 'unknown'
-                   OR prev_same_dir_time IS NULL
-                   OR DATEDIFF(minute, prev_same_dir_time, time) > 15
+                WHERE prev_es_salida IS NULL
+                   OR prev_es_salida <> es_salida
+                   OR DATEDIFF(minute, prev_time, time) > 15
             ),
-            estancias AS (
-                SELECT
-                    CAST(time AS DATE) AS fecha_dia,
-                    DATEADD(hour, DATEDIFF(hour, 0, time), 0) AS hora_ini,
-                    DATEADD(hour, DATEDIFF(hour, 0,
-                        CASE
-                            WHEN patente_hash != 'unknown' AND next_dir = 'salida' AND next_event_time > time
-                                THEN next_event_time
-                            ELSE DATEADD(hour, 2, time)
-                        END
-                    ), 0) AS hora_fin
-                FROM ev_dedup
-                WHERE direccion = 'entrada'
-            ),
-            deltas_estancia AS (
-                SELECT fecha_dia, hora_ini AS bucket, 1 AS delta FROM estancias
-                UNION ALL
-                SELECT
-                    fecha_dia,
-                    CASE WHEN hora_fin > hora_ini THEN hora_fin ELSE DATEADD(hour, 1, hora_ini) END AS bucket,
-                    -1 AS delta
-                FROM estancias
-            ),
-            deltas_por_hora AS (
-                SELECT
-                    fecha_dia,
-                    bucket,
-                    SUM(delta) AS delta_neto
-                FROM deltas_estancia
-                WHERE CAST(bucket AS DATE) = fecha_dia
-                GROUP BY fecha_dia, bucket
-            ),
-            ocupacion_horaria AS (
-                SELECT
-                    bucket,
-                    SUM(delta_neto) OVER (
-                        PARTITION BY fecha_dia
-                        ORDER BY bucket
-                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                    ) AS vehiculos_presentes
-                FROM deltas_por_hora
-            ),
-            ultima_hora AS (
-                SELECT MAX(DATEADD(hour, DATEDIFF(hour, 0, time), 0)) AS max_bucket
+            anchor AS (
+                SELECT COALESCE(MAX(time), CAST(:target_date AS DATETIME2)) AS max_event_time
                 FROM ev_dedup
             )
             SELECT
-                COALESCE((
-                    SELECT TOP 1 o.vehiculos_presentes
-                    FROM ocupacion_horaria o, ultima_hora u
-                    WHERE u.max_bucket IS NOT NULL
-                      AND o.bucket <= u.max_bucket
-                    ORDER BY o.bucket DESC
-                ), 0) AS vehiculos_en_ultima_hora
+                COUNT(DISTINCT CASE
+                    WHEN e.es_salida = 0
+                     AND (
+                         (e.next_time IS NOT NULL AND e.next_time > a.max_event_time)
+                         OR (e.next_time IS NULL
+                             AND DATEDIFF(minute, e.time, a.max_event_time) BETWEEN 0 AND 120
+                             AND a.max_event_time <= ({expr_cierre_sql}))
+                     )
+                    THEN e.patente_hash
+                END) AS vehiculos_presentes,
+                COUNT(DISTINCT CASE
+                    WHEN e.sector_num = 1 AND e.es_salida = 0
+                     AND ((e.next_time IS NOT NULL AND e.next_time > a.max_event_time)
+                          OR (e.next_time IS NULL AND DATEDIFF(minute, e.time, a.max_event_time) BETWEEN 0 AND 120 AND a.max_event_time <= ({expr_cierre_sql})))
+                    THEN e.patente_hash
+                END) AS vehiculos_csf11,
+                COUNT(DISTINCT CASE
+                    WHEN e.sector_num = 2 AND e.es_salida = 0
+                     AND ((e.next_time IS NOT NULL AND e.next_time > a.max_event_time)
+                          OR (e.next_time IS NULL AND DATEDIFF(minute, e.time, a.max_event_time) BETWEEN 0 AND 120 AND a.max_event_time <= ({expr_cierre_sql})))
+                    THEN e.patente_hash
+                END) AS vehiculos_csf21,
+                COUNT(DISTINCT CASE
+                    WHEN e.sector_num = 3 AND e.es_salida = 0
+                     AND ((e.next_time IS NOT NULL AND e.next_time > a.max_event_time)
+                          OR (e.next_time IS NULL AND DATEDIFF(minute, e.time, a.max_event_time) BETWEEN 0 AND 120 AND a.max_event_time <= ({expr_cierre_sql})))
+                    THEN e.patente_hash
+                END) AS vehiculos_chs01,
+                MAX(a.max_event_time) AS max_event_time
+            FROM ev_dedup e
+            CROSS JOIN anchor a
         """)
-        row = (await session.execute(sql, {"espacio_id": espacio_id, "target_date": target_date})).one()
+        row = (await session.execute(sql, vivo_params)).one()
 
-        aforo = min(capacidad_max, max(0, int(row.vehiculos_en_ultima_hora)))
+        cap_11 = int(caps_dict.get("CSF11", 40))
+        cap_21 = int(caps_dict.get("CSF21", 50))
+        cap_01 = int(caps_dict.get("CHS01", 35))
+
+        aforo = min(capacidad_max, max(0, int(getattr(row, "vehiculos_presentes", 0) or 0)))
+        v_11 = min(cap_11, max(0, int(getattr(row, "vehiculos_csf11", 0) or 0)))
+        v_21 = min(cap_21, max(0, int(getattr(row, "vehiculos_csf21", 0) or 0)))
+        v_01 = min(cap_01, max(0, int(getattr(row, "vehiculos_chs01", 0) or 0)))
+
+        def _nivel_sector(pct_val: float) -> str:
+            if pct_val >= 85.0:
+                return "saturacion"
+            if pct_val >= 70.0:
+                return "preventivo"
+            return "normal"
+
         disponibles = max(0, capacidad_max - aforo)
         pct = round(aforo / max(1, capacidad_max) * 100, 1)
+        pct_11 = round(v_11 / max(1, cap_11) * 100, 1)
+        pct_21 = round(v_21 / max(1, cap_21) * 100, 1)
+        pct_01 = round(v_01 / max(1, cap_01) * 100, 1)
 
-        nivel = "normal"
-        if pct >= UMBRAL_ALERTA_90 * 100:
-            nivel = "saturacion"
-        elif pct >= 70:
-            nivel = "preventivo"
-
+        max_ev_ts = getattr(row, "max_event_time", None)
         return {
-            "vehiculos_presentes": aforo,
-            "plazas_disponibles":  disponibles,
-            "capacidad_maxima":    capacidad_max,
-            "ocupacion_pct":       pct,
-            "nivel_alerta":        nivel,
-            "timestamp":           datetime.combine(target_date, datetime.min.time()).isoformat(),
-            "sector":              sector or "todos",
+            "vehiculos_presentes":   aforo,
+            "plazas_disponibles":    disponibles,
+            "capacidad_maxima":      capacidad_max,
+            "ocupacion_pct":         pct,
+            "nivel_alerta":          _nivel_sector(pct),
+            "timestamp":             (max_ev_ts or datetime.combine(target_date, datetime.min.time())).isoformat(),
+            "sector":                sector or "todos",
+            "vehiculos_csf11":       v_11,
+            "vehiculos_csf21":       v_21,
+            "vehiculos_chs01":       v_01,
+            "capacidad_csf11":       cap_11,
+            "capacidad_csf21":       cap_21,
+            "capacidad_chs01":       cap_01,
+            "ocupacion_pct_csf11":   pct_11,
+            "ocupacion_pct_csf21":   pct_21,
+            "ocupacion_pct_chs01":   pct_01,
+            "nivel_alerta_csf11":    _nivel_sector(pct_11),
+            "nivel_alerta_csf21":    _nivel_sector(pct_21),
+            "nivel_alerta_chs01":    _nivel_sector(pct_01),
         }
 
     # ------------------------------------------------------------------
@@ -670,6 +975,7 @@ class VehicleService:
                     ) AS prev_same_dir_time
                 FROM eventos_vehiculares
                 WHERE {where_sql}
+                  AND time <= GETDATE()
             ),
             ev_dedup AS (
                 SELECT
@@ -699,6 +1005,8 @@ class VehicleService:
                         CASE
                             WHEN patente_hash != 'unknown' AND next_dir = 'salida' AND next_event_time > time
                                 THEN next_event_time
+                            WHEN DATEADD(hour, 2, time) > GETDATE()
+                                THEN GETDATE()
                             ELSE DATEADD(hour, 2, time)
                         END
                     ), 0) AS hora_fin
@@ -809,36 +1117,27 @@ class VehicleService:
             tipo_vehiculo=tipo_vehiculo,
         )
 
-        capacidad_total = 125
+        caps_dict = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
         if sector and sector != "todos":
             sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-            sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
-            try:
-                sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
-                cap_sec = (await session.execute(sql_sec_cap)).scalar()
-                if cap_sec and cap_sec > 0:
-                    capacidad_total = int(cap_sec)
-            except Exception:
-                pass
+            capacidad_total = sum(caps_dict.get(s, 0) for s in sec_keys) or caps_dict.get("todos", 125)
+        else:
+            capacidad_total = caps_dict.get("todos", 125)
 
-        sql = text(f"""
-            WITH FechasDistintas AS (
-                SELECT DISTINCT CAST(time AS DATE) AS fecha
-                FROM eventos_vehiculares
-                WHERE {where_sql}
-            ),
-            HorasExpansion AS (
-                SELECT
-                    d.fecha,
-                    v.hora,
-                    DATEADD(hour, v.hora, CAST(d.fecha AS DATETIME2)) AS bucket_start,
-                    DATEADD(minute, 59, DATEADD(second, 59, DATEADD(hour, v.hora, CAST(d.fecha AS DATETIME2)))) AS bucket_end
-                FROM FechasDistintas d
-                CROSS JOIN (
-                    VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(10),(11),(12),(13),(14),(15),(16),(17),(18),(19),(20),(21),(22),(23)
-                ) v(hora)
-            ),
-            EventosConContexto AS (
+        h24_rows = await obtener_horarios_operacion_cacheados(session, espacio_id)
+        h24_conds = []
+        for i, r_24 in enumerate(h24_rows):
+            f_ini = getattr(r_24, "fecha_inicio", None)
+            f_fin = getattr(r_24, "fecha_fin", None)
+            if f_ini and f_fin:
+                params[f"ch24_ini_{i}"] = f_ini.date() if isinstance(f_ini, datetime) else f_ini
+                params[f"ch24_fin_{i}"] = f_fin.date() if isinstance(f_fin, datetime) else f_fin
+                h24_conds.append(f"(e.fecha >= :ch24_ini_{i} AND e.fecha <= :ch24_fin_{i})")
+        cond_h24_sql = " OR ".join(h24_conds) if h24_conds else "1=0"
+        expr_cierre_sql = _construir_expr_cierre_vehicular_sql(cond_h24_sql)
+
+        sql_sesiones = text(f"""
+            WITH EventosConContexto AS (
                 SELECT
                     patente_hash,
                     time,
@@ -858,6 +1157,7 @@ class VehicleService:
                         OVER (PARTITION BY CAST(time AS DATE), patente_hash ORDER BY time) AS raw_next_es_salida
                 FROM eventos_vehiculares
                 WHERE {where_sql}
+                  AND time <= GETDATE()
                   AND patente_hash != 'unknown'
             ),
             EventosLimpios AS (
@@ -880,100 +1180,66 @@ class VehicleService:
                     AND DATEDIFF(SECOND, COALESCE(prev_time, time), time) <= 60
                     AND raw_next_es_salida IS NULL
                 )
-            ),
-            SesionesBase AS (
-                SELECT
-                    e.patente_hash,
-                    e.fecha,
-                    e.sector_num,
-                    e.time AS t_entrada,
-                    CASE
-                        WHEN e.next_time IS NOT NULL THEN e.next_time
-                        ELSE DATEADD(MINUTE, 120, e.time)
-                    END AS t_salida
-                FROM EventosLimpios e
-                WHERE e.es_salida = 0
-            ),
-            SesionesAgrupadas AS (
-                SELECT fecha, sector_num, t_entrada, t_salida, patente_hash
-                FROM SesionesBase
-            ),
-            PresenciaCalculada AS (
-                SELECT
-                    h.fecha,
-                    h.hora,
-                    h.bucket_start,
-                    COUNT(DISTINCT s.patente_hash) AS vehiculos_presentes,
-                    COUNT(DISTINCT CASE WHEN s.sector_num = 1 THEN s.patente_hash END) AS vehiculos_csf11,
-                    COUNT(DISTINCT CASE WHEN s.sector_num = 2 THEN s.patente_hash END) AS vehiculos_csf21,
-                    COUNT(DISTINCT CASE WHEN s.sector_num = 3 THEN s.patente_hash END) AS vehiculos_chs01
-                FROM HorasExpansion h
-                LEFT JOIN SesionesAgrupadas s
-                    ON s.fecha = h.fecha
-                   AND s.t_entrada <= h.bucket_end
-                   AND s.t_salida >= h.bucket_start
-                GROUP BY h.fecha, h.hora, h.bucket_start
-            ),
-            FlujosPorHora AS (
-                SELECT
-                    CAST(time AS DATE) AS fecha,
-                    DATEPART(HOUR, time) AS hora,
-                    SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END) AS entradas,
-                    SUM(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END) AS salidas,
-                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS entradas_csf11,
-                    SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS salidas_csf11,
-                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS entradas_csf21,
-                    SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS salidas_csf21,
-                    SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS entradas_chs01,
-                    SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS salidas_chs01
-                FROM eventos_vehiculares
-                WHERE {where_sql}
-                GROUP BY CAST(time AS DATE), DATEPART(HOUR, time)
             )
             SELECT
-                p.bucket_start,
-                p.vehiculos_presentes,
-                p.vehiculos_csf11,
-                p.vehiculos_csf21,
-                p.vehiculos_chs01,
-                COALESCE(f.entradas, 0) AS entradas,
-                COALESCE(f.salidas, 0) AS salidas,
-                COALESCE(f.entradas_csf11, 0) AS entradas_csf11,
-                COALESCE(f.salidas_csf11, 0) AS salidas_csf11,
-                COALESCE(f.entradas_csf21, 0) AS entradas_csf21,
-                COALESCE(f.salidas_csf21, 0) AS salidas_csf21,
-                COALESCE(f.entradas_chs01, 0) AS entradas_chs01,
-                COALESCE(f.salidas_chs01, 0) AS salidas_chs01
-            FROM PresenciaCalculada p
-            LEFT JOIN FlujosPorHora f ON f.fecha = p.fecha AND f.hora = p.hora
-            ORDER BY p.bucket_start ASC
+                e.fecha,
+                e.sector_num,
+                e.time AS t_entrada,
+                CASE
+                    WHEN e.next_time IS NOT NULL THEN e.next_time
+                    ELSE (
+                        SELECT CASE
+                            WHEN DATEADD(MINUTE, 120, e.time) > c_lim THEN c_lim
+                            ELSE DATEADD(MINUTE, 120, e.time)
+                        END
+                        FROM (
+                            SELECT CASE
+                                WHEN ({expr_cierre_sql}) > GETDATE() THEN GETDATE()
+                                ELSE ({expr_cierre_sql})
+                            END AS c_lim
+                        ) lim
+                    )
+                END AS t_salida
+            FROM EventosLimpios e
+            WHERE e.es_salida = 0
+              AND e.time <= GETDATE()
         """)
-        rows = (await session.execute(sql, params)).fetchall()
 
-        return [
-            {
-                "bucket":              r.bucket_start.isoformat(),
-                "vehiculos_presentes": min(capacidad_total, max(0, int(r.vehiculos_presentes or 0))),
-                "personas_unicas":     min(capacidad_total, max(0, int(r.vehiculos_presentes or 0))),
-                "entradas":            int(r.entradas or 0),
-                "salidas":             int(r.salidas or 0),
-                "ingresos":            int(r.entradas or 0),
-                "vehiculos_csf11":     min(40, max(0, int(r.vehiculos_csf11 or 0))),
-                "vehiculos_csf21":     min(50, max(0, int(r.vehiculos_csf21 or 0))),
-                "vehiculos_chs01":     min(35, max(0, int(r.vehiculos_chs01 or 0))),
-                "entradas_csf11":      int(r.entradas_csf11 or 0),
-                "salidas_csf11":       int(r.salidas_csf11 or 0),
-                "entradas_csf21":      int(r.entradas_csf21 or 0),
-                "salidas_csf21":       int(r.salidas_csf21 or 0),
-                "entradas_chs01":      int(r.entradas_chs01 or 0),
-                "salidas_chs01":       int(r.salidas_chs01 or 0),
-                "capacidad_total":     capacidad_total,
-                "capacidad_csf11":     40,
-                "capacidad_csf21":     50,
-                "capacidad_chs01":     35,
-            }
-            for r in rows
-        ]
+        sql_flujo = text(f"""
+            SELECT
+                DATEADD(hour, DATEPART(hour, time), CAST(CAST(time AS DATE) AS DATETIME2)) AS bucket,
+                CAST(time AS DATE) AS fecha,
+                SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END) AS entradas,
+                SUM(CASE WHEN direccion = 'salida' THEN 1 ELSE 0 END) AS salidas,
+                SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS entradas_csf11,
+                SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CSF11%' THEN 1 ELSE 0 END) AS salidas_csf11,
+                SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS entradas_csf21,
+                SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CSF21%' THEN 1 ELSE 0 END) AS salidas_csf21,
+                SUM(CASE WHEN direccion = 'entrada' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS entradas_chs01,
+                SUM(CASE WHEN direccion = 'salida' AND camara LIKE '%CHS01%' THEN 1 ELSE 0 END) AS salidas_chs01
+            FROM eventos_vehiculares
+            WHERE {where_sql}
+              AND time <= GETDATE()
+            GROUP BY CAST(time AS DATE), DATEPART(hour, time)
+            ORDER BY bucket ASC
+        """)
+
+        ses_rows = (await session.execute(sql_sesiones, params)).fetchall()
+        flujo_rows = (await session.execute(sql_flujo, params)).fetchall()
+        try:
+            ahora_srv = (await session.execute(text("SELECT GETDATE()"))).scalar() or datetime.now()
+        except Exception:
+            ahora_srv = datetime.now()
+        if isinstance(ahora_srv, date) and not isinstance(ahora_srv, datetime):
+            ahora_srv = datetime.now()
+
+        return _calcular_curva_presencia_vehicular_por_hora(
+            sesiones_rows=ses_rows,
+            flujo_rows=flujo_rows,
+            ahora_servidor=ahora_srv,
+            caps_sector=caps_dict,
+            capacidad_total=capacidad_total,
+        )
 
     # ------------------------------------------------------------------
     # Composición de flota (donut chart)
@@ -1365,6 +1631,7 @@ class VehicleService:
                     ) AS prev_same_dir_time
                 FROM eventos_vehiculares
                 WHERE {where_sql}
+                  AND time <= GETDATE()
             ),
             ev_dedup AS (
                 SELECT

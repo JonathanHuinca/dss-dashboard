@@ -75,6 +75,7 @@ function ForecastLineChartComponent({
 }: Props) {
 
   const [soloAtencion, setSoloAtencion] = useState<boolean>(false)
+  const [mostrarDesgloseSalas, setMostrarDesgloseSalas] = useState<boolean>(true)
 
   // Capas contextuales del calendario institucional y operacional
   const [mostrarFeriados, setMostrarFeriados] = useState(true)
@@ -174,7 +175,7 @@ function ForecastLineChartComponent({
 
   const esSuspensionAplicableASala = (cal?: DiaCalendarioResumen) => {
     if (!cal?.suspension_actividades || cal.is_holiday || cal.is_break || cal.is_strike_federado) return false
-    const subs = cal.subespacios_suspendidos || []
+    const subs = (cal.subespacios_suspendidos || []).map(s => String(s).toLowerCase())
     const esps = cal.espacios_suspendidos || []
     const espActual = recinto === 'vehicular' ? 2 : 1
     if (esps.length > 0 && !esps.includes(espActual)) return false
@@ -186,6 +187,12 @@ function ForecastLineChartComponent({
       }
       if (nombreNorm.includes('sala 2') || nombreNorm.includes('csf04')) {
         return subs.includes('sala_2') || subs.includes('sala2')
+      }
+    } else if (recinto === 'vehicular') {
+      for (const sec of ['csf11', 'csf21', 'chs01']) {
+        if (nombreNorm.includes(sec)) {
+          return subs.includes(sec)
+        }
       }
     }
     return true
@@ -201,6 +208,14 @@ function ForecastLineChartComponent({
     if (!soloAtencion) return futPoints
     return futPoints.filter(p => (p.es_abierto !== undefined ? p.es_abierto === 1 : p.yhat > 0))
   }, [futPoints, soloAtencion])
+
+  const tieneDesgloseSalas = useMemo(() => {
+    return recinto !== 'vehicular' && filteredFut.some(p => p.yhat_sala1 !== undefined && p.yhat_sala2 !== undefined)
+  }, [recinto, filteredFut])
+
+  const tieneDesgloseSectores = useMemo(() => {
+    return recinto === 'vehicular' && filteredFut.some(p => p.yhat_csf11 !== undefined && p.yhat_csf21 !== undefined)
+  }, [recinto, filteredFut])
 
   // Fechas únicas del horizonte para construir las bandas verticales de calendario
   const uniqueDates = useMemo(() => {
@@ -373,9 +388,19 @@ function ForecastLineChartComponent({
       if (mostrar24h && es24hFecha(fechaIso)) ctx.push('Campaña 24 Horas')
       return ctx.length > 0 ? `<br><b>Contexto:</b> ${ctx.join(', ')}` : ''
     }
+    const desgloseReal = (p: ForecastPoint): string => {
+      if (p.actual_sala1 !== undefined && p.actual_sala2 !== undefined) {
+        return `<br><span style="color:#475569">Sala 1: <b>${Math.round(p.actual_sala1)}</b> | Sala 2: <b>${Math.round(p.actual_sala2)}</b></span>`
+      }
+      if (p.actual_csf11 !== undefined && p.actual_csf21 !== undefined) {
+        return `<br><span style="color:#475569">CSF11: <b>${Math.round(p.actual_csf11)}</b> | CSF21: <b>${Math.round(p.actual_csf21)}</b> | CHS01: <b>${Math.round(p.actual_chs01 ?? 0)}</b></span>`
+      }
+      return ''
+    }
     const customHist = filteredHist.map(p => [
       formatearFechaHoraPronosticoEspanol(p.ds),
       contextoDia(p.ds.slice(0, 10)),
+      desgloseReal(p),
     ])
 
     // 2. Serie Futura (Próximos 7 días): conectada al último punto histórico
@@ -391,6 +416,11 @@ function ForecastLineChartComponent({
         yhat_upper: ultimoHist.actual ?? ultimoHist.yhat,
         actual: ultimoHist.actual,
         es_abierto: ultimoHist.es_abierto,
+        yhat_sala1: ultimoHist.actual_sala1 ?? ultimoHist.yhat_sala1,
+        yhat_sala2: ultimoHist.actual_sala2 ?? ultimoHist.yhat_sala2,
+        yhat_csf11: ultimoHist.actual_csf11 ?? ultimoHist.yhat_csf11,
+        yhat_csf21: ultimoHist.actual_csf21 ?? ultimoHist.yhat_csf21,
+        yhat_chs01: ultimoHist.actual_chs01 ?? ultimoHist.yhat_chs01,
       }
       futConConexion = [puntoConector, ...filteredFut]
     }
@@ -399,12 +429,22 @@ function ForecastLineChartComponent({
     const yFut = futConConexion.map(p => Math.max(0, Math.round(p.yhat)))
     const lowerFut = futConConexion.map(p => Math.max(0, Math.round(p.yhat_lower ?? p.yhat * 0.8)))
     const upperFut = futConConexion.map(p => Math.max(0, Math.round(p.yhat_upper ?? p.yhat * 1.2)))
+    const desgloseFut = (p: ForecastPoint): string => {
+      if (p.yhat_sala1 !== undefined && p.yhat_sala2 !== undefined) {
+        return `<br><span style="color:#475569">Sala 1: <b>${Math.round(p.yhat_sala1)}</b> | Sala 2: <b>${Math.round(p.yhat_sala2)}</b></span>`
+      }
+      if (p.yhat_csf11 !== undefined && p.yhat_csf21 !== undefined) {
+        return `<br><span style="color:#475569">CSF11: <b>${Math.round(p.yhat_csf11)}</b> | CSF21: <b>${Math.round(p.yhat_csf21)}</b> | CHS01: <b>${Math.round(p.yhat_chs01 ?? 0)}</b></span>`
+      }
+      return ''
+    }
     const customFut = futConConexion.map((p, i) => [
       yFut[i],
       upperFut[i],
       lowerFut[i],
       contextoDia(p.ds.slice(0, 10)),
       formatearFechaHoraPronosticoEspanol(p.ds),
+      desgloseFut(p),
     ])
 
     // Pico diario proyectado: un marcador por día con valor visible
@@ -427,8 +467,8 @@ function ForecastLineChartComponent({
       return `${DIAS_CORTOS[dt.getDay()]} ${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`
     })
 
-    const unidad = recinto === 'vehicular' ? 'vehículos/h' : 'personas/h'
-    const etiquetaReal = recinto === 'vehicular' ? 'Flujo Real' : 'Asistencia Real'
+    const unidad = recinto === 'vehicular' ? 'plazas' : 'personas/h'
+    const etiquetaReal = recinto === 'vehicular' ? 'Ocupación Real' : 'Asistencia Real'
 
     // ORDEN CRONOLÓGICO ESTRICTO: Primero Histórico Real, luego Pronóstico
     const data: Data[] = [
@@ -443,7 +483,7 @@ function ForecastLineChartComponent({
         line: { color: '#002855', width: 2.8 },
         fill: 'tozeroy',
         fillcolor: 'rgba(0, 40, 85, 0.07)',
-        hovertemplate: `<b>%{customdata[0]}</b><br>${etiquetaReal}: <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
+        hovertemplate: `<b>%{customdata[0]}</b><br>${etiquetaReal}: <b>%{y}</b> ${unidad}%{customdata[2]}%{customdata[1]}<extra></extra>`,
       },
       // 2. Banda inferior de incertidumbre (transparente)
       {
@@ -471,7 +511,7 @@ function ForecastLineChartComponent({
           `<span style="color:#B45309">▲</span> <b>Límite Superior (80%):</b> %{customdata[1]} ${unidad}<br>` +
           `<b>Estimación Central:</b> %{customdata[0]} ${unidad}<br>` +
           `<span style="color:#B45309">▼</span> <b>Límite Inferior (80%):</b> %{customdata[2]} ${unidad}` +
-          `%{customdata[3]}<extra></extra>`,
+          `%{customdata[5]}%{customdata[3]}<extra></extra>`,
       },
       // 4. Traza de Pronóstico Prophet (Ámbar Dorado UCT)
       {
@@ -487,9 +527,69 @@ function ForecastLineChartComponent({
           `<b>Pronóstico Central:</b> <b>%{customdata[0]}</b> ${unidad}<br>` +
           `<span style="color:#B45309">▲</span> <b>Límite Superior (80%):</b> %{customdata[1]} ${unidad}<br>` +
           `<span style="color:#B45309">▼</span> <b>Límite Inferior (80%):</b> %{customdata[2]} ${unidad}` +
-          `%{customdata[3]}<extra></extra>`,
+          `%{customdata[5]}%{customdata[3]}<extra></extra>`,
       },
     ]
+
+    if (tieneDesgloseSalas && mostrarDesgloseSalas) {
+      data.push(
+        {
+          x: xFut,
+          y: futConConexion.map(p => Math.max(0, Math.round(p.yhat_sala1 ?? 0))),
+          customdata: futConConexion.map(p => [formatearFechaHoraPronosticoEspanol(p.ds), contextoDia(p.ds.slice(0, 10))]),
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Aporte Sala 1 (CSF02)',
+          line: { color: '#2563EB', width: 1.7, dash: 'dot' },
+          hovertemplate: `<b>%{customdata[0]}</b><br>Sala 1 (CSF02): <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
+        },
+        {
+          x: xFut,
+          y: futConConexion.map(p => Math.max(0, Math.round(p.yhat_sala2 ?? 0))),
+          customdata: futConConexion.map(p => [formatearFechaHoraPronosticoEspanol(p.ds), contextoDia(p.ds.slice(0, 10))]),
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Aporte Sala 2 Pecera (CSF04)',
+          line: { color: '#7C3AED', width: 1.7, dash: 'dot' },
+          hovertemplate: `<b>%{customdata[0]}</b><br>Sala 2 Pecera (CSF04): <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
+        },
+      )
+    }
+
+    if (tieneDesgloseSectores && mostrarDesgloseSalas) {
+      data.push(
+        {
+          x: xFut,
+          y: futConConexion.map(p => Math.max(0, Math.round(p.yhat_csf11 ?? 0))),
+          customdata: futConConexion.map(p => [formatearFechaHoraPronosticoEspanol(p.ds), contextoDia(p.ds.slice(0, 10))]),
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Aporte CSF11 (Edificio 11)',
+          line: { color: '#2563EB', width: 1.7, dash: 'dot' },
+          hovertemplate: `<b>%{customdata[0]}</b><br>CSF11 (Edificio 11): <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
+        },
+        {
+          x: xFut,
+          y: futConConexion.map(p => Math.max(0, Math.round(p.yhat_csf21 ?? 0))),
+          customdata: futConConexion.map(p => [formatearFechaHoraPronosticoEspanol(p.ds), contextoDia(p.ds.slice(0, 10))]),
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Aporte CSF21 (Edificio 21)',
+          line: { color: '#0D9488', width: 1.7, dash: 'dot' },
+          hovertemplate: `<b>%{customdata[0]}</b><br>CSF21 (Edificio 21): <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
+        },
+        {
+          x: xFut,
+          y: futConConexion.map(p => Math.max(0, Math.round(p.yhat_chs01 ?? 0))),
+          customdata: futConConexion.map(p => [formatearFechaHoraPronosticoEspanol(p.ds), contextoDia(p.ds.slice(0, 10))]),
+          type: 'scatter',
+          mode: 'lines',
+          name: 'Aporte CHS01 (Hosp. Simulación)',
+          line: { color: '#7C3AED', width: 1.7, dash: 'dot' },
+          hovertemplate: `<b>%{customdata[0]}</b><br>CHS01 (Hosp. Simulación): <b>%{y}</b> ${unidad}%{customdata[1]}<extra></extra>`,
+        },
+      )
+    }
 
     if (picos.length > 0) {
       data.push({
@@ -624,7 +724,7 @@ function ForecastLineChartComponent({
         tickfont: { size: 10, color: '#64748B' },
         range: [0, Math.ceil(maxVal * 1.12)],
         title: {
-          text: recinto === 'vehicular' ? 'Vehículos / hora' : 'Personas / hora',
+          text: recinto === 'vehicular' ? 'Vehículos presentes (plazas)' : 'Personas / hora',
           font: { size: 10, color: '#64748B' },
         },
       },
@@ -638,7 +738,7 @@ function ForecastLineChartComponent({
     }
 
     return { chartData: data, layout: chartLayout }
-  }, [filteredHist, filteredFut, soloAtencion, capacidad, anchorDateStr, recinto, salaNombre, contextShapes, mapaFechas, mostrar24h, periodos24h])
+  }, [filteredHist, filteredFut, soloAtencion, tieneDesgloseSalas, tieneDesgloseSectores, mostrarDesgloseSalas, capacidad, anchorDateStr, recinto, salaNombre, contextShapes, mapaFechas, mostrar24h, periodos24h])
 
   return (
     <div className="space-y-3">
@@ -735,12 +835,12 @@ function ForecastLineChartComponent({
         <div className="flex items-center gap-3 text-slate-600 dark:text-slate-300">
           <span className="flex items-center gap-1 font-medium text-uct-navy dark:text-sky-300">
             <Activity className="w-3.5 h-3.5" />
-            Máximo Histórico: <strong className="font-semibold">{stats.maxHist} {recinto === 'vehicular' ? 'veh/h' : 'p/h'}</strong>
+            Máximo Histórico: <strong className="font-semibold">{stats.maxHist} {recinto === 'vehicular' ? 'veh' : 'p/h'}</strong>
           </span>
           <span className="text-gray-300 dark:text-gray-700">|</span>
           <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-400">
             <Users className="w-3.5 h-3.5" />
-            Máximo Proyectado: <strong className="font-semibold">{stats.maxFut} {recinto === 'vehicular' ? 'veh/h' : 'p/h'}</strong>
+            Máximo Proyectado: <strong className="font-semibold">{stats.maxFut} {recinto === 'vehicular' ? 'veh' : 'p/h'}</strong>
           </span>
           {capacidad && (
             <>
@@ -756,7 +856,20 @@ function ForecastLineChartComponent({
         </div>
 
         {/* Toggle de Horario */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {(tieneDesgloseSalas || tieneDesgloseSectores) && (
+            <button
+              type="button"
+              onClick={() => setMostrarDesgloseSalas(v => !v)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-all cursor-pointer ${
+                mostrarDesgloseSalas
+                  ? 'bg-blue-50 text-uct-navy border-blue-200 font-semibold'
+                  : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200/70'
+              }`}
+            >
+              {tieneDesgloseSectores ? 'Desglose Sectores' : 'Desglose S1 / S2'}
+            </button>
+          )}
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
             <button
               type="button"

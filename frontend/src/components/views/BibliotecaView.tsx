@@ -26,7 +26,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { ModalReporte24Horas } from '../reports/ModalReporte24Horas'
-import { fetchAnalisis24h } from '../../api/asistencia'
+import { fetchAnalisis24h, Analisis24hResponse } from '../../api/asistencia'
 import { SeccionCampana24Horas } from './biblioteca/SeccionCampana24Horas'
 import { KpiCard } from '../ui/KpiCard'
 import { ChartCard } from '../ui/ChartCard'
@@ -39,9 +39,10 @@ import { ExcelBatchExportModal } from '../ui/ExcelBatchExportModal'
 import { CompartirReporteModal } from '../reports/CompartirReporteModal'
 import { BarraLateralSecciones, SeccionModuloItem } from '../layout/BarraLateralSecciones'
 import { KPIBanner } from '../layout/KPIBanner'
-import { DataFilters, fetchEspacioInfo, dispararActualizacionModelos, consultarResumenTareasAdmin } from '../../api/client'
+import { DataFilters, fetchEspacioInfo, fetchHorarios, HorarioOperacion, dispararActualizacionModelos, consultarResumenTareasAdmin } from '../../api/client'
 import { exportarPlantillaOficialSalasEstudio } from '../../utils/excelExport'
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
+import { buildUserStorageKey } from '../../utils/userStorage'
 import { useAuth } from '../../context/AuthContext'
 import { useAssistant } from '../../context/AssistantContext'
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
@@ -84,7 +85,7 @@ const CheckinDistributionPlotlyChart = memo(lazy(() => import('../charts/Checkin
 const VisitProfilesPlotlyChart = memo(lazy(() => import('../charts/VisitProfilesPlotlyChart').then(m => ({ default: m.VisitProfilesPlotlyChart }))))
 const DailyAverageAttendancePlotlyChart = memo(lazy(() => import('../charts/DailyAverageAttendancePlotlyChart').then(m => ({ default: m.DailyAverageAttendancePlotlyChart }))))
 
-const DEFAULT_CAPACIDAD = 350
+const DEFAULT_CAPACIDAD = 276
 
 function fmt(n: number | undefined, dec = 0) {
   if (n === undefined || n === null) return '—'
@@ -136,7 +137,7 @@ function SectionHeader({
 const BIBLIOTECA_CHARTS: ChartConfigItem[] = [
   // 1. Aforo y Demanda en Tiempo Real
   { id: 'aforo_presencia_intervalos', label: 'Curva de Presencia Física en Sala (Intervalos de Sesión)', category: 'Aforo en Tiempo Real', description: 'Ocupación física real por intervalos [entrada ≤ T y salida ≥ T] vs capacidad' },
-  { id: 'prophet_presencia_14dias', label: 'Pronóstico de Presencia Física (Prophet Logístico Acotado)', category: 'Aforo en Tiempo Real', description: 'Proyección continua a 14 días (7d reales + 7d proyectados) de ocupación física en sala vs capacidad' },
+  { id: 'prophet_presencia_14dias', label: 'Pronóstico de Presencia Física (Prophet Jerárquico)', category: 'Aforo en Tiempo Real', description: 'Proyección continua a 14 días (7d reales + 7d proyectados) de ocupación física en sala vs capacidad' },
   // 2. Demografía Institucional y Distribución Curricular
   { id: 'distribucion_curricular', label: 'Distribución por Carrera Institucional (Ley 21.719)', category: 'Demografía y Carreras', description: 'Padrón académico disociado por carreras universitarias' },
   // 3. Análisis de Comportamiento y Perfiles de Visita
@@ -172,13 +173,16 @@ interface Props {
 
 export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilters, onFiltersChange }: Props) {
   const { ejecutarDescarga } = useDownloadProgress()
+  const { roles = [], userRole, userId, userEmail } = useAuth()
+  const claveSeccionBib = buildUserStorageKey('uct_seccion_activa_biblioteca', userId, userEmail)
+  const claveGraficosBib = buildUserStorageKey('uct_charts_visible_biblioteca', userId, userEmail)
   const [modalCompartirAbierto, setModalCompartirAbierto] = useState(false)
   const [loadStage, setLoadStage] = useState(2)
   const [precargaSilenciosaLista, setPrecargaSilenciosaLista] = useState(false)
   const [barraLateralExpandida, setBarraLateralExpandida] = useState(true)
   const [seccionActivaBiblioteca, setSeccionActivaBiblioteca] = useState<string | 'todas'>(() => {
     try {
-      const guardada = localStorage.getItem('uct_seccion_activa_biblioteca')
+      const guardada = localStorage.getItem(claveSeccionBib)
       if (guardada) return guardada
     } catch { }
     return 'seccion_1'
@@ -187,7 +191,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   // Memoria de secciones visitadas para transiciones 100% instantáneas sin repintado
   const [seccionesVisitadas, setSeccionesVisitadas] = useState<Set<string>>(() => {
     try {
-      const guardada = localStorage.getItem('uct_seccion_activa_biblioteca') || 'seccion_1'
+      const guardada = localStorage.getItem(claveSeccionBib) || 'seccion_1'
       return new Set(['seccion_1', guardada])
     } catch {
       return new Set(['seccion_1'])
@@ -205,7 +209,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
       return next
     })
     try {
-      localStorage.setItem('uct_seccion_activa_biblioteca', nuevaSeccion)
+      localStorage.setItem(claveSeccionBib, nuevaSeccion)
     } catch { }
   }
 
@@ -235,6 +239,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     cohorte: '',
     incluir_pausas_bano: true,
     desduplicar_rafagas: true,
+    incluir_funcionarios: true,
+    incluir_sin_identificar: true,
   })
 
   const filters = externalFilters ?? internalFilters
@@ -269,7 +275,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   // Estado para visibilidad personalizada de gráficos
   const [visibleCharts, setVisibleCharts] = useState<Record<string, boolean>>(() => {
     try {
-      const saved = localStorage.getItem('uct_charts_visible_biblioteca')
+      const saved = localStorage.getItem(claveGraficosBib)
       if (saved) return JSON.parse(saved)
     } catch { }
     return BIBLIOTECA_CHARTS.reduce<Record<string, boolean>>((acc, c) => ({ ...acc, [c.id]: true }), {})
@@ -278,7 +284,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const toggleChart = (id: string) => {
     setVisibleCharts(prev => {
       const next = { ...prev, [id]: prev[id] === false ? true : false }
-      try { localStorage.setItem('uct_charts_visible_biblioteca', JSON.stringify(next)) } catch { }
+      try { localStorage.setItem(claveGraficosBib, JSON.stringify(next)) } catch { }
       return next
     })
   }
@@ -286,13 +292,13 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const selectAllCharts = () => {
     const next = BIBLIOTECA_CHARTS.reduce<Record<string, boolean>>((acc, c) => ({ ...acc, [c.id]: true }), {})
     setVisibleCharts(next)
-    try { localStorage.setItem('uct_charts_visible_biblioteca', JSON.stringify(next)) } catch { }
+    try { localStorage.setItem(claveGraficosBib, JSON.stringify(next)) } catch { }
   }
 
   const deselectAllCharts = () => {
     const next = BIBLIOTECA_CHARTS.reduce<Record<string, boolean>>((acc, c) => ({ ...acc, [c.id]: false }), {})
     setVisibleCharts(next)
-    try { localStorage.setItem('uct_charts_visible_biblioteca', JSON.stringify(next)) } catch { }
+    try { localStorage.setItem(claveGraficosBib, JSON.stringify(next)) } catch { }
   }
 
   useEffect(() => {
@@ -313,7 +319,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
 
   // Nivel 0 (Inmediato): KPIs vitales y datos en tiempo real
   const kpis = useAttendanceKpis(dateRange?.inicio, dateRange?.fin, filters)
-  const live = useOccupancyRealtime()
+  const live = useOccupancyRealtime(filters)
   const flow = useAttendanceHourlyFlow(dateRange?.inicio, dateRange?.fin, filters, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
   const presenceCurve = useAttendancePresenceCurve(dateRange?.inicio, dateRange?.fin, filters)
   const alerts = useAlerts()
@@ -329,8 +335,8 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const salasBiblioteca = salasQuery.data ?? []
   const sala1 = salasBiblioteca.find(s => s.codigo?.includes('CSF02') || s.id === 1)
   const sala2 = salasBiblioteca.find(s => s.codigo?.includes('CSF04') || s.id === 2)
-  const capSala1 = sala1?.capacidad_asientos ?? 124
-  const capSala2 = sala2?.capacidad_asientos ?? 226
+  const capSala1 = sala1?.capacidad_asientos ?? 150
+  const capSala2 = sala2?.capacidad_asientos ?? 126
   const capTotal = capSala1 + capSala2
 
   const capacidadActiva = useMemo(() => {
@@ -350,8 +356,12 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     return filters.sala
   }, [filters.sala])
 
-  const { roles = [], userRole } = useAuth()
-  const puedeCompartirReportes = userRole !== 'Guardia_Seguridad'
+  const puedeCompartirReportes =
+    !roles.includes('Guardia_Seguridad') &&
+    userRole !== 'Guardia_Seguridad' &&
+    !(roles.length > 0 && roles.every((r) => r === 'Guardia_Seguridad' || r === 'Consultor_Reporte'))
+  const accesoRestringidoBib =
+    (kpis.error as any)?.response?.status === 403 || (live.error as any)?.response?.status === 403
   const esAdminSistema = useMemo(() => {
     return (
       roles.includes('Admin_Sistema') ||
@@ -420,6 +430,16 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   }
 
   const [salaPronosticoPresencia, setSalaPronosticoPresencia] = useState<'todas' | 'sala1' | 'sala2'>('todas')
+  useEffect(() => {
+    const sLow = (filters.sala || '').toLowerCase()
+    if (sLow.includes('csf02') || sLow.includes('sala_1') || sLow === '1' || sLow === 'sala1') {
+      setSalaPronosticoPresencia('sala1')
+    } else if (sLow.includes('csf04') || sLow.includes('sala_2') || sLow === '2' || sLow === 'sala2') {
+      setSalaPronosticoPresencia('sala2')
+    } else {
+      setSalaPronosticoPresencia('todas')
+    }
+  }, [filters.sala])
   const presenceForecast = useForecastPresence(salaPronosticoPresencia)
 
 
@@ -436,11 +456,33 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const curricular = useCurricularDistribution(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
   const visitProfiles = useVisitProfilesDonut(dateRange?.inicio, dateRange?.fin, filters, 1, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaLista })
 
-  const bibAlert = alerts.data?.alertas.find(a => a.recinto === 'biblioteca')
+  const bibAlerts = useMemo(() => {
+    const lista = (alerts.data?.alertas || []).filter(a => a.recinto === 'biblioteca')
+    const sLow = (filters.sala || '').toLowerCase()
+    if (!sLow) return lista
+    if (sLow.includes('csf02') || sLow.includes('sala_1') || sLow === '1' || sLow === 'sala1') {
+      return lista.filter(a => !a.subespacio || a.subespacio === 'sala1')
+    }
+    if (sLow.includes('csf04') || sLow.includes('sala_2') || sLow === '2' || sLow === 'sala2') {
+      return lista.filter(a => !a.subespacio || a.subespacio === 'sala2')
+    }
+    return lista
+  }, [alerts.data?.alertas, filters.sala])
 
-  const lastTs = live.data?.timestamp
-    ? new Date(live.data.timestamp).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })
-    : undefined
+  const lastTs = useMemo(() => {
+    if (!live.data?.timestamp) return undefined
+    const dt = new Date(live.data.timestamp)
+    if (Number.isNaN(dt.getTime())) return undefined
+    const hoy = new Date()
+    const esHoy =
+      dt.getFullYear() === hoy.getFullYear() &&
+      dt.getMonth() === hoy.getMonth() &&
+      dt.getDate() === hoy.getDate()
+    if (esHoy) {
+      return dt.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })
+    }
+    return `${dt.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' })} ${dt.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })}`
+  }, [live.data?.timestamp])
 
   const handleResetAllCharts = () => {
     document.querySelectorAll<HTMLElement>('.chart-resizable-card').forEach((el) => {
@@ -467,20 +509,121 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     }
   }, [dateRange?.inicio, dateRange?.fin, campana24hSeleccionada])
 
-  // Campaña 24 Horas (Sección 8): Por defecto se focaliza en las campañas oficiales 24h
+  // Detección dinámica de campañas 24h desde horarios de operación de Biblioteca
+  const horariosBiblioteca = useQuery<HorarioOperacion[]>({
+    queryKey: ['horarios-operacion-biblioteca-24h', 1],
+    queryFn: () => fetchHorarios({ espacio_id: 1 }),
+    staleTime: 5 * 60_000,
+  })
+
+  const campanas24hActivasDb = useMemo(() => {
+    return (horariosBiblioteca.data || [])
+      .filter(h => h.activo && Boolean(h.es_continuo_24h || h.tipo_horario === 'extendido_24h') && Boolean(h.fecha_inicio && h.fecha_fin))
+      .sort((a, b) => String(b.fecha_inicio).localeCompare(String(a.fecha_inicio)))
+  }, [horariosBiblioteca.data])
+
+  const campanasCoincidentesRango = useMemo(() => {
+    const dIni = dateRange?.inicio?.slice(0, 10)
+    const dFin = dateRange?.fin?.slice(0, 10)
+    if (!dIni || !dFin) return []
+    return campanas24hActivasDb.filter(c => {
+      const cIni = String(c.fecha_inicio).slice(0, 10)
+      const cFin = String(c.fecha_fin).slice(0, 10)
+      return cIni <= dFin && cFin >= dIni
+    })
+  }, [campanas24hActivasDb, dateRange?.inicio, dateRange?.fin])
+
+  const tieneCampana24hActiva = campanasCoincidentesRango.length > 0
+  const tieneMultiplesCampanasEnRango = campanasCoincidentesRango.length >= 2
+
+  const seccionesBibliotecaVisibles = useMemo(
+    () =>
+      tieneCampana24hActiva
+        ? SECCIONES_MODULO_BIBLIOTECA
+        : SECCIONES_MODULO_BIBLIOTECA.filter(s => s.id !== 'seccion_5'),
+    [tieneCampana24hActiva]
+  )
+
+  useEffect(() => {
+    if (!tieneCampana24hActiva && seccionActivaBiblioteca === 'seccion_5') {
+      cambiarSeccionBiblioteca('seccion_1')
+    }
+  }, [tieneCampana24hActiva, seccionActivaBiblioteca])
+
+  const [campanaBannerSec1Id, setCampanaBannerSec1Id] = useState<number>(0)
+
+  useEffect(() => {
+    setCampanaBannerSec1Id(0)
+  }, [dateRange?.inicio, dateRange?.fin, campanasCoincidentesRango.length])
+
+  const campanaBannerSec1Efectiva = useMemo(() => {
+    if (
+      tieneMultiplesCampanasEnRango &&
+      campanaBannerSec1Id > 0 &&
+      campanasCoincidentesRango.some(c => c.id === campanaBannerSec1Id)
+    ) {
+      return campanaBannerSec1Id
+    }
+    return 0
+  }, [tieneMultiplesCampanasEnRango, campanaBannerSec1Id, campanasCoincidentesRango])
+
+  const etiquetasCampanasSec1 = useMemo(() => {
+    const mesesCortos = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+    const baseLabels = new Map<number, string>()
+    const conteoLabels = new Map<string, number>()
+
+    for (const c of campanasCoincidentesRango) {
+      const fIni = String(c.fecha_inicio || '').slice(0, 10)
+      const fFin = String(c.fecha_fin || '').slice(0, 10)
+      const y1 = fIni.slice(0, 4)
+      const m1 = Number(fIni.slice(5, 7))
+      const y2 = fFin.slice(0, 4)
+      const m2 = Number(fFin.slice(5, 7))
+
+      let label = c.descripcion || `Campaña ${c.id}`
+      if (m1 >= 1 && m1 <= 12 && m2 >= 1 && m2 <= 12 && y1 && y2) {
+        if (y1 === y2 && m1 === m2) {
+          label = `${mesesCortos[m1 - 1]} ${y1}`
+        } else if (y1 === y2) {
+          label = `${mesesCortos[m1 - 1]}–${mesesCortos[m2 - 1]} ${y1}`
+        } else {
+          label = `${mesesCortos[m1 - 1]} ${y1}–${mesesCortos[m2 - 1]} ${y2}`
+        }
+      }
+      baseLabels.set(c.id, label)
+      conteoLabels.set(label, (conteoLabels.get(label) || 0) + 1)
+    }
+
+    const resultado = new Map<number, string>()
+    for (const c of campanasCoincidentesRango) {
+      const base = baseLabels.get(c.id) || c.descripcion || `Campaña ${c.id}`
+      if ((conteoLabels.get(base) || 0) > 1 && c.fecha_inicio) {
+        const fIni = String(c.fecha_inicio).slice(0, 10)
+        resultado.set(c.id, `${base} (${fIni.slice(8, 10)}/${fIni.slice(5, 7)})`)
+      } else {
+        resultado.set(c.id, base)
+      }
+    }
+    return resultado
+  }, [campanasCoincidentesRango])
+
   const campanaEfectivaId = useMemo(() => {
     if (campana24hSeleccionada !== undefined) {
       return campana24hSeleccionada
     }
-    const rIni = dateRange?.inicio?.slice(0, 10) || ''
-    const rFin = dateRange?.fin?.slice(0, 10) || ''
-    if (rIni >= '2026-11-01' && rFin <= '2026-11-30') return 9
-    return 11
-  }, [campana24hSeleccionada, dateRange?.inicio, dateRange?.fin])
+    if (campanasCoincidentesRango.length === 1) {
+      return campanasCoincidentesRango[0].id
+    }
+    if (campanasCoincidentesRango.length > 1) {
+      return 0
+    }
+    return campanas24hActivasDb[0]?.id
+  }, [campana24hSeleccionada, campanasCoincidentesRango, campanas24hActivasDb])
 
   const esModoPersonalizado = campanaEfectivaId === -1
-  const esCampanaFija = campanaEfectivaId >= 0
+  const esCampanaFija = campanaEfectivaId !== undefined && campanaEfectivaId >= 0
 
+  // Consulta dedicada para Sección 5 y modal de dictamen oficial
   const analisis24h = useQuery({
     queryKey: [
       'analisis24h',
@@ -488,6 +631,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
       bloqueHorario24h,
       esModoPersonalizado ? fechaInicio24h : null,
       esModoPersonalizado ? fechaFin24h : null,
+      filters,
     ],
     queryFn: () =>
       fetchAnalisis24h({
@@ -495,27 +639,50 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
         fechaInicio: esModoPersonalizado ? fechaInicio24h : undefined,
         fechaFin: esModoPersonalizado ? fechaFin24h : undefined,
         bloqueHorario: bloqueHorario24h,
+        filters,
       }),
+    enabled: tieneCampana24hActiva && (esSeccionVisible('seccion_5') || modalReporte24hAbierto),
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
   })
 
-  const tieneCampana24hActiva = useMemo(() => {
-    if (analisis24h.data?.campana?.tiene_campana_activa !== undefined) {
-      return analisis24h.data.campana.tiene_campana_activa
-    }
-    const dInicio = dateRange?.inicio
-    const dFin = dateRange?.fin
-    if (!dInicio || !dFin) return false
-    const campanas = analisis24h.data?.campanas_disponibles || []
-    return campanas.some(c =>
-      c.id > 0 &&
-      c.fecha_inicio &&
-      c.fecha_fin &&
-      c.fecha_inicio <= dFin &&
-      c.fecha_fin >= dInicio
-    )
-  }, [analisis24h.data?.campana?.tiene_campana_activa, analisis24h.data?.campanas_disponibles, dateRange?.inicio, dateRange?.fin])
+  // Consulta dinámica acotada al rango activo o campaña seleccionada en Sección 1
+  const analisis24hPeriodo = useQuery({
+    queryKey: [
+      'analisis24h-periodo-sec1',
+      dateRange?.inicio,
+      dateRange?.fin,
+      tieneMultiplesCampanasEnRango ? campanaBannerSec1Efectiva : 'rango_unico',
+      filters,
+    ],
+    queryFn: () => {
+      if (tieneMultiplesCampanasEnRango) {
+        if (campanaBannerSec1Efectiva > 0) {
+          return fetchAnalisis24h({
+            campanaId: campanaBannerSec1Efectiva,
+            bloqueHorario: 'todos',
+            filters,
+          })
+        }
+        return fetchAnalisis24h({
+          campanaId: 0,
+          fechaInicio: dateRange?.inicio,
+          fechaFin: dateRange?.fin,
+          bloqueHorario: 'todos',
+          filters,
+        })
+      }
+      return fetchAnalisis24h({
+        fechaInicio: dateRange?.inicio,
+        fechaFin: dateRange?.fin,
+        bloqueHorario: 'todos',
+        filters,
+      })
+    },
+    enabled: Boolean(tieneCampana24hActiva && dateRange?.inicio && dateRange?.fin && esSeccionVisible('seccion_1')),
+    staleTime: 5 * 60_000,
+    placeholderData: keepPreviousData,
+  })
 
   const handleDescargarPlantillaOficial = async () => {
     const filename = `Informe_Oficial_Salas_Estudio_Biblioteca_${new Date().toISOString().slice(0, 10)}.xlsx`
@@ -576,129 +743,189 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     visibleCharts.hitos_academicos !== false
   )
   const showSec4 = esSeccionVisible('seccion_4')
-  const showSec5 = esSeccionVisible('seccion_5')
+  const showSec5 = tieneCampana24hActiva && esSeccionVisible('seccion_5')
 
   // Banner ejecutivo de Campaña 24 Horas
-  const renderBannerCampana24Horas = (mostrarBotonSeccion5 = true) => (
-    <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-800/50 shadow-md relative overflow-hidden">
-      <div className="absolute top-0 right-0 -mr-12 -mt-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+  const formatFechaCorta24h = (iso?: string | null): string => {
+    if (!iso) return ''
+    const partes = iso.slice(0, 10).split('-')
+    return partes.length === 3 ? `${partes[2]}/${partes[1]}/${partes[0]}` : iso
+  }
 
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-indigo-800/40">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-indigo-600/30 text-indigo-300 border border-indigo-500/30">
-            <Moon className="w-5 h-5 text-indigo-400" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-base font-bold text-white tracking-tight">
-                Campaña 24 Horas & Análisis de Justificación Operativa
-              </h3>
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
-                Sala 2 CSF04 Pecera (226 Asientos)
-              </span>
+  const renderBannerCampana24Horas = (mostrarBotonSeccion5 = true, bannerData?: Analisis24hResponse) => {
+    const datosBanner = bannerData ?? analisis24h.data
+    const fIniVig = datosBanner?.campana.fecha_inicio ?? (mostrarBotonSeccion5 ? dateRange?.inicio : undefined)
+    const fFinVig = datosBanner?.campana.fecha_fin ?? (mostrarBotonSeccion5 ? dateRange?.fin : undefined)
+    const vigenciaTexto = fIniVig && fFinVig ? `${formatFechaCorta24h(fIniVig)} – ${formatFechaCorta24h(fFinVig)}` : ''
+    const esConsolidadoMultiSec1 = mostrarBotonSeccion5 && tieneMultiplesCampanasEnRango && campanaBannerSec1Efectiva === 0
+
+    return (
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-800/50 shadow-md relative overflow-hidden">
+        <div className="absolute top-0 right-0 -mr-12 -mt-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-indigo-800/40">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-600/30 text-indigo-300 border border-indigo-500/30">
+              <Moon className="w-5 h-5 text-indigo-400" />
             </div>
-            <p className="text-xs text-indigo-200/80">
-              Evaluación de demanda nocturna (L-J 23:00 a 07:00 h | Vie 22:00 a 06:00 h) durante régimen de exámenes
-            </p>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-base font-bold text-white tracking-tight">
+                  Campaña 24 Horas & Análisis de Justificación Operativa
+                </h3>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
+                  Sala 2 CSF04 Pecera ({datosBanner?.campana?.capacidad_asientos ?? capSala2} Asientos)
+                </span>
+                {vigenciaTexto && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-400/30">
+                    {esConsolidadoMultiSec1
+                      ? `Consolidado: ${campanasCoincidentesRango.length} campañas (${vigenciaTexto})`
+                      : `Período 24h: ${vigenciaTexto}`}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-indigo-200/80">
+                Evaluación de demanda nocturna (L-J 23:00 a 07:00 h | Vie 22:00 a 06:00 h) durante régimen de exámenes
+              </p>
+              {mostrarBotonSeccion5 && tieneMultiplesCampanasEnRango && (
+                <div className="flex flex-wrap items-center gap-1 mt-2 p-0.5 rounded-lg bg-slate-950/60 border border-indigo-500/30 w-fit">
+                  <button
+                    type="button"
+                    onClick={() => setCampanaBannerSec1Id(0)}
+                    className={`px-2.5 py-0.5 rounded-md text-[11px] font-medium transition-all cursor-pointer ${
+                      campanaBannerSec1Efectiva === 0
+                        ? 'bg-indigo-500 text-white shadow-xs font-semibold'
+                        : 'text-indigo-200/80 hover:text-white hover:bg-white/10'
+                    }`}
+                  >
+                    Todas las campañas ({campanasCoincidentesRango.length})
+                  </button>
+                  {campanasCoincidentesRango.map((camp) => (
+                    <button
+                      key={camp.id}
+                      type="button"
+                      onClick={() => setCampanaBannerSec1Id(camp.id)}
+                      className={`px-2.5 py-0.5 rounded-md text-[11px] font-medium transition-all cursor-pointer ${
+                        campanaBannerSec1Efectiva === camp.id
+                          ? 'bg-indigo-500 text-white shadow-xs font-semibold'
+                          : 'text-indigo-200/80 hover:text-white hover:bg-white/10'
+                      }`}
+                    >
+                      {etiquetasCampanasSec1.get(camp.id) || camp.descripcion}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => {
-              if (filters.regimen_horario === '24h_delta') {
-                setFilters(prev => ({ ...prev, regimen_horario: 'todos' }))
-              } else {
-                setFilters(prev => ({ ...prev, regimen_horario: '24h_delta' }))
-              }
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer ${filters.regimen_horario === '24h_delta'
-                ? 'bg-indigo-500 text-white ring-2 ring-indigo-300'
-                : 'bg-white/10 hover:bg-white/20 text-indigo-100 border border-white/20'
-              }`}
-            title="Filtrar todas las métricas y gráficos del panel para mostrar únicamente accesos nocturnos"
-          >
-            <Layers className="w-3.5 h-3.5 text-indigo-300" />
-            <span>
-              {filters.regimen_horario === '24h_delta'
-                ? 'Viendo: Solo Turno Nocturno (24h Delta)'
-                : 'Filtrar por Turno Nocturno (Delta 24h)'}
-            </span>
-          </button>
-
-          {mostrarBotonSeccion5 && (
+          <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
-              onClick={() => cambiarSeccionBiblioteca('seccion_5')}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-white border border-white/20 transition-all cursor-pointer"
-              title="Abrir la sección analítica completa dedicada a la Campaña 24 Horas"
+              onClick={() => {
+                if (filters.regimen_horario === '24h_delta') {
+                  setFilters(prev => ({ ...prev, regimen_horario: 'todos' }))
+                } else {
+                  setFilters(prev => ({ ...prev, regimen_horario: '24h_delta' }))
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer ${filters.regimen_horario === '24h_delta'
+                  ? 'bg-indigo-500 text-white ring-2 ring-indigo-300'
+                  : 'bg-white/10 hover:bg-white/20 text-indigo-100 border border-white/20'
+                }`}
+              title="Filtrar todas las métricas y gráficos del panel para mostrar únicamente accesos nocturnos"
             >
-              <Moon className="w-3.5 h-3.5 text-indigo-300" />
-              <span>Ver Sección 5 Completa</span>
+              <Layers className="w-3.5 h-3.5 text-indigo-300" />
+              <span>
+                {filters.regimen_horario === '24h_delta'
+                  ? 'Viendo: Solo Turno Nocturno (24h Delta)'
+                  : 'Filtrar por Turno Nocturno (Delta 24h)'}
+              </span>
             </button>
-          )}
 
-          <button
-            type="button"
-            onClick={() => setModalReporte24hAbierto(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition-all cursor-pointer border border-indigo-400/40"
-          >
-            <FileSpreadsheet className="w-3.5 h-3.5 text-amber-300" />
-            <span>Informe Justificativo Autoridades (Excel)</span>
-          </button>
+            {mostrarBotonSeccion5 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (tieneMultiplesCampanasEnRango) {
+                    setCampana24hSeleccionada(campanaBannerSec1Efectiva)
+                  }
+                  cambiarSeccionBiblioteca('seccion_5')
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white/10 hover:bg-white/20 text-white border border-white/20 transition-all cursor-pointer"
+                title="Abrir la sección analítica completa dedicada a la Campaña 24 Horas"
+              >
+                <Moon className="w-3.5 h-3.5 text-indigo-300" />
+                <span>Ver Sección 5 Completa</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (mostrarBotonSeccion5 && tieneMultiplesCampanasEnRango) {
+                  setCampana24hSeleccionada(campanaBannerSec1Efectiva)
+                }
+                setModalReporte24hAbierto(true)
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition-all cursor-pointer border border-indigo-400/40"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-amber-300" />
+              <span>Informe Justificativo Autoridades (Excel)</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3">
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <div className="text-[11px] text-indigo-200/70">Aporte Nocturno (Delta 24h)</div>
+            <div className="text-xl font-bold text-white mt-0.5">
+              {datosBanner ? `${datosBanner.kpis_comparativa.porcentaje_delta_24h}%` : '...'}
+            </div>
+            <div className="text-[10px] text-indigo-300/80 mt-0.5">
+              {datosBanner ? `${datosBanner.kpis_comparativa.ingresos_nocturnos.toLocaleString('es-CL')} de ${datosBanner.kpis_comparativa.total_ingresos.toLocaleString('es-CL')} accesos` : ''}
+            </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <div className="text-[11px] text-indigo-200/70">Concurrencia Máxima Simultánea</div>
+            <div className="text-xl font-bold text-amber-300 mt-0.5">
+              {datosBanner ? `${datosBanner.pico_nocturno.aforo_maximo} alumnos` : '...'}
+            </div>
+            <div className="text-[10px] text-indigo-300/80 mt-0.5">
+              {datosBanner ? `${datosBanner.pico_nocturno.tasa_ocupacion_asientos_pct}% sobre ${datosBanner.campana?.capacidad_asientos ?? capSala2} asientos (${datosBanner.pico_nocturno.hora_pico})` : ''}
+            </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <div className="text-[11px] text-indigo-200/70">Horas de Estudio Nocturnas</div>
+            <div className="text-xl font-bold text-emerald-300 mt-0.5">
+              {datosBanner ? `${datosBanner.kpis_comparativa.horas_estudio_nocturnas.toLocaleString('es-CL')} hrs` : '...'}
+            </div>
+            <div className="text-[10px] text-indigo-300/80 mt-0.5">
+              {datosBanner ? `${datosBanner.kpis_comparativa.estudiantes_nocturnos_unicos.toLocaleString('es-CL')} estudiantes (est. 2 h / ingreso)` : ''}
+            </div>
+          </div>
+
+          <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+            <div className="text-[11px] text-indigo-200/70">Segmentación Curricular Clave</div>
+            <div className="text-sm font-semibold text-indigo-100 truncate mt-1">
+              {datosBanner?.top_carreras[0]?.carrera || 'Sin registros nocturnos'}
+            </div>
+            <div className="text-[10px] text-indigo-300/80 mt-0.5">
+              {datosBanner?.top_carreras[0] ? `${datosBanner.top_carreras[0].porcentaje}% del uso nocturno` : ''}
+            </div>
+          </div>
         </div>
       </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3">
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-          <div className="text-[11px] text-indigo-200/70">Aporte Nocturno (Delta 24h)</div>
-          <div className="text-xl font-bold text-white mt-0.5">
-            {analisis24h.data ? `${analisis24h.data.kpis_comparativa.porcentaje_delta_24h}%` : '...'}
-          </div>
-          <div className="text-[10px] text-indigo-300/80 mt-0.5">
-            {analisis24h.data ? `${analisis24h.data.kpis_comparativa.ingresos_nocturnos.toLocaleString('es-CL')} de ${analisis24h.data.kpis_comparativa.total_ingresos.toLocaleString('es-CL')} accesos` : ''}
-          </div>
-        </div>
-
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-          <div className="text-[11px] text-indigo-200/70">Concurrencia Máxima Simultánea</div>
-          <div className="text-xl font-bold text-amber-300 mt-0.5">
-            {analisis24h.data ? `${analisis24h.data.pico_nocturno.aforo_maximo} alumnos` : '...'}
-          </div>
-          <div className="text-[10px] text-indigo-300/80 mt-0.5">
-            {analisis24h.data ? `${analisis24h.data.pico_nocturno.tasa_ocupacion_asientos_pct}% sobre 226 asientos (${analisis24h.data.pico_nocturno.hora_pico})` : ''}
-          </div>
-        </div>
-
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-          <div className="text-[11px] text-indigo-200/70">Horas de Estudio Nocturnas</div>
-          <div className="text-xl font-bold text-emerald-300 mt-0.5">
-            {analisis24h.data ? `${analisis24h.data.kpis_comparativa.horas_estudio_nocturnas.toLocaleString('es-CL')} hrs` : '...'}
-          </div>
-          <div className="text-[10px] text-indigo-300/80 mt-0.5">
-            {analisis24h.data ? `${analisis24h.data.kpis_comparativa.estudiantes_nocturnos_unicos.toLocaleString('es-CL')} estudiantes (est. 2 h / ingreso)` : ''}
-          </div>
-        </div>
-
-        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-          <div className="text-[11px] text-indigo-200/70">Segmentación Curricular Clave</div>
-          <div className="text-sm font-semibold text-indigo-100 truncate mt-1">
-            {analisis24h.data?.top_carreras[0]?.carrera || 'Derecho'}
-          </div>
-          <div className="text-[10px] text-indigo-300/80 mt-0.5">
-            {analisis24h.data?.top_carreras[0] ? `${analisis24h.data.top_carreras[0].porcentaje}% del uso nocturno` : ''}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className={`p-6 space-y-7 w-full max-w-full transition-all duration-200 ${barraLateralExpandida ? 'xl:pl-[284px]' : 'pl-0'}`}>
       <BarraLateralSecciones
         tituloModulo="Biblioteca CSF"
-        secciones={SECCIONES_MODULO_BIBLIOTECA}
+        secciones={seccionesBibliotecaVisibles}
         seccionActiva={seccionActivaBiblioteca}
         alCambiarSeccion={cambiarSeccionBiblioteca}
         alAlternarApertura={setBarraLateralExpandida}
@@ -725,6 +952,14 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
         onSelectCampana={(id) => setCampana24hSeleccionada(id)}
       />
       {/* Panel Gerencial de Métricas Clave (Desplazado con el contenido al abrir la barra lateral) */}
+      {accesoRestringidoBib && (
+        <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 text-xs flex items-center gap-2.5 shadow-2xs">
+          <AlertTriangle size={16} className="shrink-0 text-amber-600" />
+          <span>
+            Acceso restringido a este módulo/recinto: su cuenta no tiene autorización vigente para consultar los indicadores de Biblioteca.
+          </span>
+        </div>
+      )}
       <KPIBanner
         espacioId={1}
         selectedRange={dateRange}
@@ -806,32 +1041,42 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
       {/* SECCIÓN 1: Aforo y Pronósticos IA (Resumen Ejecutivo) */}
       {seccionMontada('seccion_1') && (
         <div className={claseSeccion('seccion_1', 'space-y-4')}>
-          {bibAlert && (
-            <div className="flex items-center gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200">
+          {bibAlerts.map((bibAlert, idxAlert) => (
+            <div key={`${bibAlert.subespacio || 'global'}-${idxAlert}`} className="flex items-center gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200">
               <AlertTriangle className="text-amber-400 shrink-0" size={20} />
               <div>
-                <p className="text-sm font-semibold text-amber-300">Alerta Preventiva de Saturación (Prophet)</p>
+                <p className="text-sm font-semibold text-amber-300">
+                  Alerta Preventiva de Saturación (Prophet){bibAlert.subespacio_label ? ` — ${bibAlert.subespacio_label}` : ''}
+                </p>
                 <p className="text-xs text-amber-200/80">{bibAlert.mensaje}</p>
               </div>
             </div>
-          )}
+          ))}
 
           {/* Tarjeta Ejecutiva: Se muestra en Sección 1 SOLO si el rango de fecha coincide con régimen 24 Horas */}
-          {tieneCampana24hActiva && renderBannerCampana24Horas(true)}
+          {tieneCampana24hActiva && renderBannerCampana24Horas(true, analisis24hPeriodo.data)}
 
           {/* Tarjetas de Resumen Global (KPIs Principales del Dashboard) */}
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
             <KpiCard
               title="Afluencia Total"
               value={fmt(kpis.data?.total_registros)}
-              subtitle={`${fmt(kpis.data?.usuarios_unicos)} estudiantes únicos`}
+              subtitle={
+                !filters.sala && kpis.data?.total_registros_sala1 !== undefined
+                  ? `${fmt(kpis.data?.usuarios_unicos)} únicos · S1: ${fmt(kpis.data?.total_registros_sala1)} | S2: ${fmt(kpis.data?.total_registros_sala2)}`
+                  : `${fmt(kpis.data?.usuarios_unicos)} estudiantes únicos`
+              }
               icon={Users}
               iconColor="#003865"
             />
             <KpiCard
               title="Aforo Máximo Registrado"
               value={!kpis.data && kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} personas`}
-              subtitle={`Máximo vs ${capacidadActiva} asientos ${salaLabel ? `(${salaLabel})` : '(Global)'}`}
+              subtitle={
+                !filters.sala && kpis.data?.max_aforo_sala1 !== undefined
+                  ? `Global /${capacidadActiva} · S1: ${kpis.data.max_aforo_sala1}/${capSala1} | S2: ${kpis.data.max_aforo_sala2 ?? 0}/${capSala2}`
+                  : `Máximo vs ${capacidadActiva} asientos ${salaLabel ? `(${salaLabel})` : '(Global)'}`
+              }
               icon={Activity}
               iconColor="#C59B27"
             />
@@ -883,7 +1128,61 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                 contextoGrafico="aforo_presencia_intervalos"
                 layout="full"
                 title={salaLabel ? `Curva de Presencia Física en Sala (Intervalos de Sesión) — ${salaLabel}` : "Curva de Presencia Física en Sala por Intervalos de Sesión vs Capacidad Máxima"}
-                action={<LiveBadge lastUpdated={lastTs} />}
+                action={
+                  <div className="flex flex-wrap items-center gap-2">
+                    {live.data && (
+                      <>
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-full border ${
+                            live.data.nivel_alerta === 'critico'
+                              ? 'bg-red-50 text-red-700 border-red-200'
+                              : live.data.nivel_alerta === 'preventivo'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-slate-100 text-slate-700 border-slate-200'
+                          }`}
+                          title="Aforo vivo sincronizado con sesiones activas (ventana de espera 180 min)"
+                        >
+                          <span>Aforo actual:</span>
+                          <span className="font-bold">
+                            {fmt(live.data.aforo_actual)} / {fmt(live.data.capacidad_maxima)}
+                          </span>
+                          <span className="text-[11px] opacity-80">({live.data.ocupacion_pct}%)</span>
+                        </span>
+                        {!filters.sala && live.data.aforo_sala1 !== undefined && live.data.aforo_sala2 !== undefined && (
+                          <>
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                                live.data.nivel_alerta_sala1 === 'critico'
+                                  ? 'bg-red-50 text-red-700 border-red-200'
+                                  : live.data.nivel_alerta_sala1 === 'preventivo'
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                    : 'bg-blue-50/70 text-uct-blue-primary border-blue-200/80'
+                              }`}
+                              title="Ocupación actual independiente Sala 1 (CSF02)"
+                            >
+                              S1: <strong>{fmt(live.data.aforo_sala1)}/{live.data.capacidad_sala1 ?? capSala1}</strong>
+                              <span>({live.data.ocupacion_pct_sala1 ?? Math.round((live.data.aforo_sala1 / capSala1) * 100)}%)</span>
+                            </span>
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                                live.data.nivel_alerta_sala2 === 'critico'
+                                  ? 'bg-red-50 text-red-700 border-red-200'
+                                  : live.data.nivel_alerta_sala2 === 'preventivo'
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                    : 'bg-purple-50/70 text-purple-800 border-purple-200/80'
+                              }`}
+                              title="Ocupación actual independiente Sala 2 (CSF04 Pecera)"
+                            >
+                              S2: <strong>{fmt(live.data.aforo_sala2)}/{live.data.capacidad_sala2 ?? capSala2}</strong>
+                              <span>({live.data.ocupacion_pct_sala2 ?? Math.round((live.data.aforo_sala2 / capSala2) * 100)}%)</span>
+                            </span>
+                          </>
+                        )}
+                      </>
+                    )}
+                    <LiveBadge lastUpdated={lastTs} />
+                  </div>
+                }
                 minHeight={450}
                 isFetching={presenceCurve.isFetching || roomsComp.isFetching}
               >
@@ -896,6 +1195,9 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                       capSala1={capSala1}
                       capSala2={capSala2}
                       comparativaSalas={roomsComp.data?.flujo_horario_comparado}
+                      ultimaLectura={live.data?.timestamp ?? null}
+                      ultimaLecturaSala1={live.data?.ultimo_marcaje_sala1 ?? null}
+                      ultimaLecturaSala2={live.data?.ultimo_marcaje_sala2 ?? null}
                     />
                   ) : (
                     <EmptyState label="Sin datos de presencia para este período" />
@@ -904,19 +1206,20 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
               </ChartCard>
             )}
 
-            {/* 1.2 Pronóstico Prophet Presencia Física 14 Días (Logístico Acotado) */}
+            {/* 1.2 Pronóstico Prophet Presencia Física 14 Días (Jerárquico Bottom-Up) */}
             {visibleCharts.prophet_presencia_14dias !== false && (
               <ChartCard
                 contextoGrafico="prophet_presencia_14dias"
                 layout="full"
                 minHeight={460}
                 isFetching={presenceForecast.isFetching}
-                title={`Pronóstico Continuo de Presencia Física en Sala (Prophet Logístico Acotado) — 14 Días (7 Días Históricos Reales + 7 Días Proyectados) — ${salaPronosticoPresencia === 'sala1'
-                  ? 'Sala 1 (CSF02 2° Piso)'
-                  : salaPronosticoPresencia === 'sala2'
-                    ? 'Sala 2 (CSF04 Pecera 1° Piso)'
-                    : 'Todas las Salas (Campus San Francisco)'
-                  }`}
+                title={`Pronóstico Continuo de Presencia Física en Sala — 14 Días (7 Días Históricos Reales + 7 Días Proyectados) — ${
+                  salaPronosticoPresencia === 'todas'
+                    ? 'Biblioteca Global (Sala 1 + Sala 2)'
+                    : salaPronosticoPresencia === 'sala2'
+                      ? 'Sala 2 (CSF04 Pecera 1° Piso)'
+                      : 'Sala 1 (CSF02 2° Piso)'
+                }`}
                 action={
                   <div className="flex items-center gap-2">
                     <div className="flex items-center bg-gray-100 dark:bg-gray-800 p-0.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs">
@@ -928,7 +1231,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                           : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                           }`}
                       >
-                        Todas (426)
+                        Global S1+S2 ({capTotal})
                       </button>
                       <button
                         type="button"
@@ -938,7 +1241,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                           : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                           }`}
                       >
-                        Sala 1 (200)
+                        Sala 1 ({capSala1})
                       </button>
                       <button
                         type="button"
@@ -948,7 +1251,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                           : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
                           }`}
                       >
-                        Sala 2 Pecera (226)
+                        Sala 2 Pecera ({capSala2})
                       </button>
                     </div>
 
@@ -976,11 +1279,11 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                       pronostico7d={presenceForecast.data.pronostico_7d}
                       capacidad={presenceForecast.data.capacidad_asientos ?? capacidadActiva}
                       salaNombre={
-                        salaPronosticoPresencia === 'sala1'
-                          ? 'Sala 1 CSF02'
+                        salaPronosticoPresencia === 'todas'
+                          ? 'Biblioteca Global (S1 + S2)'
                           : salaPronosticoPresencia === 'sala2'
                             ? 'Sala 2 CSF04'
-                            : 'Todas las Salas'
+                            : 'Sala 1 CSF02'
                       }
                       recinto="biblioteca"
                     />
@@ -1203,10 +1506,10 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
       )}
 
       {/* SECCIÓN 5: Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno */}
-      {seccionMontada('seccion_5') && (
+      {tieneCampana24hActiva && seccionMontada('seccion_5') && (
         <div id="seccion_5" className={claseSeccion('seccion_5', 'space-y-4 scroll-mt-6')}>
           {/* Banner Ejecutivo de la Campaña 24 Horas: Siempre visible en Sección 5 */}
-          {renderBannerCampana24Horas(false)}
+          {renderBannerCampana24Horas(false, analisis24h.data)}
 
           <SectionHeader
             icon={Moon}
@@ -1245,6 +1548,9 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
                 setFilters(prev => ({ ...prev, regimen_horario: '24h_delta' }))
               }
             }}
+            activeFilters={filters}
+            onCambiarASala2={() => setFilters(prev => ({ ...prev, sala: 'sala_2', door: '' }))}
+            onIncluirFranja24h={() => setFilters(prev => ({ ...prev, regimen_horario: 'todos' }))}
           />
         </div>
       )}

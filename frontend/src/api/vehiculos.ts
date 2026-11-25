@@ -4,13 +4,25 @@ export interface VehicleKpis {
   vehiculos_unicos: number
   total_accesos: number
   total_salidas?: number
+  total_accesos_csf11?: number
+  total_accesos_csf21?: number
+  total_accesos_chs01?: number
   dias_operativos: number
   turnover_rate_diario: number
   permanencia_mediana_min: number
   tasa_lectura_fallida_pct: number
   hora_punta?: string
+  hora_pico_entradas?: string
   max_aforo_historico?: number
+  max_aforo_csf11?: number
+  max_aforo_csf21?: number
+  max_aforo_chs01?: number
+  max_entradas_hora?: number
+  fecha_pico_ocupacion?: string | null
   capacidad_calibrada?: number
+  capacidad_csf11?: number
+  capacidad_csf21?: number
+  capacidad_chs01?: number
 }
 
 export interface ParkingOccupancy {
@@ -21,6 +33,18 @@ export interface ParkingOccupancy {
   nivel_alerta: 'normal' | 'preventivo' | 'saturacion'
   timestamp: string
   sector?: string
+  vehiculos_csf11?: number
+  vehiculos_csf21?: number
+  vehiculos_chs01?: number
+  capacidad_csf11?: number
+  capacidad_csf21?: number
+  capacidad_chs01?: number
+  ocupacion_pct_csf11?: number
+  ocupacion_pct_csf21?: number
+  ocupacion_pct_chs01?: number
+  nivel_alerta_csf11?: 'normal' | 'preventivo' | 'saturacion'
+  nivel_alerta_csf21?: 'normal' | 'preventivo' | 'saturacion'
+  nivel_alerta_chs01?: 'normal' | 'preventivo' | 'saturacion'
 }
 
 export interface FleetItem {

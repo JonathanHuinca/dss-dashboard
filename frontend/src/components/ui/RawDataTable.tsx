@@ -33,6 +33,7 @@ import {
 } from '../../api/client'
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
 import { descargarBlob } from '../../utils/excelExport'
+import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
 import { ExcelColumnHeader, SortConfig } from './ExcelColumnHeader'
 
 // Helper para formatear puertas y torniquetes
@@ -135,6 +136,10 @@ export const RawDataTable: React.FC<Props> = ({
   const effectivePerfil = appliedFilters?.perfil_visita && appliedFilters.perfil_visita !== 'todos' ? appliedFilters.perfil_visita : undefined
   const effectiveMarcajes = (modulo === 'biblioteca' && filtroMarcajes ? filtroMarcajes : undefined) || (appliedFilters?.marcajes && appliedFilters.marcajes !== 'todos' ? appliedFilters.marcajes : undefined)
   const effectiveAlcance = appliedFilters?.alcance || 'todos'
+  const effectiveSala = appliedFilters?.sala && appliedFilters.sala !== 'todos' ? appliedFilters.sala : undefined
+  const effectiveCarrera = appliedFilters?.carrera && appliedFilters.carrera !== 'todos' && appliedFilters.carrera !== 'todas' ? appliedFilters.carrera : undefined
+  const effectiveFacultad = appliedFilters?.facultad && appliedFilters.facultad !== 'todos' && appliedFilters.facultad !== 'todas' ? appliedFilters.facultad : undefined
+  const effectiveCohorte = appliedFilters?.cohorte && String(appliedFilters.cohorte) !== 'todos' ? String(appliedFilters.cohorte) : undefined
 
   // Query para asistencia
   const attendanceQuery = useQuery({
@@ -153,8 +158,14 @@ export const RawDataTable: React.FC<Props> = ({
       effectiveDias,
       effectivePerfil,
       effectiveMarcajes,
+      effectiveSala,
+      effectiveCarrera,
+      effectiveFacultad,
+      effectiveCohorte,
       appliedFilters?.incluir_pausas_bano,
       appliedFilters?.desduplicar_rafagas,
+      appliedFilters?.incluir_funcionarios,
+      appliedFilters?.incluir_sin_identificar,
     ],
     queryFn: () =>
       fetchRawAttendance({
@@ -171,8 +182,14 @@ export const RawDataTable: React.FC<Props> = ({
         diasSemana: effectiveDias,
         perfilVisita: effectivePerfil,
         marcajes: effectiveMarcajes,
+        sala: effectiveSala,
+        carrera: effectiveCarrera,
+        facultad: effectiveFacultad,
+        cohorte: effectiveCohorte,
         incluirPausasBano: appliedFilters?.incluir_pausas_bano,
         desduplicarRafagas: appliedFilters?.desduplicar_rafagas,
+        incluirFuncionarios: appliedFilters?.incluir_funcionarios,
+        incluirSinIdentificar: appliedFilters?.incluir_sin_identificar,
       }),
     enabled: modulo === 'biblioteca',
     staleTime: 60_000,
@@ -518,14 +535,26 @@ export const RawDataTable: React.FC<Props> = ({
     if (effectiveDias) params.dias_semana = effectiveDias
     if (effectivePerfil) params.perfil_visita = effectivePerfil
     if (effectiveMarcajes) params.marcajes = effectiveMarcajes
+    if (modulo === 'biblioteca') {
+      if (effectiveSala) params.sala = effectiveSala
+      if (effectiveCarrera) params.carrera = effectiveCarrera
+      if (effectiveFacultad) params.facultad = effectiveFacultad
+      if (effectiveCohorte) params.cohorte = effectiveCohorte
+    }
     if (appliedFilters?.incluir_pausas_bano !== undefined) {
       params.incluir_pausas_bano = String(appliedFilters.incluir_pausas_bano)
     }
     if (appliedFilters?.desduplicar_rafagas !== undefined) {
       params.desduplicar_rafagas = String(appliedFilters.desduplicar_rafagas)
     }
+    if (appliedFilters?.incluir_funcionarios !== undefined) {
+      params.incluir_funcionarios = String(appliedFilters.incluir_funcionarios)
+    }
+    if (appliedFilters?.incluir_sin_identificar !== undefined) {
+      params.incluir_sin_identificar = String(appliedFilters.incluir_sin_identificar)
+    }
 
-    const filename = `Microdatos_${modulo === 'biblioteca' ? 'Biblioteca' : 'Estacionamiento'}_${new Date().toISOString().slice(0, 10)}.csv`
+    const filename = `Microdatos_${modulo === 'biblioteca' ? 'Biblioteca' : 'Estacionamiento'}_${obtenerFechaHoyChileIso()}.csv`
 
     await ejecutarDescarga({
       titulo: 'Exportación de Microdatos a CSV',
@@ -566,7 +595,7 @@ export const RawDataTable: React.FC<Props> = ({
   // Descarga PDF Resumido con auditoría y datos completos filtrados
   const handleExportPDF = async () => {
     const moduloNombre = modulo === 'biblioteca' ? 'Biblioteca Campus San Francisco' : 'Estacionamiento Campus San Francisco'
-    const filename = `Reporte_Microdatos_${modulo === 'biblioteca' ? 'Biblioteca' : 'Estacionamiento'}_${new Date().toISOString().slice(0, 10)}.pdf`
+    const filename = `Reporte_Microdatos_${modulo === 'biblioteca' ? 'Biblioteca' : 'Estacionamiento'}_${obtenerFechaHoyChileIso()}.pdf`
     setIsExportingPdf(true)
 
     try {

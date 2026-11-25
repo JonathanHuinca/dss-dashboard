@@ -64,6 +64,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     marcajes: 'todos',
     incluir_pausas_bano: true,
     desduplicar_rafagas: true,
+    incluir_funcionarios: true,
+    incluir_sin_identificar: true,
   },
   onChangeFilters,
   value,
@@ -80,6 +82,10 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
   const espacioId = modulo === 'biblioteca' ? 1 : 2
   const { data: salasBiblioteca = [] } = useSalasBiblioteca(espacioId)
   const { data: availableFilters } = useAvailableFilters(espacioId)
+  const capacidadTotalSalas = useMemo(() => {
+    const suma = salasBiblioteca.reduce((acc, s) => acc + (Number(s.capacidad_asientos) || 0), 0)
+    return suma > 0 ? suma : 350
+  }, [salasBiblioteca])
 
   // Año dinámico derivado del rango de fechas consultado (dateRange)
   const anioConsultado = useMemo(() => {
@@ -169,6 +175,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
         cohorte: '',
         incluir_pausas_bano: true,
         desduplicar_rafagas: true,
+        incluir_funcionarios: true,
+        incluir_sin_identificar: true,
       })
     } else if (newScope === 'anomalias') {
       onChangeFilters({
@@ -185,6 +193,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
         cohorte: '',
         incluir_pausas_bano: false,
         desduplicar_rafagas: false,
+        incluir_funcionarios: true,
+        incluir_sin_identificar: true,
       })
     } else {
       // 'todos': universo físico completo sin restricciones
@@ -202,6 +212,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
         cohorte: '',
         incluir_pausas_bano: true,
         desduplicar_rafagas: true,
+        incluir_funcionarios: true,
+        incluir_sin_identificar: true,
       })
     }
   }
@@ -491,6 +503,89 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     return null
   }, [filters.sala])
 
+  const resumenHorarioOficial = React.useMemo(() => {
+    const parseCfg = (h: HorarioOperacion): Record<string, { abierto?: boolean; apertura?: string; cierre?: string }> | null => {
+      if (!h.configuracion_dias) return null
+      if (typeof h.configuracion_dias === 'string') {
+        try {
+          return JSON.parse(h.configuracion_dias)
+        } catch {
+          return null
+        }
+      }
+      return h.configuracion_dias
+    }
+
+    const normSub = (sub?: string | null) => {
+      const s = (sub || 'todos').trim().toLowerCase()
+      if (s === 'sala1' || s === 'sala_1' || s === 'csf02') return 'sala_1'
+      if (s === 'sala2' || s === 'sala_2' || s === 'csf04') return 'sala_2'
+      return s
+    }
+
+    const formatearHorarioRegla = (h: HorarioOperacion, compacto: boolean) => {
+      const cfg = parseCfg(h)
+      const apDef = h.hora_apertura || '08:30'
+      const ciDef = h.hora_cierre || '20:30'
+      const tramo = (dia: string, fallbackCi = ciDef) => {
+        const info = cfg?.[dia]
+        if (info && info.abierto === false) return null
+        return `${info?.apertura || apDef}-${info?.cierre || fallbackCi}`
+      }
+
+      if (modulo !== 'biblioteca') {
+        const lj = tramo('lunes') || `${apDef}-${ciDef}`
+        const sab = tramo('sabado', '14:00')
+        const partes = [`Lun-Vie ${lj}`]
+        if (sab) partes.push(`Sáb ${sab}`)
+        return partes.join(', ')
+      }
+
+      const lj = tramo('lunes') || `${apDef}-${ciDef}`
+      const vie = tramo('viernes')
+      const sab = tramo('sabado')
+      const dom = tramo('domingo')
+      const partes = [compacto ? `L-J ${lj}` : `Lun-Jue ${lj}`]
+      if (vie) {
+        partes.push(compacto ? `V ${vie.split('-')[1]}` : `Vie ${vie}`)
+      }
+      if (sab) partes.push(`Sáb ${sab}`)
+      if (dom) partes.push(`Dom ${dom}`)
+      return partes.join(', ')
+    }
+
+    const regulares = horariosList.filter(
+      h => h.activo && (!h.tipo_horario || h.tipo_horario === 'regular')
+    )
+
+    if (regulares.length === 0) {
+      return modulo === 'biblioteca'
+        ? 'Lun-Jue 08:30-20:30/23:00, Vie 19:30/22:00, Sáb hasta 15:00'
+        : 'Lun-Vie 07:00-22:00, Sáb 08:00-14:00'
+    }
+
+    if (modulo !== 'biblioteca') {
+      return formatearHorarioRegla(regulares[0], false)
+    }
+
+    const rS1 = regulares.find(h => normSub(h.subespacio) === 'sala_1')
+    const rS2 = regulares.find(h => normSub(h.subespacio) === 'sala_2')
+    const rTodos = regulares.find(h => normSub(h.subespacio) === 'todos')
+
+    if (activeSalaKey === 'sala_1') {
+      const target = rS1 || rTodos || regulares[0]
+      return formatearHorarioRegla(target, false)
+    }
+    if (activeSalaKey === 'sala_2') {
+      const target = rS2 || rTodos || regulares[0]
+      return formatearHorarioRegla(target, false)
+    }
+    if (rS1 && rS2) {
+      return `S1: ${formatearHorarioRegla(rS1, true)} · S2: ${formatearHorarioRegla(rS2, true)}`
+    }
+    return formatearHorarioRegla(rTodos || rS1 || rS2 || regulares[0], false)
+  }, [horariosList, modulo, activeSalaKey])
+
   // --- 4. Torniquetes / Puertas (Casillas) ---
   const allBibDoorsItems = React.useMemo(() => {
     const s1Items = [
@@ -693,6 +788,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     filters.carrera && filters.carrera !== '' && filters.carrera !== 'todos',
     modulo === 'biblioteca' && filters.incluir_pausas_bano === false,
     modulo === 'biblioteca' && filters.desduplicar_rafagas === false,
+    modulo === 'biblioteca' && filters.incluir_funcionarios === false,
+    modulo === 'biblioteca' && filters.incluir_sin_identificar === false,
   ].filter(Boolean).length
 
   // Estados de coincidencia exacta con los presets estándar
@@ -705,6 +802,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     (filters.marcajes === 'todos' || filters.marcajes === '1,2,3-4' || !filters.marcajes) &&
     filters.incluir_pausas_bano !== false &&
     filters.desduplicar_rafagas !== false &&
+    filters.incluir_funcionarios !== false &&
+    filters.incluir_sin_identificar !== false &&
     !filters.dias_semana &&
     !filters.door &&
     !filters.sala &&
@@ -716,6 +815,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     (filters.regimen_horario === 'fuera_horario' || filters.regimen_horario === 'fuera_horario,dias_cierre') &&
     (modulo === 'biblioteca' ? filters.direccion === 'solo_ingreso,solo_salida' : (filters.direccion === 'todos' || !filters.direccion)) &&
     filters.marcajes === '5+' &&
+    filters.incluir_funcionarios !== false &&
+    filters.incluir_sin_identificar !== false &&
     !filters.dias_semana &&
     !filters.door &&
     !filters.sala &&
@@ -727,6 +828,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
     (filters.regimen_horario === 'todos' || !filters.regimen_horario) &&
     (filters.direccion === 'todos' || !filters.direccion) &&
     (filters.marcajes === 'todos' || !filters.marcajes) &&
+    filters.incluir_funcionarios !== false &&
+    filters.incluir_sin_identificar !== false &&
     !filters.dias_semana &&
     !filters.door &&
     !filters.sala &&
@@ -788,11 +891,21 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
       selectedPerfiles.length === 0 ? 'Todos' : `${selectedPerfiles.length} activos`
     chips.push({ clave: 'perfil', etiqueta: 'Perfil', valor: textoPerfil })
 
+    if (modulo === 'biblioteca' && filters.incluir_funcionarios === false) {
+      chips.push({ clave: 'funcionarios', etiqueta: 'Funcionarios', valor: 'Excluidos' })
+    }
+    if (modulo === 'biblioteca' && filters.incluir_sin_identificar === false) {
+      chips.push({ clave: 'sin_identificar', etiqueta: 'Sin identificar', valor: 'Excluidos' })
+    }
+
     return chips
   }, [
+    modulo,
     filters.facultad,
     filters.carrera,
     filters.cohorte,
+    filters.incluir_funcionarios,
+    filters.incluir_sin_identificar,
     selectedRegimenes,
     selectedFlujos,
     selectedDias,
@@ -922,7 +1035,7 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  Todas las Salas (350)
+                  Todas las Salas ({capacidadTotalSalas})
                 </button>
                 {salasBiblioteca.map((s, idx) => {
                   const isSelected = Boolean(
@@ -1029,7 +1142,7 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
                         <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
                           activoGlobal ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
                         }`}>
-                          Global • 350 asientos
+                          Global • {capacidadTotalSalas} asientos
                         </span>
                       </div>
                       <div className="space-y-1">
@@ -1062,7 +1175,9 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
                       (s.codigo?.includes('CSF04') && (filters.sala.toLowerCase().includes('csf04') || filters.sala.toLowerCase().includes('sala_2') || filters.sala === '2'))
                     )
                   )
-                  const porcentajeCapacidad = Math.min(100, Math.round(((s.capacidad_asientos || 125) / 350) * 100))
+                  const porcentajeCapacidad = capacidadTotalSalas > 0
+                    ? Math.min(100, Math.round(((s.capacidad_asientos || 0) / capacidadTotalSalas) * 100))
+                    : 0
                   return (
                     <button
                       key={s.id}
@@ -1261,8 +1376,8 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
                           Oficial
                         </span>
                       </div>
-                      <div className="text-[9px] text-slate-400 font-normal truncate">
-                        {modulo === 'biblioteca' ? 'Lun-Jue 08:30-20:30, Vie 19:30, Sáb 13:30 (Todo el año)' : 'Lun-Vie 07:00-22:00, Sáb 08:00-14:00'}
+                      <div className="text-[9px] text-slate-400 font-normal truncate" title={resumenHorarioOficial}>
+                        {resumenHorarioOficial}
                       </div>
                     </div>
                   </label>
@@ -1948,6 +2063,38 @@ export const ScopeSelector: React.FC<ScopeSelectorProps> = ({
                     <span className="block text-[9.5px] text-slate-500 font-normal">Filtra toques mecánicos repetidos</span>
                   </div>
                 </label>
+
+                <div className="pt-2 mt-1.5 border-t border-slate-200/70 space-y-1.5">
+                  <span className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wider block">
+                    Composición de Usuarios
+                  </span>
+
+                  <label className="flex items-start gap-1.5 cursor-pointer select-none text-[10.5px] font-medium text-slate-700 hover:text-slate-900 leading-tight">
+                    <input
+                      type="checkbox"
+                      checked={filters.incluir_funcionarios !== false}
+                      onChange={() => updateFilter('incluir_funcionarios', !(filters.incluir_funcionarios !== false))}
+                      className="rounded text-uct-blue-primary focus:ring-uct-blue-primary h-3.5 w-3.5 border-slate-300 cursor-pointer mt-0.5 shrink-0"
+                    />
+                    <div>
+                      <span className="font-semibold text-slate-800">Incluir funcionarios</span>
+                      <span className="block text-[9.5px] text-slate-500 font-normal">Personal UCT con marcaje en torniquete</span>
+                    </div>
+                  </label>
+
+                  <label className="flex items-start gap-1.5 cursor-pointer select-none text-[10.5px] font-medium text-slate-700 hover:text-slate-900 leading-tight">
+                    <input
+                      type="checkbox"
+                      checked={filters.incluir_sin_identificar !== false}
+                      onChange={() => updateFilter('incluir_sin_identificar', !(filters.incluir_sin_identificar !== false))}
+                      className="rounded text-uct-blue-primary focus:ring-uct-blue-primary h-3.5 w-3.5 border-slate-300 cursor-pointer mt-0.5 shrink-0"
+                    />
+                    <div>
+                      <span className="font-semibold text-slate-800">Incluir accesos sin identificar</span>
+                      <span className="block text-[9.5px] text-slate-500 font-normal">Registros sin persona asociada en BD</span>
+                    </div>
+                  </label>
+                </div>
               </div>
             )}
           </div>

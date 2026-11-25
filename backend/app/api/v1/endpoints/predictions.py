@@ -45,11 +45,12 @@ async def get_forecast_presence_endpoint(
 @cachear_respuesta(ttl_segundos=TTL_HISTORICOS, categoria="predicciones")
 async def get_forecast_parking(
     response: Response,
+    sector: str = "todos",
     db: AsyncSession = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
     validar_acceso_espacio(2, current_user)
-    return await get_prophet_forecast(db, recinto="vehicular")
+    return await get_prophet_forecast(db, recinto="vehicular", sala=sector)
 
 
 @router.get("/alerts", summary="Alertas preventivas activas basadas en pronóstico")

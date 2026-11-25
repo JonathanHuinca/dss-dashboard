@@ -38,10 +38,11 @@ export function useAttendanceKpis(fechaInicio?: string, fechaFin?: string, filte
   })
 }
 
-export function useOccupancyRealtime() {
+export function useOccupancyRealtime(filters?: DataFilters | string) {
+  const fObj = typeof filters === 'object' && filters !== null ? filters : {}
   return useQuery({
-    queryKey: ['occupancy-realtime'],
-    queryFn: ({ signal }) => fetchOccupancyRealtime(signal),
+    queryKey: ['occupancy-realtime', fObj.sala || '', fObj.incluir_funcionarios, fObj.incluir_sin_identificar],
+    queryFn: ({ signal }) => fetchOccupancyRealtime(filters, signal),
     refetchInterval: LIVE_INTERVAL,
     refetchIntervalInBackground: false,
     staleTime: LIVE_INTERVAL - 5000,

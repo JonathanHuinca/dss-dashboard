@@ -50,6 +50,24 @@ MODELOS_PRESENCIA = {
     "todas": "prophet_presencia_todas",
 }
 
+SECTORES_VEHICULARES = ("CSF11", "CSF21", "CHS01")
+
+MODELOS_VEHICULAR = {
+    "todos": "prophet_vehicular",
+    "CSF11": "prophet_vehicular_csf11",
+    "CSF21": "prophet_vehicular_csf21",
+    "CHS01": "prophet_vehicular_chs01",
+}
+
+
+def _normalizar_sector_vehicular(sector: Optional[str]) -> str:
+    if not sector:
+        return "todos"
+    s = sector.strip().upper()
+    if s in SECTORES_VEHICULARES:
+        return s
+    return "todos"
+
 TRAIN_RATIO = 0.85
 MIN_ROWS_REQUIRED = 100
 
@@ -119,7 +137,15 @@ async def _fetch_capacidades(session: AsyncSession) -> Dict[str, int]:
     """
     sql_salas = text("SELECT codigo, capacidad_asientos FROM salas_biblioteca")
     res_salas = await session.execute(sql_salas)
-    capacidades = {"sala1": 200, "sala2": 226, "todas": 426, "vehicular": 150}
+    capacidades = {
+        "sala1": 150,
+        "sala2": 126,
+        "todas": 276,
+        "vehicular": 125,
+        "CSF11": 40,
+        "CSF21": 50,
+        "CHS01": 35,
+    }
 
     for row in res_salas.fetchall():
         if "CSF02" in row.codigo:
@@ -128,6 +154,16 @@ async def _fetch_capacidades(session: AsyncSession) -> Dict[str, int]:
             capacidades["sala2"] = int(row.capacidad_asientos)
 
     capacidades["todas"] = capacidades["sala1"] + capacidades["sala2"]
+
+    try:
+        res_sec = await session.execute(
+            text("SELECT codigo, capacidad_max FROM sectores_estacionamiento WHERE activo = 1")
+        )
+        for row in res_sec.fetchall():
+            if row.codigo and row.capacidad_max:
+                capacidades[row.codigo.strip().upper()] = int(row.capacidad_max)
+    except Exception:
+        pass
 
     sql_espacio = text("SELECT id, capacidad_max FROM espacios WHERE id IN (1, 2)")
     res_esp = await session.execute(sql_espacio)
@@ -230,18 +266,52 @@ def _calcular_es_abierto(dt: datetime, sala: str, es_24h: bool = False, es_feria
 async def _fetch_hourly_data(session: AsyncSession, recinto: str, sala: str = "todas") -> pd.DataFrame:
     """
     Obtiene la serie horaria regularizada con ceros para el recinto o sala específica.
+    Para recinto='vehicular', extrae la ocupación física simultánea (plazas) desde la curva sweep-line.
     """
     if recinto == "vehicular":
-        sql = text("""
-            SELECT
-                DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126)) as ds,
-                COUNT(*) as y
+        from app.services.vehicle_service import VehicleService
+
+        sector_norm = _normalizar_sector_vehicular(sala)
+        res_t = await session.execute(text("""
+            SELECT MIN(time), MAX(time)
             FROM eventos_vehiculares
-            WHERE espacio_id = 2 AND direccion = 'entrada'
-            GROUP BY DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126))
-            ORDER BY ds ASC
-        """)
-        res = await session.execute(sql)
+            WHERE espacio_id = 2 AND time <= GETDATE()
+        """))
+        min_t, max_t = res_t.fetchone()
+        if not max_t:
+            return pd.DataFrame(columns=["ds", "y"])
+
+        f_fin = max_t.date()
+        f_ini = max(min_t.date(), f_fin - timedelta(days=180)) if min_t else f_fin - timedelta(days=180)
+        curva_veh = await VehicleService.get_realtime_presence_curve(
+            session=session,
+            fecha_inicio=f_ini,
+            fecha_fin=f_fin,
+            espacio_id=2,
+            sector=None if sector_norm == "todos" else sector_norm,
+        )
+        if not curva_veh:
+            return pd.DataFrame(columns=["ds", "y"])
+
+        col_y = "vehiculos_presentes"
+        if sector_norm == "CSF11":
+            col_y = "vehiculos_csf11"
+        elif sector_norm == "CSF21":
+            col_y = "vehiculos_csf21"
+        elif sector_norm == "CHS01":
+            col_y = "vehiculos_chs01"
+
+        df_raw = pd.DataFrame(curva_veh)
+        df_raw["ds"] = pd.to_datetime(df_raw["bucket"]).dt.tz_localize(None)
+        df_series = pd.DataFrame({
+            "ds": df_raw["ds"],
+            "y": pd.to_numeric(df_raw[col_y], errors="coerce").fillna(0.0),
+        })
+        full_idx = pd.date_range(df_series["ds"].min(), df_series["ds"].max(), freq="1h")
+        df = df_series.set_index("ds").reindex(full_idx, fill_value=0.0).reset_index()
+        df.columns = ["ds", "y"]
+        df["y"] = pd.to_numeric(df["y"], errors="coerce").fillna(0.0).clip(lower=0.0)
+        return df
     else:
         door_filter = ""
         if sala == "sala1":
@@ -282,6 +352,57 @@ async def _fetch_hourly_data(session: AsyncSession, recinto: str, sala: str = "t
     return df
 
 
+def _evaluar_dato_faltante_sensor(
+    dt: datetime,
+    espacio_id: int,
+    sala: str,
+    contingencias: Optional[list[dict]],
+) -> int:
+    """Identifica franjas con falla de sensor o apertura manual para excluirlas del entrenamiento ML."""
+    if not contingencias:
+        return 0
+    from datetime import time as time_cls
+    from app.services.config_service import _normalizar_subespacio, _obtener_valor_campo
+
+    sub_norm = _normalizar_subespacio(sala)
+    fecha_dt = dt.date()
+    hora_dt = dt.time()
+
+    for c in contingencias:
+        tipo_c = str(_obtener_valor_campo(c, "tipo", "") or "").strip().lower()
+        if tipo_c not in ("falla_sensor", "apertura_manual"):
+            continue
+        c_esp = _obtener_valor_campo(c, "espacio_id")
+        if c_esp is not None and int(c_esp) != int(espacio_id):
+            continue
+        c_sub = _normalizar_subespacio(_obtener_valor_campo(c, "subespacio", "todos"))
+        if sub_norm != "todos" and c_sub not in ("todos", sub_norm):
+            continue
+
+        f_ini = _obtener_valor_campo(c, "fecha_inicio")
+        f_fin = _obtener_valor_campo(c, "fecha_fin")
+        if isinstance(f_ini, datetime):
+            f_ini = f_ini.date()
+        if isinstance(f_fin, datetime):
+            f_fin = f_fin.date()
+        if f_ini and f_fin and not (f_ini <= fecha_dt <= f_fin):
+            continue
+
+        h_ini_str = _obtener_valor_campo(c, "hora_inicio")
+        h_fin_str = _obtener_valor_campo(c, "hora_fin")
+        if h_ini_str and h_fin_str:
+            try:
+                hi_h, hi_m = map(int, str(h_ini_str).split(":")[:2])
+                hf_h, hf_m = map(int, str(h_fin_str).split(":")[:2])
+                if time_cls(hi_h, hi_m) <= hora_dt <= time_cls(hf_h, hf_m):
+                    return 1
+            except Exception:
+                return 1
+        else:
+            return 1
+    return 0
+
+
 def _enrich_features(
     df: pd.DataFrame,
     df_cal: pd.DataFrame,
@@ -310,8 +431,13 @@ def _enrich_features(
     # Paro: los recintos siguen abiertos pero los alumnos no tienen clases presenciales
     df["is_strike"] = df["is_strike"].astype(int)
 
-    # Bandera dinámica 24h: exámenes en períodos de cierre o campaña (junio, julio, noviembre, diciembre)
-    es_24h_mask = (df["is_exam_period"] == 1) & (df["ds"].dt.month.isin([6, 7, 11, 12]))
+    # Bandera dinámica 24h: solo lunes-viernes o madrugada de sábado (nunca domingo)
+    dow = df["ds"].dt.day_of_week
+    es_24h_mask = (
+        (df["is_exam_period"] == 1)
+        & (df["ds"].dt.month.isin([6, 7, 11, 12]))
+        & ((dow < 5) | ((dow == 5) & (df["ds"].dt.hour < 6)))
+    )
 
     if horarios is not None:
         abierto_vals = [
@@ -332,9 +458,24 @@ def _enrich_features(
             for idx, row in df.iterrows()
         ]
     df["es_horario_abierto"] = abierto_vals
+    df["es_habil"] = ((dow < 5) & (df["es_horario_abierto"] == 1)).astype(int)
+    df["es_sabado"] = ((dow == 5) & (df["es_horario_abierto"] == 1)).astype(int)
+    df["es_domingo"] = ((dow == 6) & (df["es_horario_abierto"] == 1)).astype(int)
+    if contingencias:
+        df["dato_faltante_sensor"] = [
+            _evaluar_dato_faltante_sensor(
+                dt=row.ds.to_pydatetime() if hasattr(row.ds, "to_pydatetime") else row.ds,
+                espacio_id=espacio_id,
+                sala=sala,
+                contingencias=contingencias,
+            )
+            for _, row in df.iterrows()
+        ]
+    else:
+        df["dato_faltante_sensor"] = 0
 
     cols_to_drop = [c for c in ["_fecha", "fecha"] if c in df.columns]
-    df.drop(columns=cols_to_drop, inplace=True)
+    df = df.drop(columns=cols_to_drop)
     return df
 
 
@@ -355,7 +496,7 @@ REGRESORES_PROPHET: list[str] = [
 def aplicar_mascara_anomalias_entrenamiento(df: pd.DataFrame) -> pd.DataFrame:
     """
     Opción A: Reemplaza 'y' por np.nan en feriados oficiales, recesos académicos cerrados,
-    suspensiones de actividades y contingencias (paros) durante el entrenamiento.
+    suspensiones de actividades, contingencias (paros) y fallas de sensor durante el entrenamiento.
     Prophet omite estos registros en el cálculo del likelihood/pérdida, preservando
     la estacionalidad semanal real de los días lectivos regulares sin contaminación por ceros.
     """
@@ -366,24 +507,85 @@ def aplicar_mascara_anomalias_entrenamiento(df: pd.DataFrame) -> pd.DataFrame:
         (df_mod["suspension_actividades"] == 1) |
         (df_mod["is_strike"] == 1)
     )
+    if "dato_faltante_sensor" in df_mod.columns:
+        mascara_anomalia = mascara_anomalia | (df_mod["dato_faltante_sensor"] == 1)
     df_mod.loc[mascara_anomalia, "y"] = np.nan
     return df_mod
 
 
-def _build_prophet(growth: str = "linear") -> Prophet:
+def _preparar_columnas_prediccion(model: Prophet, df_features: pd.DataFrame) -> list[str]:
+    """Arma las columnas requeridas según crecimiento, estacionalidades condicionales y regresores del modelo."""
+    cols: list[str] = ["ds"]
+    if getattr(model, "growth", "linear") == "logistic":
+        for c in ("cap", "floor"):
+            if c in df_features.columns and c not in cols:
+                cols.append(c)
+
+    for seas in getattr(model, "seasonalities", {}).values():
+        cond = seas.get("condition_name") if isinstance(seas, dict) else getattr(seas, "condition_name", None)
+        if cond and cond in df_features.columns and cond not in cols:
+            cols.append(cond)
+
+    for reg in getattr(model, "extra_regressors", {}).keys():
+        if reg in df_features.columns and reg not in cols:
+            cols.append(reg)
+
+    return cols
+
+
+def _preparar_df_entrenamiento_abierto(df: pd.DataFrame) -> tuple[pd.DataFrame, bool, bool]:
+    """Aplica máscara de anomalías y filtra horas abiertas si existe volumen suficiente."""
+    df_masked = aplicar_mascara_anomalias_entrenamiento(df)
+    if "es_horario_abierto" in df_masked.columns:
+        df_abierto = df_masked[df_masked["es_horario_abierto"] == 1].copy()
+        if len(df_abierto) >= MIN_ROWS_REQUIRED and int(df_abierto["y"].notna().sum()) >= MIN_ROWS_REQUIRED:
+            incluir_domingo = bool("es_domingo" in df_abierto.columns and int((df_abierto["es_domingo"] == 1).sum()) >= 10)
+            return df_abierto, True, incluir_domingo
+
+    incluir_domingo = bool("es_domingo" in df_masked.columns and int((df_masked["es_domingo"] == 1).sum()) >= 10)
+    return df_masked, False, incluir_domingo
+
+
+def _hiperparametros_prophet_por_recinto(recinto: str) -> dict[str, Any]:
+    """Hiperparámetros diferenciados: aditivo para ocupación vehicular en plazas y multiplicativo para biblioteca."""
+    if str(recinto).strip().lower() == "vehicular":
+        return {
+            "seasonality_mode": "additive",
+            "changepoint_prior_scale": 0.05,
+            "seasonality_prior_scale": 8.0,
+        }
+    return {
+        "seasonality_mode": "multiplicative",
+        "changepoint_prior_scale": 0.10,
+        "seasonality_prior_scale": 10.0,
+    }
+
+
+def _build_prophet(
+    growth: str = "linear",
+    seasonality_mode: str = "multiplicative",
+    solo_abierto: bool = True,
+    incluir_domingo: bool = False,
+    changepoint_prior_scale: float = 0.10,
+    seasonality_prior_scale: float = 10.0,
+) -> Prophet:
     model = Prophet(
         growth=growth,
-        seasonality_mode="additive",
+        seasonality_mode=seasonality_mode,
         daily_seasonality=False,
         weekly_seasonality=False,
         yearly_seasonality=False,
-        changepoint_prior_scale=0.03,
-        seasonality_prior_scale=8.0,
+        changepoint_prior_scale=changepoint_prior_scale,
+        seasonality_prior_scale=seasonality_prior_scale,
         interval_width=0.80,
     )
-    model.add_seasonality(name="diaria_uct", period=1, fourier_order=8)
+    model.add_seasonality(name="diaria_habil", period=1, fourier_order=8, condition_name="es_habil")
+    model.add_seasonality(name="diaria_sabado", period=1, fourier_order=4, condition_name="es_sabado")
+    if incluir_domingo:
+        model.add_seasonality(name="diaria_domingo", period=1, fourier_order=4, condition_name="es_domingo")
     model.add_seasonality(name="semanal_uct", period=7, fourier_order=5)
-    model.add_regressor("es_horario_abierto", prior_scale=15.0, standardize=False)
+    if not solo_abierto:
+        model.add_regressor("es_horario_abierto", prior_scale=15.0, standardize=False)
     model.add_regressor("is_holiday", prior_scale=15.0, standardize=False)
     model.add_regressor("suspension_actividades", prior_scale=10.0, standardize=False)
     model.add_regressor("is_exam_period", prior_scale=12.0, standardize=False)
@@ -393,6 +595,8 @@ def _build_prophet(growth: str = "linear") -> Prophet:
 
 
 async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str, sala: str) -> dict:
+    if recinto == "vehicular":
+        sala = _normalizar_sector_vehicular(sala)
     logger.info(f"[Prophet] Iniciando entrenamiento modelo={modelo_key} (recinto={recinto}, sala={sala})")
     df = await _fetch_hourly_data(session, recinto=recinto, sala=sala)
     if len(df) < MIN_ROWS_REQUIRED:
@@ -404,9 +608,13 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
     contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=espacio_id_entrenamiento)
     capacidades = await _fetch_capacidades(session)
 
-    cap_val = float(capacidades.get(sala, capacidades.get("todas", 426)))
+    cap_val = float(capacidades.get(sala, capacidades.get("todas", 276)))
     if recinto == "vehicular":
-        cap_val = float(capacidades.get("vehicular", 150))
+        cap_val = float(
+            capacidades.get(sala, capacidades.get("vehicular", 125))
+            if sala != "todos"
+            else capacidades.get("vehicular", 125)
+        )
 
     df = _enrich_features(
         df,
@@ -423,20 +631,25 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
     train_df = df.iloc[:split_idx].copy()
     test_df = df.iloc[split_idx:].copy()
 
-    regressors = REGRESORES_PROPHET
-
-    # Opción A: Aplicar máscara NaN a los días atípicos para no contaminar la estacionalidad semanal
-    train_df_fit = aplicar_mascara_anomalias_entrenamiento(train_df)
+    # Entrenar solo en horas abiertas + máscara de anomalías
+    hp = _hiperparametros_prophet_por_recinto(recinto)
+    train_df_fit, solo_ab_eval, inc_dom_eval = _preparar_df_entrenamiento_abierto(train_df)
 
     import warnings
-    model_eval = _build_prophet()
+    model_eval = _build_prophet(
+        growth="linear",
+        solo_abierto=solo_ab_eval,
+        incluir_domingo=inc_dom_eval,
+        **hp,
+    )
+    fit_cols_eval = ["y"] + _preparar_columnas_prediccion(model_eval, train_df_fit)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model_eval.fit(train_df_fit[["ds", "y"] + regressors])
+        model_eval.fit(train_df_fit[fit_cols_eval])
 
     # Evaluación sobre test set
-    test_features = test_df[["ds"] + regressors].copy()
-    forecast_test = model_eval.predict(test_features)
+    test_cols = _preparar_columnas_prediccion(model_eval, test_df)
+    forecast_test = model_eval.predict(test_df[test_cols])
 
     y_true = test_df["y"].values
     y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=cap_val)
@@ -456,11 +669,17 @@ async def train_sala_model(session: AsyncSession, modelo_key: str, recinto: str,
         phe = 0.0
 
     # Calibrar y persistir el modelo de producción activo sobre la serie completa enmascarada
-    df_prod_fit = aplicar_mascara_anomalias_entrenamiento(df)
-    model_prod = _build_prophet()
+    df_prod_fit, solo_ab_prod, inc_dom_prod = _preparar_df_entrenamiento_abierto(df)
+    model_prod = _build_prophet(
+        growth="linear",
+        solo_abierto=solo_ab_prod,
+        incluir_domingo=inc_dom_prod,
+        **hp,
+    )
+    fit_cols_prod = ["y"] + _preparar_columnas_prediccion(model_prod, df_prod_fit)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model_prod.fit(df_prod_fit[["ds", "y"] + regressors])
+        model_prod.fit(df_prod_fit[fit_cols_prod])
 
     versioned_path = _save_model(model_prod, modelo_key)
 
@@ -504,7 +723,10 @@ async def train_all(session: AsyncSession) -> list[dict]:
         ("prophet_biblioteca_sala1", "biblioteca", "sala1"),
         ("prophet_biblioteca_sala2", "biblioteca", "sala2"),
         ("prophet_biblioteca_todas", "biblioteca", "todas"),
-        ("prophet_vehicular", "vehicular", "todas"),
+        ("prophet_vehicular", "vehicular", "todos"),
+        ("prophet_vehicular_csf11", "vehicular", "CSF11"),
+        ("prophet_vehicular_csf21", "vehicular", "CSF21"),
+        ("prophet_vehicular_chs01", "vehicular", "CHS01"),
     ]
     results = []
     for m_key, rec, sl in tasks:
@@ -530,10 +752,18 @@ async def predict_continuous(
     Retorna 14 días continuos (336 puntos horarios):
     - 7 días históricos reales anteriores (168 horas empíricas).
     - 7 días proyectados a futuro (168 horas Prophet con intervalos de confianza del 80%).
-    Soporta desglose por sala ('todas', 'sala1', 'sala2').
+    Soporta desglose por sala ('todas', 'sala1', 'sala2') o por sector vehicular ('todos', 'CSF11', 'CSF21', 'CHS01').
     """
     capacidades = await _fetch_capacidades(session)
-    cap_sala = capacidades.get(sala, capacidades.get("todas", 426))
+    sector_veh = _normalizar_sector_vehicular(sala) if recinto == "vehicular" else None
+    if recinto == "vehicular":
+        cap_sala = (
+            capacidades.get(sector_veh, capacidades.get("vehicular", 125))
+            if sector_veh != "todos"
+            else capacidades.get("vehicular", 125)
+        )
+    else:
+        cap_sala = capacidades.get(sala, capacidades.get("todas", 276))
 
     # Determinar fecha de anclaje (máximo tiempo real en la base de datos)
     if recinto == "vehicular":
@@ -552,8 +782,42 @@ async def predict_continuous(
     # 1. Extraer los últimos 7 días de datos reales (168 horas completas hasta anchor_dt inclusive)
     h_start = anchor_dt - timedelta(hours=167)
     h_end_exclusive = anchor_dt + timedelta(hours=1)
-    door_filter = ""
-    if recinto == "biblioteca":
+    hist_idx = pd.date_range(h_start, anchor_dt, freq="1h")
+    mapa_veh_sec: Dict[str, Dict[datetime, float]] = {"CSF11": {}, "CSF21": {}, "CHS01": {}}
+
+    if recinto == "vehicular":
+        from app.services.vehicle_service import VehicleService
+
+        curva_veh = await VehicleService.get_realtime_presence_curve(
+            session=session,
+            fecha_inicio=h_start.date() - timedelta(days=1),
+            fecha_fin=anchor_dt.date(),
+            espacio_id=2,
+            sector=None if sector_veh == "todos" else sector_veh,
+        )
+        col_veh = "vehiculos_presentes"
+        if sector_veh == "CSF11":
+            col_veh = "vehiculos_csf11"
+        elif sector_veh == "CSF21":
+            col_veh = "vehiculos_csf21"
+        elif sector_veh == "CHS01":
+            col_veh = "vehiculos_chs01"
+
+        mapa_veh: Dict[datetime, float] = {}
+        for r in curva_veh:
+            dt_b = pd.to_datetime(r["bucket"]).tz_localize(None)
+            mapa_veh[dt_b] = float(r.get(col_veh, 0))
+            if sector_veh == "todos":
+                mapa_veh_sec["CSF11"][dt_b] = float(r.get("vehiculos_csf11", 0))
+                mapa_veh_sec["CSF21"][dt_b] = float(r.get("vehiculos_csf21", 0))
+                mapa_veh_sec["CHS01"][dt_b] = float(r.get("vehiculos_chs01", 0))
+
+        df_hist = pd.DataFrame({
+            "ds": hist_idx,
+            "actual": [mapa_veh.get(dt_h, 0.0) for dt_h in hist_idx],
+        })
+    else:
+        hist_params: Dict[str, Any] = {"h_start": h_start, "h_end_exclusive": h_end_exclusive}
         if sala == "sala1":
             door_filter = "AND (door_entrada LIKE '%CSF02%' OR door_salida LIKE '%CSF02%')"
         elif sala == "sala2":
@@ -576,26 +840,11 @@ async def predict_continuous(
             GROUP BY DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126))
             ORDER BY ds ASC
         """)
-    else:
-        sql_hist = text("""
-            SELECT 
-                DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126)) as ds,
-                COUNT(*) as actual
-            FROM eventos_vehiculares
-            WHERE espacio_id = 2 AND direccion = 'entrada'
-              AND time >= :h_start AND time < :h_end_exclusive
-            GROUP BY DATEADD(hour, DATEDIFF(hour, CONVERT(DATETIME2, '2000-01-01T00:00:00', 126), time), CONVERT(DATETIME2, '2000-01-01T00:00:00', 126))
-            ORDER BY ds ASC
-        """)
-
-    res_hist = await session.execute(sql_hist, {"h_start": h_start, "h_end_exclusive": h_end_exclusive})
-    df_hist_raw = pd.DataFrame(res_hist.fetchall(), columns=["ds", "actual"])
-    df_hist_raw["ds"] = pd.to_datetime(df_hist_raw["ds"]).dt.tz_localize(None)
-
-    # Grilla continua de exactamente 168 horas históricas (desde h_start hasta anchor_dt inclusive)
-    hist_idx = pd.date_range(h_start, anchor_dt, freq="1h")
-    df_hist = df_hist_raw.set_index("ds").reindex(hist_idx, fill_value=0).reset_index()
-    df_hist.columns = ["ds", "actual"]
+        res_hist = await session.execute(sql_hist, hist_params)
+        df_hist_raw = pd.DataFrame(res_hist.fetchall(), columns=["ds", "actual"])
+        df_hist_raw["ds"] = pd.to_datetime(df_hist_raw["ds"]).dt.tz_localize(None)
+        df_hist = df_hist_raw.set_index("ds").reindex(hist_idx, fill_value=0).reset_index()
+        df_hist.columns = ["ds", "actual"]
 
     cal = await _fetch_calendar(session)
     espacio_id_actual = 2 if recinto == "vehicular" else 1
@@ -605,10 +854,11 @@ async def predict_continuous(
     # 2. Generar predicción futura para los próximos 7 días (exactamente 168 horas desde anchor_dt + 1h)
     future_dates = [anchor_dt + timedelta(hours=h) for h in range(1, 169)]
     df_fut_base = pd.DataFrame({"ds": future_dates})
+    sala_eval = sector_veh if recinto == "vehicular" else sala
     df_fut = _enrich_features(
         df_fut_base,
         cal,
-        sala=sala,
+        sala=sala_eval,
         horarios=horarios_cfg,
         contingencias=contingencias_cfg,
         espacio_id=espacio_id_actual,
@@ -616,9 +866,27 @@ async def predict_continuous(
     df_fut["cap"] = cap_sala
     df_fut["floor"] = 0.0
 
+    df_fut_veh_sec: Dict[str, pd.DataFrame] = {}
+    cap_veh_sec: Dict[str, float] = {}
+    if recinto == "vehicular" and sector_veh == "todos":
+        for sec_cod in SECTORES_VEHICULARES:
+            cap_sec = float(capacidades.get(sec_cod, 40 if sec_cod == "CSF11" else (50 if sec_cod == "CSF21" else 35)))
+            cap_veh_sec[sec_cod] = cap_sec
+            df_sec = _enrich_features(
+                df_fut_base, cal, sala=sec_cod, horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=2
+            )
+            df_sec["cap"] = cap_sec
+            df_sec["floor"] = 0.0
+            df_fut_veh_sec[sec_cod] = df_sec
+        df_fut["es_horario_abierto"] = (
+            (df_fut_veh_sec["CSF11"]["es_horario_abierto"].values == 1)
+            | (df_fut_veh_sec["CSF21"]["es_horario_abierto"].values == 1)
+            | (df_fut_veh_sec["CHS01"]["es_horario_abierto"].values == 1)
+        ).astype(int)
+
     if recinto == "biblioteca" and sala == "todas":
-        cap_s1 = float(capacidades.get("sala1", 200))
-        cap_s2 = float(capacidades.get("sala2", 226))
+        cap_s1 = float(capacidades.get("sala1", 150))
+        cap_s2 = float(capacidades.get("sala2", 126))
         df_fut_s1 = _enrich_features(
             df_fut_base, cal, sala="sala1", horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
         )
@@ -634,15 +902,31 @@ async def predict_continuous(
         df_fut_s1 = df_fut
         df_fut_s2 = df_fut
 
-    # Cargar modelos según selección jerárquica
-    regressors = REGRESORES_PROPHET
+    modelo_veh_key = MODELOS_VEHICULAR.get(sector_veh, MODELOS_VEHICULAR["todos"]) if recinto == "vehicular" else None
+    if recinto == "vehicular":
+        keys_a_asegurar = (
+            [(sec_cod, MODELOS_VEHICULAR[sec_cod]) for sec_cod in SECTORES_VEHICULARES]
+            if sector_veh == "todos"
+            else [(sector_veh, modelo_veh_key or MODELOS_VEHICULAR["todos"])]
+        )
+        for sec_target, m_k in keys_a_asegurar:
+            if load_active_model(m_k) is None:
+                try:
+                    await train_sala_model(session, modelo_key=m_k, recinto="vehicular", sala=sec_target)
+                except Exception as e_train:
+                    logger.warning(f"[Prophet Vehicular] No se pudo auto-entrenar {m_k}: {e_train}")
 
+    usa_bottom_up_veh = False
+
+    # Cargar modelos según selección jerárquica
     def _calcular_predicciones_sincronas() -> Tuple[pd.DataFrame, str]:
+        nonlocal usa_bottom_up_veh
+
         def _infer_single(m_key: str, df_features: pd.DataFrame, cap_max: float) -> pd.DataFrame:
             m = load_active_model(m_key)
             if not m:
                 return pd.DataFrame({"yhat": [0.0]*168, "yhat_lower": [0.0]*168, "yhat_upper": [0.0]*168})
-            cols = ["ds"] + [r for r in regressors if r in df_features.columns]
+            cols = _preparar_columnas_prediccion(m, df_features)
             pred = m.predict(df_features[cols])
             yhat = np.clip(pred["yhat"].values, 0, cap_max)
             lower = np.clip(pred["yhat_lower"].values, 0, cap_max)
@@ -657,14 +941,34 @@ async def predict_continuous(
             return pd.DataFrame({"yhat": yhat, "yhat_lower": lower, "yhat_upper": upper})
 
         if recinto == "vehicular":
-            return _infer_single(MODELOS_SALA["vehicular"], df_fut, cap_sala), MODELOS_SALA["vehicular"]
+            if sector_veh == "todos":
+                modelos_sec = {s: load_active_model(MODELOS_VEHICULAR[s]) for s in SECTORES_VEHICULARES}
+                if any(modelos_sec.values()):
+                    usa_bottom_up_veh = True
+                    preds_sec = {
+                        s: _infer_single(MODELOS_VEHICULAR[s], df_fut_veh_sec[s], cap_veh_sec[s])
+                        for s in SECTORES_VEHICULARES
+                    }
+                    yhat_sum = np.clip(sum(preds_sec[s]["yhat"] for s in SECTORES_VEHICULARES), 0, cap_sala)
+                    low_sum = np.clip(sum(preds_sec[s]["yhat_lower"] for s in SECTORES_VEHICULARES), 0, cap_sala)
+                    up_sum = np.clip(sum(preds_sec[s]["yhat_upper"] for s in SECTORES_VEHICULARES), 0, cap_sala)
+                    return pd.DataFrame({
+                        "yhat": yhat_sum,
+                        "yhat_lower": low_sum,
+                        "yhat_upper": up_sum,
+                        "yhat_csf11": preds_sec["CSF11"]["yhat"],
+                        "yhat_csf21": preds_sec["CSF21"]["yhat"],
+                        "yhat_chs01": preds_sec["CHS01"]["yhat"],
+                    }), MODELOS_VEHICULAR["CSF11"]
+            m_veh = modelo_veh_key or MODELOS_SALA["vehicular"]
+            return _infer_single(m_veh, df_fut, cap_sala), m_veh
         elif sala == "sala1":
             return _infer_single(MODELOS_SALA["sala1"], df_fut, cap_sala), MODELOS_SALA["sala1"]
         elif sala == "sala2":
             return _infer_single(MODELOS_SALA["sala2"], df_fut, cap_sala), MODELOS_SALA["sala2"]
         else:  # Reconciliación jerárquica Bottom-Up: Sala 1 + Sala 2 para coincidencia matemática exacta
-            cap_s1 = float(capacidades.get("sala1", 200))
-            cap_s2 = float(capacidades.get("sala2", 226))
+            cap_s1 = float(capacidades.get("sala1", 150))
+            cap_s2 = float(capacidades.get("sala2", 126))
             df_s1 = _infer_single(MODELOS_SALA["sala1"], df_fut_s1, cap_s1)
             df_s2 = _infer_single(MODELOS_SALA["sala2"], df_fut_s2, cap_s2)
             if df_s1["yhat"].sum() == 0 and df_s2["yhat"].sum() == 0:
@@ -677,10 +981,10 @@ async def predict_continuous(
 
     df_pred, active_key = await ejecutar_inferencia_en_hilo(_calcular_predicciones_sincronas)
 
-
     # 3. Construir listas de salida
-    puntos_historicos = [
-        {
+    puntos_historicos = []
+    for row in df_hist.itertuples():
+        punto_h: Dict[str, Any] = {
             "ds": row.ds.isoformat(),
             "actual": float(row.actual),
             "yhat": float(row.actual),
@@ -688,32 +992,50 @@ async def predict_continuous(
             "yhat_upper": float(row.actual),
             "es_abierto": int(row.actual > 0),
         }
-        for row in df_hist.itertuples()
-    ]
+        if recinto == "vehicular" and sector_veh == "todos":
+            dt_key = row.ds.to_pydatetime() if hasattr(row.ds, "to_pydatetime") else row.ds
+            punto_h["actual_csf11"] = mapa_veh_sec["CSF11"].get(dt_key, 0.0)
+            punto_h["actual_csf21"] = mapa_veh_sec["CSF21"].get(dt_key, 0.0)
+            punto_h["actual_chs01"] = mapa_veh_sec["CHS01"].get(dt_key, 0.0)
+        puntos_historicos.append(punto_h)
 
     puntos_pronostico = []
     for idx, row in df_fut.iterrows():
         yhat_val = round(float(df_pred["yhat"].iloc[idx]), 1)
         low_val = round(float(df_pred["yhat_lower"].iloc[idx]), 1)
         up_val = round(float(df_pred["yhat_upper"].iloc[idx]), 1)
-        puntos_pronostico.append({
+        punto_f: Dict[str, Any] = {
             "ds": row["ds"].isoformat(),
             "actual": None,
             "yhat": yhat_val,
             "yhat_lower": low_val,
             "yhat_upper": up_val,
             "es_abierto": int(row["es_horario_abierto"]),
-        })
+        }
+        if usa_bottom_up_veh and "yhat_csf11" in df_pred.columns:
+            punto_f["yhat_csf11"] = round(float(df_pred["yhat_csf11"].iloc[idx]), 1)
+            punto_f["yhat_csf21"] = round(float(df_pred["yhat_csf21"].iloc[idx]), 1)
+            punto_f["yhat_chs01"] = round(float(df_pred["yhat_chs01"].iloc[idx]), 1)
+        puntos_pronostico.append(punto_f)
 
     # Línea continua unificada de 336 puntos (168 reales + 168 pronosticados)
     puntos_totales = puntos_historicos + puntos_pronostico
 
-    model_date = active_model_date(active_key)
+    if usa_bottom_up_veh:
+        fechas_veh = [d for d in (active_model_date(MODELOS_VEHICULAR[s]) for s in SECTORES_VEHICULARES) if d]
+        model_date = max(fechas_veh) if fechas_veh else active_model_date(active_key)
+        model_type_str = "Prophet Jerárquico Bottom-Up Vehicular (Presencia en Plazas)"
+    elif recinto == "vehicular":
+        model_date = active_model_date(active_key)
+        model_type_str = "Prophet Presencia Vehicular por Sector"
+    else:
+        model_date = active_model_date(active_key)
+        model_type_str = "Prophet Jerárquico por Sala"
     status_str = "ok" if model_date else "fallback"
 
-    return {
+    respuesta: Dict[str, Any] = {
         "recinto": recinto,
-        "sala": sala,
+        "sala": sector_veh if recinto == "vehicular" else sala,
         "capacidad_asientos": cap_sala,
         "horizon_hours": len(puntos_pronostico),
         "total_timeline_hours": len(puntos_totales),
@@ -723,10 +1045,18 @@ async def predict_continuous(
         "forecast": puntos_totales,
         "model_status": {
             "status": status_str,
-            "model_type": "Prophet Jerárquico por Sala" if recinto == "biblioteca" else "Prophet Univariado",
+            "model_type": model_type_str,
             "model_date": model_date or "Sin calibración",
         },
     }
+    if recinto == "vehicular":
+        respuesta["sector"] = sector_veh
+        if usa_bottom_up_veh:
+            respuesta["reconciliacion"] = "bottom_up"
+            respuesta["capacidad_csf11"] = int(cap_veh_sec.get("CSF11", 40))
+            respuesta["capacidad_csf21"] = int(cap_veh_sec.get("CSF21", 50))
+            respuesta["capacidad_chs01"] = int(cap_veh_sec.get("CHS01", 35))
+    return respuesta
 
 
 async def predict_next_7_days(session: AsyncSession, recinto: str = "biblioteca") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -759,7 +1089,7 @@ async def train_presence_model(session: AsyncSession, modelo_key: str, sala: str
 
     anchor_dt = max_t.replace(minute=0, second=0, microsecond=0)
     f_fin = anchor_dt.date()
-    f_ini = max(min_t.date(), f_fin - timedelta(days=90))
+    f_ini = max(min_t.date(), f_fin - timedelta(days=180))
 
     raw_hist = await AttendanceService.get_realtime_presence_curve(
         session=session,
@@ -791,7 +1121,7 @@ async def train_presence_model(session: AsyncSession, modelo_key: str, sala: str
     df["y"] = pd.to_numeric(df["y"], errors="coerce").fillna(0.0).clip(lower=0.0)
 
     capacidades = await _fetch_capacidades(session)
-    cap_val = float(capacidades.get(sala, capacidades.get("todas", 426)))
+    cap_val = float(capacidades.get(sala, capacidades.get("todas", 276)))
 
     cal = await _fetch_calendar(session)
     horarios_cfg = await _fetch_horarios_info(session, espacio_id=1)
@@ -808,11 +1138,14 @@ async def train_presence_model(session: AsyncSession, modelo_key: str, sala: str
     df["cap"] = cap_val
     df["floor"] = 0.0
 
-    regressors = REGRESORES_PROPHET
-    fit_cols = ["ds", "y", "cap", "floor"] + [r for r in regressors if r in df.columns]
-
-    df_prod_fit = aplicar_mascara_anomalias_entrenamiento(df)
-    model_prod = _build_prophet(growth="logistic")
+    df_prod_fit, solo_abierto, incluir_domingo = _preparar_df_entrenamiento_abierto(df)
+    model_prod = _build_prophet(
+        growth="linear",
+        seasonality_mode="multiplicative",
+        solo_abierto=solo_abierto,
+        incluir_domingo=incluir_domingo,
+    )
+    fit_cols = ["y"] + _preparar_columnas_prediccion(model_prod, df_prod_fit)
 
     import warnings
     with warnings.catch_warnings():
@@ -829,8 +1162,10 @@ async def train_presence_model(session: AsyncSession, modelo_key: str, sala: str
                 "recinto": "biblioteca",
                 "sala": sala,
                 "capacidad_acotada": cap_val,
-                "growth": "logistic",
-                "train_rows": len(df),
+                "growth": "linear",
+                "seasonality_mode": "multiplicative",
+                "solo_horario_abierto": solo_abierto,
+                "train_rows": len(df_prod_fit),
                 "actualizado_en": datetime.now().isoformat(),
             }, f_meta, indent=2)
     except Exception as e_meta:
@@ -855,7 +1190,7 @@ async def predict_presence_continuous(
     """
     from app.services.attendance_service import AttendanceService
     capacidades = await _fetch_capacidades(session)
-    cap_sala = capacidades.get(sala, capacidades.get("todas", 426))
+    cap_sala = capacidades.get(sala, capacidades.get("todas", 276))
 
     res_t = await session.execute(text("""
         SELECT MAX(time) 
@@ -878,6 +1213,8 @@ async def predict_presence_continuous(
     )
 
     mapa_hist = {}
+    mapa_hist_s1 = {}
+    mapa_hist_s2 = {}
     col_persona = "personas_unicas"
     if sala == "sala1":
         col_persona = "personas_sala1"
@@ -887,19 +1224,25 @@ async def predict_presence_continuous(
     for r in hist_raw:
         dt_b = pd.to_datetime(r["bucket"]).tz_localize(None)
         mapa_hist[dt_b] = float(r.get(col_persona, 0))
+        mapa_hist_s1[dt_b] = float(r.get("personas_sala1", 0))
+        mapa_hist_s2[dt_b] = float(r.get("personas_sala2", 0))
 
     hist_idx = pd.date_range(h_start, anchor_dt, freq="1h")
     puntos_historicos = []
     for dt_h in hist_idx:
         val = mapa_hist.get(dt_h, 0.0)
-        puntos_historicos.append({
+        punto_h: Dict[str, Any] = {
             "ds": dt_h.isoformat(),
             "actual": val,
             "yhat": val,
             "yhat_lower": val,
             "yhat_upper": val,
             "es_abierto": int(val > 0),
-        })
+        }
+        if sala == "todas":
+            punto_h["actual_sala1"] = mapa_hist_s1.get(dt_h, 0.0)
+            punto_h["actual_sala2"] = mapa_hist_s2.get(dt_h, 0.0)
+        puntos_historicos.append(punto_h)
 
     # 2. 7 días proyectados a futuro (168 horas desde anchor_dt + 1h)
     future_dates = [anchor_dt + timedelta(hours=h) for h in range(1, 169)]
@@ -909,60 +1252,131 @@ async def predict_presence_continuous(
     horarios_cfg = await _fetch_horarios_info(session, espacio_id=1)
     contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=1)
 
-    df_fut = _enrich_features(
-        df_fut_base,
-        cal,
-        sala=sala,
-        horarios=horarios_cfg,
-        contingencias=contingencias_cfg,
-        espacio_id=1,
-    )
-    df_fut["cap"] = float(cap_sala)
-    df_fut["floor"] = 0.0
+    def _inferir_presencia_frame(modelo: Optional[Prophet], df_feat: pd.DataFrame, cap_lim: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if not modelo:
+            n = len(df_feat)
+            return np.zeros(n), np.zeros(n), np.zeros(n)
+        cols_m = _preparar_columnas_prediccion(modelo, df_feat)
+        pred_m = modelo.predict(df_feat[cols_m])
+        y_m = np.clip(pred_m["yhat"].values, 0, cap_lim)
+        l_m = np.clip(pred_m["yhat_lower"].values, 0, cap_lim)
+        u_m = np.clip(pred_m["yhat_upper"].values, 0, cap_lim)
+        cerrado_m = df_feat["es_horario_abierto"].values == 0
+        y_m[cerrado_m] = 0.0
+        l_m[cerrado_m] = 0.0
+        u_m[cerrado_m] = 0.0
+        return y_m, l_m, u_m
 
     modelo_key = MODELOS_PRESENCIA.get(sala, MODELOS_PRESENCIA["todas"])
-    m = load_active_model(modelo_key)
-    if not m:
-        try:
-            await train_presence_model(session, modelo_key=modelo_key, sala=sala)
+    usa_bottom_up = False
+    cap_s1 = float(capacidades.get("sala1", 150))
+    cap_s2 = float(capacidades.get("sala2", 126))
+    yhat_s1: Optional[np.ndarray] = None
+    yhat_s2: Optional[np.ndarray] = None
+
+    if sala == "todas":
+        df_fut_s1 = _enrich_features(
+            df_fut_base, cal, sala="sala1", horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
+        )
+        df_fut_s1["cap"] = cap_s1
+        df_fut_s1["floor"] = 0.0
+
+        df_fut_s2 = _enrich_features(
+            df_fut_base, cal, sala="sala2", horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
+        )
+        df_fut_s2["cap"] = cap_s2
+        df_fut_s2["floor"] = 0.0
+
+        df_fut = df_fut_s1[["ds"]].copy()
+        df_fut["es_horario_abierto"] = (
+            (df_fut_s1["es_horario_abierto"].values == 1) | (df_fut_s2["es_horario_abierto"].values == 1)
+        ).astype(int)
+
+        m_s1 = load_active_model(MODELOS_PRESENCIA["sala1"])
+        if not m_s1:
+            try:
+                await train_presence_model(session, modelo_key=MODELOS_PRESENCIA["sala1"], sala="sala1")
+                m_s1 = load_active_model(MODELOS_PRESENCIA["sala1"])
+            except Exception as e:
+                logger.error(f"[Prophet Presencia] Error auto-entrenando {MODELOS_PRESENCIA['sala1']}: {e}", exc_info=True)
+
+        m_s2 = load_active_model(MODELOS_PRESENCIA["sala2"])
+        if not m_s2:
+            try:
+                await train_presence_model(session, modelo_key=MODELOS_PRESENCIA["sala2"], sala="sala2")
+                m_s2 = load_active_model(MODELOS_PRESENCIA["sala2"])
+            except Exception as e:
+                logger.error(f"[Prophet Presencia] Error auto-entrenando {MODELOS_PRESENCIA['sala2']}: {e}", exc_info=True)
+
+        if m_s1 or m_s2:
+            usa_bottom_up = True
+            yhat_s1, low_s1, up_s1 = _inferir_presencia_frame(m_s1, df_fut_s1, cap_s1)
+            yhat_s2, low_s2, up_s2 = _inferir_presencia_frame(m_s2, df_fut_s2, cap_s2)
+            yhat = np.clip(yhat_s1 + yhat_s2, 0, cap_sala)
+            lower = np.clip(low_s1 + low_s2, 0, cap_sala)
+            upper = np.clip(up_s1 + up_s2, 0, cap_sala)
+        else:
+            df_fut = _enrich_features(
+                df_fut_base, cal, sala=sala, horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
+            )
+            df_fut["cap"] = float(cap_sala)
+            df_fut["floor"] = 0.0
             m = load_active_model(modelo_key)
-        except Exception as e:
-            logger.error(f"[Prophet Presencia] Error auto-entrenando {modelo_key}: {e}", exc_info=True)
-
-    regressors = REGRESORES_PROPHET
-    cols = ["ds", "cap", "floor"] + [r for r in regressors if r in df_fut.columns]
-
-    if m:
-        pred = m.predict(df_fut[cols])
-        yhat = np.clip(pred["yhat"].values, 0, cap_sala)
-        lower = np.clip(pred["yhat_lower"].values, 0, cap_sala)
-        upper = np.clip(pred["yhat_upper"].values, 0, cap_sala)
-
-        cerrado_mask = df_fut["es_horario_abierto"].values == 0
-        yhat[cerrado_mask] = 0.0
-        lower[cerrado_mask] = 0.0
-        upper[cerrado_mask] = 0.0
+            yhat, lower, upper = _inferir_presencia_frame(m, df_fut, cap_sala)
     else:
-        yhat = np.zeros(len(future_dates))
-        lower = np.zeros(len(future_dates))
-        upper = np.zeros(len(future_dates))
+        df_fut = _enrich_features(
+            df_fut_base,
+            cal,
+            sala=sala,
+            horarios=horarios_cfg,
+            contingencias=contingencias_cfg,
+            espacio_id=1,
+        )
+        df_fut["cap"] = float(cap_sala)
+        df_fut["floor"] = 0.0
+
+        m = load_active_model(modelo_key)
+        if not m:
+            try:
+                await train_presence_model(session, modelo_key=modelo_key, sala=sala)
+                m = load_active_model(modelo_key)
+            except Exception as e:
+                logger.error(f"[Prophet Presencia] Error auto-entrenando {modelo_key}: {e}", exc_info=True)
+
+        yhat, lower, upper = _inferir_presencia_frame(m, df_fut, cap_sala)
 
     puntos_pronostico = []
     for idx, row in df_fut.iterrows():
-        puntos_pronostico.append({
+        punto_f: Dict[str, Any] = {
             "ds": row["ds"].isoformat(),
             "actual": None,
             "yhat": round(float(yhat[idx]), 1),
             "yhat_lower": round(float(lower[idx]), 1),
             "yhat_upper": round(float(upper[idx]), 1),
             "es_abierto": int(row["es_horario_abierto"]),
-        })
+        }
+        if usa_bottom_up and yhat_s1 is not None and yhat_s2 is not None:
+            punto_f["yhat_sala1"] = round(float(yhat_s1[idx]), 1)
+            punto_f["yhat_sala2"] = round(float(yhat_s2[idx]), 1)
+        puntos_pronostico.append(punto_f)
 
     puntos_totales = puntos_historicos + puntos_pronostico
-    model_date = active_model_date(modelo_key)
+    if usa_bottom_up:
+        fechas_sub = [
+            d for d in (
+                active_model_date(MODELOS_PRESENCIA["sala1"]),
+                active_model_date(MODELOS_PRESENCIA["sala2"]),
+            )
+            if d
+        ]
+        model_date = max(fechas_sub) if fechas_sub else active_model_date(modelo_key)
+        model_type_str = "Prophet Jerárquico Bottom-Up (Sala 1 + Sala 2)"
+    else:
+        model_date = active_model_date(modelo_key)
+        model_type_str = "Prophet Horario Condicional (Presencia Física en Sala)"
     status_str = "ok" if model_date else "fallback"
 
-    return {
+    respuesta: Dict[str, Any] = {
         "recinto": "biblioteca",
         "sala": sala,
         "capacidad_asientos": cap_sala,
@@ -974,9 +1388,14 @@ async def predict_presence_continuous(
         "forecast": puntos_totales,
         "model_status": {
             "status": status_str,
-            "model_type": "Prophet Logístico Acotado (Presencia Física en Sala)",
+            "model_type": model_type_str,
             "model_date": model_date or "Sin calibración",
         },
     }
+    if usa_bottom_up:
+        respuesta["reconciliacion"] = "bottom_up"
+        respuesta["capacidad_sala1"] = int(cap_s1)
+        respuesta["capacidad_sala2"] = int(cap_s2)
+    return respuesta
 
 

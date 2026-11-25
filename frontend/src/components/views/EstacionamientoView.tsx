@@ -37,6 +37,7 @@ import { KPIBanner } from '../layout/KPIBanner'
 import { CompartirReporteModal } from '../reports/CompartirReporteModal'
 import { MetricasSeccion, ItemMetricaSeccion } from '../ui/MetricasSeccion'
 import { useAuth } from '../../context/AuthContext'
+import { buildUserStorageKey } from '../../utils/userStorage'
 import { DateRange } from '../../types/dateRange'
 import {
   useVehicleKpis,
@@ -150,12 +151,17 @@ interface Props {
 }
 
 export function EstacionamientoView({ dateRange }: Props) {
-  const { userRole } = useAuth()
+  const { userRole, roles = [], userId, userEmail } = useAuth()
+  const claveSeccionEst = buildUserStorageKey('uct_seccion_activa_estacionamiento', userId, userEmail)
   const [modalCompartirAbierto, setModalCompartirAbierto] = useState<boolean>(false)
-  const puedeCompartirReportes = userRole !== 'Guardia_Seguridad'
+  const puedeCompartirReportes =
+    !roles.includes('Guardia_Seguridad') &&
+    userRole !== 'Guardia_Seguridad' &&
+    !(roles.length > 0 && roles.every((r) => r === 'Guardia_Seguridad' || r === 'Consultor_Reporte'))
 
   // Estados de Filtros Múltiples y Barra Lateral de Secciones
   const [sectorSeleccionado, setSectorSeleccionado] = useState<string>('todos')
+  const [sectorPronosticoVehicular, setSectorPronosticoVehicular] = useState<string>('todos')
   const [tiposSeleccionados, setTiposSeleccionados] = useState<string[]>([])
   const [direccionSeleccionada, setDireccionSeleccionada] = useState<string>('todos')
   const [calidadSeleccionada, setCalidadSeleccionada] = useState<'conformes' | 'todos' | 'anomalias'>('conformes')
@@ -167,7 +173,7 @@ export function EstacionamientoView({ dateRange }: Props) {
 
   const [seccionActivaEstacionamiento, setSeccionActivaEstacionamiento] = useState<string | 'todas'>(() => {
     try {
-      const guardada = localStorage.getItem('uct_seccion_activa_estacionamiento')
+      const guardada = localStorage.getItem(claveSeccionEst)
       if (guardada) return guardada
     } catch { }
     return 'seccion_1'
@@ -176,7 +182,7 @@ export function EstacionamientoView({ dateRange }: Props) {
   // Memoria de secciones visitadas para transiciones 100% instantáneas sin repintado
   const [seccionesVisitadas, setSeccionesVisitadas] = useState<Set<string>>(() => {
     try {
-      const guardada = localStorage.getItem('uct_seccion_activa_estacionamiento') || 'seccion_1'
+      const guardada = localStorage.getItem(claveSeccionEst) || 'seccion_1'
       return new Set(['seccion_1', guardada])
     } catch {
       return new Set(['seccion_1'])
@@ -194,7 +200,7 @@ export function EstacionamientoView({ dateRange }: Props) {
       return next
     })
     try {
-      localStorage.setItem('uct_seccion_activa_estacionamiento', nuevaSeccion)
+      localStorage.setItem(claveSeccionEst, nuevaSeccion)
     } catch { }
   }
 
@@ -248,12 +254,16 @@ export function EstacionamientoView({ dateRange }: Props) {
     }
   }, [dateRange, setPeriodoActivo])
 
+  useEffect(() => {
+    setSectorPronosticoVehicular(sectorSeleccionado)
+  }, [sectorSeleccionado])
+
   // Queries analíticas reactivas a los filtros con precarga silenciosa diferida
   const kpis = useVehicleKpis(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
   const live = useParkingOccupancy(sectorSeleccionado)
   const flow = useVehicleHourlyFlow(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaVehicular })
   const presenceCurve = useVehiclePresenceCurve(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
-  const forecast = useForecastParking({ enabled: esSeccionVisible('seccion_1') || precargaSilenciosaVehicular })
+  const forecast = useForecastParking(sectorPronosticoVehicular, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaVehicular })
   const alerts = useAlerts()
   const fleet = useFleetComposition(dateRange?.inicio, dateRange?.fin, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
   const camera = useCameraStats(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
@@ -261,19 +271,56 @@ export function EstacionamientoView({ dateRange }: Props) {
   const intercampus = useIntercampusMobility({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
   const clusters = useBehavioralClusters({ enabled: esSeccionVisible('seccion_5') || precargaSilenciosaVehicular })
 
+  // Capacidades dinámicas derivadas desde BD (aforo vivo / curva / KPIs) con respaldo calibrado
+  const capCSF11 = live.data?.capacidad_csf11 ?? presenceCurve.data?.[0]?.capacidad_csf11 ?? kpis.data?.capacidad_csf11 ?? 40
+  const capCSF21 = live.data?.capacidad_csf21 ?? presenceCurve.data?.[0]?.capacidad_csf21 ?? kpis.data?.capacidad_csf21 ?? 50
+  const capCHS01 = live.data?.capacidad_chs01 ?? presenceCurve.data?.[0]?.capacidad_chs01 ?? kpis.data?.capacidad_chs01 ?? 35
+  const capTotalDinamica = (sectorSeleccionado === 'todos' ? live.data?.capacidad_maxima : undefined) ?? presenceCurve.data?.[0]?.capacidad_total ?? (capCSF11 + capCSF21 + capCHS01)
+
+  const sectoresDinamicos = useMemo(() => ([
+    { codigo: 'todos', nombre: 'Todos los Sectores', capacidad: capTotalDinamica, descripcion: `Campus CSF y Simulación (${capTotalDinamica} plazas totales calibradas)` },
+    { codigo: 'CSF11', nombre: 'CSF11 — Edificio 11', capacidad: capCSF11, descripcion: `Edificio 11 Campus San Francisco (${capCSF11} plazas)` },
+    { codigo: 'CSF21', nombre: 'CSF21 — Edificio 21', capacidad: capCSF21, descripcion: `Edificio 21 Campus San Francisco (${capCSF21} plazas)` },
+    { codigo: 'CHS01', nombre: 'CHS01 — Hospital Simulación', capacidad: capCHS01, descripcion: `Hospital de Simulación CHS (${capCHS01} plazas - Turno clínico)` },
+  ]), [capTotalDinamica, capCSF11, capCSF21, capCHS01])
+
+  const sectoresPronosticoOrdenados = useMemo(() => {
+    if (sectorSeleccionado === 'todos') {
+      return sectoresDinamicos
+    }
+    const seleccionado = sectoresDinamicos.find((s) => s.codigo === sectorSeleccionado)
+    const restantes = sectoresDinamicos.filter(
+      (s) => s.codigo !== 'todos' && s.codigo !== sectorSeleccionado
+    )
+    const todosObj = sectoresDinamicos.find((s) => s.codigo === 'todos')
+    return [seleccionado, ...restantes, todosObj].filter(
+      (s): s is (typeof sectoresDinamicos)[number] => Boolean(s)
+    )
+  }, [sectorSeleccionado, sectoresDinamicos])
+
   // Capacidad calibrada según sector activo
   const capacidadActual = useMemo(() => {
     if (live.data?.capacidad_maxima) return live.data.capacidad_maxima
     if (kpis.data?.capacidad_calibrada) return kpis.data.capacidad_calibrada
-    const secEncontrado = SECTORES_VEHICULARES.find((s) => s.codigo === sectorSeleccionado)
-    return secEncontrado ? secEncontrado.capacidad : 125
-  }, [live.data?.capacidad_maxima, kpis.data?.capacidad_calibrada, sectorSeleccionado])
+    const secEncontrado = sectoresDinamicos.find((s) => s.codigo === sectorSeleccionado)
+    return secEncontrado ? secEncontrado.capacidad : capTotalDinamica
+  }, [live.data?.capacidad_maxima, kpis.data?.capacidad_calibrada, sectorSeleccionado, sectoresDinamicos, capTotalDinamica])
 
   const sectorActivoObj = useMemo(() => {
-    return SECTORES_VEHICULARES.find((s) => s.codigo === sectorSeleccionado) || SECTORES_VEHICULARES[0]
-  }, [sectorSeleccionado])
+    return sectoresDinamicos.find((s) => s.codigo === sectorSeleccionado) || sectoresDinamicos[0]
+  }, [sectorSeleccionado, sectoresDinamicos])
 
-  const vehAlert = alerts.data?.alertas.find((a) => a.recinto === 'vehicular')
+  const sectorPronosticoObj = useMemo(() => {
+    return sectoresDinamicos.find((s) => s.codigo === sectorPronosticoVehicular) || sectoresDinamicos[0]
+  }, [sectorPronosticoVehicular, sectoresDinamicos])
+
+  const capacidadPronostico = forecast.data?.capacidad_asientos ?? sectorPronosticoObj.capacidad
+
+  const vehAlerts = useMemo(() => {
+    const lista = (alerts.data?.alertas || []).filter((a) => a.recinto === 'vehicular')
+    if (sectorSeleccionado === 'todos') return lista
+    return lista.filter((a) => !a.subespacio || a.subespacio === sectorSeleccionado)
+  }, [alerts.data?.alertas, sectorSeleccionado])
 
   const lastTs = live.data?.timestamp
     ? new Date(live.data.timestamp).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })
@@ -336,38 +383,96 @@ export function EstacionamientoView({ dateRange }: Props) {
     return chips
   }, [sectorSeleccionado, sectorActivoObj.nombre, tiposSeleccionados, direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados])
 
-  // Métricas dinámicas calculadas para cada sección de Estacionamiento
-  const metricasSec1 = useMemo<ItemMetricaSeccion[]>(() => [
-    {
-      label: 'Plazas Ocupadas en Vivo',
-      valor: live.isLoading ? '…' : `${live.data?.vehiculos_presentes ?? 0} veh`,
-      subtexto: `de ${capacidadActual} plazas calibradas`,
-      icono: Car,
-      color: 'primary',
-      badge: live.data ? `${Math.min(100, Math.round(((live.data.vehiculos_presentes || 0) / capacidadActual) * 100))}%` : undefined,
-    },
-    {
-      label: 'Capacidad del Sector',
-      valor: `${capacidadActual} plazas`,
-      subtexto: sectorActivoObj.nombre,
-      icono: Building2,
-      color: 'neutral',
-    },
-    {
-      label: 'Máximo Ocupación (Período)',
-      valor: !kpis.data && kpis.isLoading ? '…' : `${kpis.data?.max_aforo_historico ?? 0} veh`,
-      subtexto: 'pico vehicular concurrente',
-      icono: ParkingCircle,
-      color: 'gold',
-    },
-    {
-      label: 'Pico Proyectado Prophet (+7d)',
-      valor: !forecast.data && forecast.isLoading ? '…' : `${forecast.data?.pronostico_7d ? Math.round(Math.max(...forecast.data.pronostico_7d.map(p => p.yhat))) : 0} veh/h`,
-      subtexto: forecast.data?.model_status.status === 'ok' ? `Modelo: ${forecast.data.model_status.model_date}` : 'Modelo en calibración',
-      icono: Sparkles,
-      color: 'gold',
-    },
-  ], [live.isLoading, live.data, capacidadActual, sectorActivoObj.nombre, kpis.isLoading, kpis.data, forecast.isLoading, forecast.data])
+  // Métricas dinámicas calculadas desde la curva de presencia real como fuente única de verdad
+  const metricasSec1 = useMemo<ItemMetricaSeccion[]>(() => {
+    const serieCurva = presenceCurve.data ?? []
+    let maxOcupacion = kpis.data?.max_aforo_historico ?? 0
+    let fechaPicoIso = kpis.data?.fecha_pico_ocupacion ?? null
+
+    if (serieCurva.length > 0) {
+      let maxVal = -1
+      let maxBucket: string | null = null
+      for (const p of serieCurva) {
+        const val =
+          sectorSeleccionado === 'CSF11'
+            ? (p.vehiculos_csf11 ?? p.vehiculos_presentes ?? 0)
+            : sectorSeleccionado === 'CSF21'
+              ? (p.vehiculos_csf21 ?? p.vehiculos_presentes ?? 0)
+              : sectorSeleccionado === 'CHS01'
+                ? (p.vehiculos_chs01 ?? p.vehiculos_presentes ?? 0)
+                : (p.vehiculos_presentes ?? 0)
+        if (val > maxVal) {
+          maxVal = val
+          maxBucket = p.bucket
+        }
+      }
+      if (maxVal >= 0) {
+        maxOcupacion = maxVal
+        fechaPicoIso = maxVal > 0 ? maxBucket : null
+      }
+    }
+
+    let subtextoPico = 'pico vehicular concurrente'
+    if (fechaPicoIso && maxOcupacion > 0) {
+      const dtPico = new Date(fechaPicoIso)
+      if (!Number.isNaN(dtPico.getTime())) {
+        const dd = String(dtPico.getDate()).padStart(2, '0')
+        const mm = String(dtPico.getMonth() + 1).padStart(2, '0')
+        const hh = String(dtPico.getHours()).padStart(2, '0')
+        subtextoPico = `Pico ${dd}/${mm} ${hh}:00 hrs`
+      }
+    }
+
+    const modeloFecha = forecast.data?.model_status.status === 'ok'
+      ? `Modelo: ${forecast.data.model_status.model_date}`
+      : 'Modelo en calibración'
+
+    const picoFuturoVeh = forecast.data?.pronostico_7d?.length
+      ? Math.round(Math.max(...forecast.data.pronostico_7d.map(p => p.yhat)))
+      : 0
+
+    const subtextoMaxPeriodo =
+      sectorSeleccionado === 'todos' && kpis.data?.max_aforo_csf11 !== undefined
+        ? `${subtextoPico} · C11:${kpis.data.max_aforo_csf11} | C21:${kpis.data.max_aforo_csf21} | CH:${kpis.data.max_aforo_chs01}`
+        : subtextoPico
+
+    return [
+      {
+        label: 'Plazas Ocupadas en Vivo',
+        valor: live.isLoading ? '…' : `${live.data?.vehiculos_presentes ?? 0} veh`,
+        subtexto:
+          sectorSeleccionado === 'todos' && live.data?.vehiculos_csf11 !== undefined
+            ? `de ${capacidadActual} pl. · C11:${live.data.vehiculos_csf11} | C21:${live.data.vehiculos_csf21} | CH:${live.data.vehiculos_chs01}`
+            : `de ${capacidadActual} plazas calibradas`,
+        icono: Car,
+        color: 'primary',
+        badge: live.data ? `${Math.min(100, Math.round(((live.data.vehiculos_presentes || 0) / capacidadActual) * 100))}%` : undefined,
+      },
+      {
+        label: 'Capacidad del Sector',
+        valor: `${capacidadActual} plazas`,
+        subtexto: sectorActivoObj.nombre,
+        icono: Building2,
+        color: 'neutral',
+      },
+      {
+        label: 'Máximo Ocupación (Período)',
+        valor: !kpis.data && kpis.isLoading && serieCurva.length === 0 ? '…' : `${maxOcupacion} veh`,
+        subtexto: subtextoMaxPeriodo,
+        icono: ParkingCircle,
+        color: 'gold',
+        badge: capacidadActual > 0 ? `${Math.min(100, Math.round((maxOcupacion / capacidadActual) * 100))}%` : undefined,
+      },
+      {
+        label: 'Pico Ocupación Prophet (+7d)',
+        valor: !forecast.data && forecast.isLoading ? '…' : `${picoFuturoVeh} veh`,
+        subtexto: `${sectorPronosticoObj.codigo === 'todos' ? `Todos (${capTotalDinamica} pl.)` : `${sectorPronosticoObj.codigo} (${capacidadPronostico} pl.)`} • ${modeloFecha}`,
+        icono: Sparkles,
+        color: 'gold',
+        badge: capacidadPronostico > 0 ? `${Math.min(100, Math.round((picoFuturoVeh / capacidadPronostico) * 100))}%` : undefined,
+      },
+    ]
+  }, [live.isLoading, live.data, capacidadActual, capTotalDinamica, sectorActivoObj.nombre, sectorSeleccionado, kpis.isLoading, kpis.data, presenceCurve.data, forecast.isLoading, forecast.data, sectorPronosticoObj, capacidadPronostico])
 
   const metricasSec2 = useMemo<ItemMetricaSeccion[]>(() => {
     const horaPicoItem = flow.data?.reduce((max, f) => {
@@ -414,10 +519,12 @@ export function EstacionamientoView({ dateRange }: Props) {
   }, [kpis.data, flow.data])
 
   const metricasSec3 = useMemo<ItemMetricaSeccion[]>(() => {
-    const camara1 = camera.data?.[0]
-    const tasaEfectiva = camara1 && (camara1.entradas + camara1.salidas) > 0
-      ? Math.max(90, Math.round((1 - (camara1.lecturas_fallidas / (camara1.entradas + camara1.salidas))) * 1000) / 10)
-      : 99.4
+    const camaras = camera.data ?? []
+    const totalCapturas = camaras.reduce((acc, c) => acc + (c.entradas || 0) + (c.salidas || 0), 0)
+    const totalFallidas = camaras.reduce((acc, c) => acc + (c.lecturas_fallidas || 0), 0)
+    const tasaEfectiva = totalCapturas > 0
+      ? Math.max(0, Math.round((1 - totalFallidas / totalCapturas) * 1000) / 10)
+      : 100
 
     return [
       {
@@ -482,36 +589,47 @@ export function EstacionamientoView({ dateRange }: Props) {
     },
   ], [intercampus.data, milestones.data])
 
-  const metricasSec5 = useMemo<ItemMetricaSeccion[]>(() => [
-    {
-      label: 'Posible Uso Externo (K-Means)',
-      valor: `${clusters.data?.vehiculos_externos_count ?? 0} veh`,
-      subtexto: `${clusters.data?.vehiculos_externos_pct ?? 0}% del universo analizado`,
-      icono: ShieldAlert,
-      color: 'danger',
-    },
-    {
-      label: 'Permanencia Promedio',
-      valor: `${clusters.data?.distribucion?.[0]?.permanencia_promedio_min ?? 180} min`,
-      subtexto: 'tiempo regular de estacionamiento',
-      icono: Clock,
-      color: 'primary',
-    },
-    {
-      label: 'Patentes Analizadas',
-      valor: fmt(clusters.data?.total_vehiculos_analizados),
-      subtexto: 'clústeres no supervisados',
-      icono: Car,
-      color: 'neutral',
-    },
-    {
-      label: 'Tasa Jornada Extrema (>8h)',
-      valor: `${clusters.data?.distribucion?.[0]?.tasa_jornada_extrema_pct ?? 0}%`,
-      subtexto: 'estacionamiento prolongado',
-      icono: Flame,
-      color: 'gold',
-    },
-  ], [clusters.data])
+  const metricasSec5 = useMemo<ItemMetricaSeccion[]>(() => {
+    const distribucion = clusters.data?.distribucion ?? []
+    const totalVeh = distribucion.reduce((acc, c) => acc + (c.total_vehiculos || 0), 0)
+    const permPromedio = totalVeh > 0
+      ? Math.round(distribucion.reduce((acc, c) => acc + (c.permanencia_promedio_min || 0) * (c.total_vehiculos || 0), 0) / totalVeh)
+      : 0
+    const tasaExtrema = totalVeh > 0
+      ? Math.round((distribucion.reduce((acc, c) => acc + (c.tasa_jornada_extrema_pct || 0) * (c.total_vehiculos || 0), 0) / totalVeh) * 10) / 10
+      : 0
+
+    return [
+      {
+        label: 'Posible Uso Externo (K-Means)',
+        valor: `${clusters.data?.vehiculos_externos_count ?? 0} veh`,
+        subtexto: `${clusters.data?.vehiculos_externos_pct ?? 0}% • análisis global histórico`,
+        icono: ShieldAlert,
+        color: 'danger',
+      },
+      {
+        label: 'Permanencia Promedio',
+        valor: `${permPromedio} min`,
+        subtexto: 'promedio ponderado global histórico',
+        icono: Clock,
+        color: 'primary',
+      },
+      {
+        label: 'Patentes Analizadas',
+        valor: fmt(clusters.data?.total_vehiculos_analizados),
+        subtexto: 'clústeres globales históricos',
+        icono: Car,
+        color: 'neutral',
+      },
+      {
+        label: 'Tasa Jornada Extrema (>8h)',
+        valor: `${tasaExtrema}%`,
+        subtexto: 'promedio ponderado global histórico',
+        icono: Flame,
+        color: 'gold',
+      },
+    ]
+  }, [clusters.data])
 
   return (
     <div className={`p-6 space-y-7 w-full max-w-full transition-all duration-200 ${barraLateralExpandida ? 'xl:pl-[284px]' : 'pl-0'}`}>
@@ -537,6 +655,14 @@ export function EstacionamientoView({ dateRange }: Props) {
       )}
 
       {/* Panel Gerencial de Métricas Clave (Desplazado con el contenido al abrir la barra lateral) */}
+      {((kpis.error as any)?.response?.status === 403 || (live.error as any)?.response?.status === 403) && (
+        <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 text-xs flex items-center gap-2.5 shadow-2xs">
+          <AlertTriangle size={16} className="shrink-0 text-amber-600" />
+          <span>
+            Acceso restringido a este módulo/recinto: su cuenta no tiene autorización vigente para consultar los indicadores de Estacionamiento.
+          </span>
+        </div>
+      )}
       <KPIBanner
         espacioId={2}
         selectedRange={dateRange}
@@ -636,7 +762,7 @@ export function EstacionamientoView({ dateRange }: Props) {
           <div className="pt-3 border-t border-slate-100 mt-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
             <div className="flex flex-wrap items-center gap-2">
               <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-                {SECTORES_VEHICULARES.map((sec) => {
+                {sectoresDinamicos.map((sec) => {
                   const activo = sectorSeleccionado === sec.codigo
                   const etiquetaPildora =
                     sec.codigo === 'todos'
@@ -694,12 +820,12 @@ export function EstacionamientoView({ dateRange }: Props) {
                   <span>Sectores Calibrados de Estacionamiento:</span>
                 </span>
                 <span className="text-[11px] text-slate-500">
-                  Capacidad Total: <strong className="text-uct-blue-primary">125 plazas</strong>
+                  Capacidad Total: <strong className="text-uct-blue-primary">{capTotalDinamica} plazas</strong>
                 </span>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {SECTORES_VEHICULARES.map((sec) => {
+                {sectoresDinamicos.map((sec) => {
                   const activo = sectorSeleccionado === sec.codigo
                   return (
                     <button
@@ -783,16 +909,18 @@ export function EstacionamientoView({ dateRange }: Props) {
         )}
       </div>
 
-      {/* Alerta Preventiva Institucional */}
-      {vehAlert && (
-        <div className="flex items-center gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-900">
+      {/* Alertas Preventivas Institucionales por Sector / Global */}
+      {vehAlerts.map((alertaItem, idxAl) => (
+        <div key={`${alertaItem.subespacio || 'veh-global'}-${idxAl}`} className="flex items-center gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-900">
           <AlertTriangle className="text-amber-600 shrink-0" size={20} />
           <div>
-            <p className="text-sm font-semibold text-amber-900">Alerta Preventiva de Saturación Vehicular (Prophet)</p>
-            <p className="text-xs text-amber-800">{vehAlert.mensaje}</p>
+            <p className="text-sm font-semibold text-amber-900">
+              Alerta Preventiva de Saturación Vehicular (Prophet){alertaItem.subespacio_label ? ` — ${alertaItem.subespacio_label}` : ''}
+            </p>
+            <p className="text-xs text-amber-800">{alertaItem.mensaje}</p>
           </div>
         </div>
-      )}
+      ))}
 
       {/* SECCIÓN 1: Aforo y Demanda Vehicular en Tiempo Real */}
       {seccionMontada('seccion_1') && (
@@ -811,12 +939,78 @@ export function EstacionamientoView({ dateRange }: Props) {
               minHeight={450}
               contextoGrafico="presencia_vehicular_intervalos"
               title={`Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad (${capacidadActual} plazas) — ${sectorActivoObj.nombre}`}
-              action={<LiveBadge lastUpdated={lastTs} />}
+              action={
+                <div className="flex flex-wrap items-center gap-2">
+                  {live.data && (
+                    <>
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-full border ${
+                          live.data.nivel_alerta === 'saturacion'
+                            ? 'bg-red-50 text-red-700 border-red-200'
+                            : live.data.nivel_alerta === 'preventivo'
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : 'bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span>Aforo actual:</span>
+                        <span className="font-bold">{fmt(live.data.vehiculos_presentes)} / {fmt(live.data.capacidad_maxima)}</span>
+                        <span className="text-[11px] opacity-80">({live.data.ocupacion_pct}%)</span>
+                      </span>
+                      {sectorSeleccionado === 'todos' && live.data.vehiculos_csf11 !== undefined && (
+                        <>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                              live.data.nivel_alerta_csf11 === 'saturacion'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : live.data.nivel_alerta_csf11 === 'preventivo'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-blue-50/70 text-uct-blue-primary border-blue-200/80'
+                            }`}
+                          >
+                            CSF11: <strong>{live.data.vehiculos_csf11}/{capCSF11}</strong> ({live.data.ocupacion_pct_csf11 ?? 0}%)
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                              live.data.nivel_alerta_csf21 === 'saturacion'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : live.data.nivel_alerta_csf21 === 'preventivo'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-teal-50/70 text-teal-800 border-teal-200/80'
+                            }`}
+                          >
+                            CSF21: <strong>{live.data.vehiculos_csf21}/{capCSF21}</strong> ({live.data.ocupacion_pct_csf21 ?? 0}%)
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                              live.data.nivel_alerta_chs01 === 'saturacion'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : live.data.nivel_alerta_chs01 === 'preventivo'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-purple-50/70 text-purple-800 border-purple-200/80'
+                            }`}
+                          >
+                            CHS01: <strong>{live.data.vehiculos_chs01}/{capCHS01}</strong> ({live.data.ocupacion_pct_chs01 ?? 0}%)
+                          </span>
+                        </>
+                      )}
+                    </>
+                  )}
+                  <LiveBadge lastUpdated={lastTs} />
+                </div>
+              }
               isFetching={live.isFetching || presenceCurve.isFetching}
             >
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
                 {presenceCurve.data && presenceCurve.data.length > 0 ? (
-                  <OccupancyAreaChart data={presenceCurve.data} capacidad={capacidadActual} unit="vehículos" />
+                  <OccupancyAreaChart
+                    data={presenceCurve.data}
+                    capacidad={capacidadActual}
+                    unit="vehículos"
+                    capCSF11={capCSF11}
+                    capCSF21={capCSF21}
+                    capCHS01={capCHS01}
+                    salaLabel={sectorSeleccionado !== 'todos' ? sectorActivoObj.nombre : undefined}
+                  />
                 ) : (
                   <EmptyState label="Sin datos de presencia vehicular para este período o filtros seleccionados" />
                 )}
@@ -826,20 +1020,43 @@ export function EstacionamientoView({ dateRange }: Props) {
             <ChartCard
               layout="full"
               minHeight={450}
-              title={`Pronóstico Continuo Prophet Vehicular — ${sectorActivoObj.nombre}`}
+              title={`Pronóstico Continuo Prophet Vehicular — 14 Días (7 Días Históricos Reales + 7 Días Proyectados) — ${sectorPronosticoObj.nombre}`}
               isFetching={forecast.isFetching}
               action={
-                forecast.data?.model_status.status === 'ok' ? (
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-slate-600 dark:text-slate-300 font-medium hidden sm:inline">
-                      Proyección: <strong className="text-uct-navy dark:text-sky-300 font-semibold">{forecast.data.anchor_timestamp ? new Date(forecast.data.anchor_timestamp).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : 'Hoy'} (+7d)</strong>
-                    </span>
-                    <span className="text-gray-300 dark:text-gray-600 hidden sm:inline">|</span>
-                    <span className="text-uct-success font-medium">Modelo activo: {forecast.data.model_status.model_date}</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center bg-gray-100 dark:bg-gray-800 p-0.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs">
+                    {sectoresPronosticoOrdenados.map((sec) => {
+                      const activo = sectorPronosticoVehicular === sec.codigo
+                      const etiqueta = sec.codigo === 'todos' ? `Todos (${sec.capacidad})` : `${sec.codigo} (${sec.capacidad})`
+                      return (
+                        <button
+                          key={sec.codigo}
+                          type="button"
+                          onClick={() => setSectorPronosticoVehicular(sec.codigo)}
+                          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all cursor-pointer ${
+                            activo
+                              ? 'bg-white dark:bg-gray-700 text-uct-navy dark:text-white shadow-xs font-semibold'
+                              : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                          }`}
+                        >
+                          {etiqueta}
+                        </button>
+                      )
+                    })}
                   </div>
-                ) : (
-                  <span className="text-xs text-uct-warning">Modelo en calibración</span>
-                )
+
+                  {forecast.data?.model_status.status === 'ok' ? (
+                    <div className="hidden sm:flex items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-600 dark:text-slate-300 font-medium">
+                        Proyección: <strong className="text-uct-navy dark:text-sky-300 font-semibold">{forecast.data.anchor_timestamp ? new Date(forecast.data.anchor_timestamp).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : 'Hoy'} (+7d)</strong>
+                      </span>
+                      <span className="text-gray-300 dark:text-gray-600">|</span>
+                      <span className="text-uct-success font-medium">Calibrado: {forecast.data.model_status.model_date}</span>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-uct-warning hidden sm:inline">Modelo en calibración</span>
+                  )}
+                </div>
               }
             >
               <Suspense fallback={<EsqueletoGraficoVehicular />}>
@@ -849,8 +1066,8 @@ export function EstacionamientoView({ dateRange }: Props) {
                     forecast={forecast.data.forecast}
                     historico7d={forecast.data.historico_7d}
                     pronostico7d={forecast.data.pronostico_7d}
-                    capacidad={capacidadActual}
-                    salaNombre={sectorActivoObj.nombre}
+                    capacidad={capacidadPronostico}
+                    salaNombre={sectorPronosticoObj.nombre}
                     recinto="vehicular"
                   />
                 ) : (

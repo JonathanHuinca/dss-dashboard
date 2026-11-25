@@ -26,6 +26,8 @@ router = APIRouter()
 DESC_FECHA_YYYY_MM_DD = "YYYY-MM-DD"
 DESC_PAUSAS_BANO = "Incluir pausas de baño (3-15 min) en conformes"
 DESC_DESDUPLICAR_RAFAGAS = "Desduplicar ráfagas mecánicas de sensor < 1 min"
+DESC_INCLUIR_FUNCIONARIOS = "Incluir registros de personal/funcionarios UCT"
+DESC_INCLUIR_SIN_IDENTIFICAR = "Incluir registros sin persona identificada"
 DESC_SALA = "sala_1 | sala_2 | todas"
 DESC_ALCANCE = "conformes | todos | anomalias"
 DESC_REGIMEN_HORARIO = "todos | dentro_horario | fuera_horario"
@@ -71,6 +73,8 @@ async def get_kpis(
     cohorte:             Optional[str]  = Query(None, description="Año de ingreso o cohorte"),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -93,6 +97,8 @@ async def get_kpis(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -101,11 +107,20 @@ async def get_kpis(
 async def get_occupancy_realtime(
     response: Response,
     espacio_id: int = Query(1),
+    sala: Optional[str] = Query(None, description=DESC_SALA),
+    incluir_funcionarios: bool = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     validar_acceso_espacio(espacio_id, current_user)
-    return await AttendanceService.get_occupancy_realtime(db, espacio_id)
+    return await AttendanceService.get_occupancy_realtime(
+        db,
+        espacio_id=espacio_id,
+        sala=sala,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
+    )
 
 
 @router.get("/hourly-flow", summary="Flujo horario de entradas y salidas")
@@ -128,6 +143,8 @@ async def get_hourly_flow(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -150,6 +167,8 @@ async def get_hourly_flow(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -173,6 +192,8 @@ async def get_realtime_presence_curve(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -195,6 +216,8 @@ async def get_realtime_presence_curve(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -218,6 +241,8 @@ async def get_heatmap(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -240,6 +265,8 @@ async def get_heatmap(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -303,6 +330,8 @@ async def get_weekly_evolution(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -325,6 +354,8 @@ async def get_weekly_evolution(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -348,6 +379,8 @@ async def get_monthly_volume(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -370,6 +403,8 @@ async def get_monthly_volume(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -393,6 +428,8 @@ async def get_academic_milestones_comparison(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -415,6 +452,8 @@ async def get_academic_milestones_comparison(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -434,8 +473,11 @@ async def get_doors_usage(
     sala:                Optional[str]  = Query(None, description=DESC_SALA),
     carrera:             Optional[str]  = Query(None),
     facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     espacio_id:          int            = Query(1),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
@@ -456,8 +498,11 @@ async def get_doors_usage(
         sala=sala,
         carrera=carrera,
         facultad=facultad,
+        cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -515,12 +560,17 @@ async def get_rooms_comparison(
     direccion:           Optional[str]  = Query("todos"),
     dias_semana:         Optional[str]  = Query(None),
     door:                Optional[str]  = Query(None),
+    perfil_visita:       Optional[str]  = Query("todos", description=DESC_PERFIL_VISITA),
     marcajes:            Optional[str]  = Query("todos"),
+    sala:                Optional[str]  = Query(None, description=DESC_SALA),
     carrera:             Optional[str]  = Query(None),
     facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     espacio_id:          int            = Query(1),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -535,11 +585,16 @@ async def get_rooms_comparison(
         direccion=direccion or "todos",
         dias_semana=dias_semana,
         door=door,
+        perfil_visita=perfil_visita or "todos",
         marcajes=marcajes or "todos",
+        sala=sala,
         carrera=carrera,
         facultad=facultad,
+        cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -554,12 +609,17 @@ async def get_daily_average_attendance(
     direccion:           Optional[str]  = Query("todos"),
     dias_semana:         Optional[str]  = Query(None),
     door:                Optional[str]  = Query(None),
+    perfil_visita:       Optional[str]  = Query("todos", description=DESC_PERFIL_VISITA),
     marcajes:            Optional[str]  = Query("todos"),
+    sala:                Optional[str]  = Query(None, description=DESC_SALA),
     carrera:             Optional[str]  = Query(None),
     facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     espacio_id:          int            = Query(1),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -574,11 +634,16 @@ async def get_daily_average_attendance(
         direccion=direccion or "todos",
         dias_semana=dias_semana,
         door=door,
+        perfil_visita=perfil_visita or "todos",
         marcajes=marcajes or "todos",
+        sala=sala,
         carrera=carrera,
         facultad=facultad,
+        cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -602,6 +667,8 @@ async def get_curricular_distribution(
     cohorte:             Optional[str]  = Query(None),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -624,6 +691,8 @@ async def get_curricular_distribution(
         cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -653,9 +722,12 @@ async def get_checkins_distribution(
     sala:                Optional[str]  = Query(None, description=DESC_SALA),
     carrera:             Optional[str]  = Query(None),
     facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     espacio_id:          int            = Query(1),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -675,8 +747,11 @@ async def get_checkins_distribution(
         sala=sala,
         carrera=carrera,
         facultad=facultad,
+        cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -696,9 +771,12 @@ async def get_visit_profiles_donut(
     sala:                Optional[str]  = Query(None, description=DESC_SALA),
     carrera:             Optional[str]  = Query(None),
     facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     espacio_id:          int            = Query(1),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -718,8 +796,11 @@ async def get_visit_profiles_donut(
         sala=sala,
         carrera=carrera,
         facultad=facultad,
+        cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -738,9 +819,15 @@ async def get_raw_attendance_events(
     dias_semana:         Optional[str]  = Query(None),
     perfil_visita:       Optional[str]  = Query("todos"),
     marcajes:            Optional[str]  = Query("todos"),
+    sala:                Optional[str]  = Query(None, description=DESC_SALA),
+    carrera:             Optional[str]  = Query(None),
+    facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     espacio_id:          int            = Query(1),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(get_current_user),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -759,10 +846,16 @@ async def get_raw_attendance_events(
         dias_semana=dias_semana,
         perfil_visita=perfil_visita or "todos",
         marcajes=marcajes or "todos",
+        sala=sala,
+        carrera=carrera,
+        facultad=facultad,
+        cohorte=cohorte,
         page=page,
         page_size=page_size,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 
@@ -781,9 +874,15 @@ async def export_raw_attendance_csv(
     dias_semana:         Optional[str]  = Query(None),
     perfil_visita:       Optional[str]  = Query("todos"),
     marcajes:            Optional[str]  = Query("todos"),
+    sala:                Optional[str]  = Query(None, description=DESC_SALA),
+    carrera:             Optional[str]  = Query(None),
+    facultad:            Optional[str]  = Query(None),
+    cohorte:             Optional[str]  = Query(None),
     espacio_id:          int            = Query(1),
     incluir_pausas_bano: bool           = Query(True, description=DESC_PAUSAS_BANO),
     desduplicar_rafagas: bool           = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(require_permission("can_export")),
     db:                  AsyncSession   = Depends(get_db),
 ):
@@ -802,8 +901,14 @@ async def export_raw_attendance_csv(
         dias_semana=dias_semana,
         perfil_visita=perfil_visita or "todos",
         marcajes=marcajes or "todos",
+        sala=sala,
+        carrera=carrera,
+        facultad=facultad,
+        cohorte=cohorte,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
     client_ip = request.client.host if request.client else "127.0.0.1"
@@ -837,6 +942,21 @@ async def get_analisis_24h(
     fecha_inicio: Optional[date] = Query(None),
     fecha_fin: Optional[date] = Query(None),
     bloque_horario: Optional[str] = Query("todos", description="todos | lunes_jueves | viernes"),
+    alcance: Optional[str] = Query("conformes", description=DESC_ALCANCE),
+    regimen_horario: Optional[str] = Query("todos", description=DESC_REGIMEN_HORARIO),
+    direccion: Optional[str] = Query("todos", description=DESC_DIRECCION),
+    dias_semana: Optional[str] = Query(None, description=DESC_DIAS_SEMANA),
+    door: Optional[str] = Query(None),
+    perfil_visita: Optional[str] = Query("todos", description=DESC_PERFIL_VISITA),
+    marcajes: Optional[str] = Query("todos", description=DESC_MARCAJES),
+    sala: Optional[str] = Query(None, description=DESC_SALA),
+    carrera: Optional[str] = Query(None, description="Nombre de carrera"),
+    facultad: Optional[str] = Query(None, description="Nombre de facultad"),
+    cohorte: Optional[str] = Query(None, description="Año de ingreso o cohorte"),
+    incluir_pausas_bano: bool = Query(True, description=DESC_PAUSAS_BANO),
+    desduplicar_rafagas: bool = Query(True, description=DESC_DESDUPLICAR_RAFAGAS),
+    incluir_funcionarios: bool = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
+    incluir_sin_identificar: bool = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     db: AsyncSession = Depends(get_db),
     current_user: Usuario = Depends(get_current_user),
 ):
@@ -844,6 +964,7 @@ async def get_analisis_24h(
     Retorna métricas comparativas diurnas vs nocturnas, delta 24h,
     segmentación curricular nocturna y fases de madrugada para Sala 2 Pecera.
     """
+    validar_acceso_espacio(espacio_id, current_user)
     return await AttendanceService.get_analisis_24h(
         session=db,
         espacio_id=espacio_id,
@@ -851,5 +972,20 @@ async def get_analisis_24h(
         fecha_inicio=fecha_inicio,
         fecha_fin=fecha_fin,
         bloque_horario=bloque_horario,
+        alcance=alcance or "conformes",
+        regimen_horario=regimen_horario or "todos",
+        direccion=direccion or "todos",
+        dias_semana=dias_semana,
+        door=door,
+        perfil_visita=perfil_visita or "todos",
+        marcajes=marcajes or "todos",
+        sala=sala,
+        carrera=carrera,
+        facultad=facultad,
+        cohorte=cohorte,
+        incluir_pausas_bano=incluir_pausas_bano,
+        desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 

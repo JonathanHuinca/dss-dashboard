@@ -232,12 +232,16 @@ function RoomComparisonPlotlyChartComponent({ data }: Props) {
           <div className="flex items-center gap-2">
             <span className="w-3.5 h-3.5 rounded-md bg-[#002B49] shadow-2xs border border-white shrink-0" />
             <span className="font-bold text-slate-900">Sala 1:</span>
-            <span className="text-slate-600">CSF02 — 2° Piso (Estudio y Biblioteca con Locker, 124 asientos)</span>
+            <span className="text-slate-600">
+              CSF02 — 2° Piso (Estudio y Biblioteca con Locker, {salasOrdenadas.find(s => s.sala.includes('Sala 1') || s.sala.includes('CSF02'))?.capacidad_asientos ?? 124} asientos)
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-3.5 h-3.5 rounded-md bg-[#C59B27] shadow-2xs border border-white shrink-0" />
             <span className="font-bold text-amber-900">Sala 2:</span>
-            <span className="text-slate-600">CSF04 — 1° Piso (Pecera de Estudio 24h, 226 asientos)</span>
+            <span className="text-slate-600">
+              CSF04 — 1° Piso (Pecera de Estudio 24h, {salasOrdenadas.find(s => s.sala.includes('Sala 2') || s.sala.includes('CSF04'))?.capacidad_asientos ?? 226} asientos)
+            </span>
           </div>
         </div>
       </div>

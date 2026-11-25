@@ -7,12 +7,28 @@ export interface ForecastPoint {
   yhat_upper: number
   actual?: number | null
   es_abierto?: number
+  yhat_sala1?: number
+  yhat_sala2?: number
+  actual_sala1?: number
+  actual_sala2?: number
+  yhat_csf11?: number
+  yhat_csf21?: number
+  yhat_chs01?: number
+  actual_csf11?: number
+  actual_csf21?: number
+  actual_chs01?: number
 }
 
 export interface ForecastResponse {
   recinto: string
   sala?: string
   capacidad_asientos?: number
+  capacidad_sala1?: number
+  capacidad_sala2?: number
+  capacidad_csf11?: number
+  capacidad_csf21?: number
+  capacidad_chs01?: number
+  reconciliacion?: string
   model_status: { status: string; model_type?: string; model_date?: string; message?: string }
   horizon_hours: number
   total_timeline_hours?: number
@@ -24,6 +40,8 @@ export interface ForecastResponse {
 
 export interface AlertItem {
   recinto: string
+  subespacio?: string
+  subespacio_label?: string
   nivel: 'normal' | 'preventivo' | 'critico'
   mensaje: string
   horas_afectadas: { ds: string; yhat: number }[]
@@ -101,8 +119,8 @@ export const fetchForecastAttendance = (sala: string = 'todas', signal?: AbortSi
 export const fetchForecastPresence = (sala: string = 'todas', signal?: AbortSignal) =>
   api.get<ForecastResponse>('/predictions/forecast-presence', { signal, params: { sala } }).then(r => r.data)
 
-export const fetchForecastParking = (signal?: AbortSignal) =>
-  api.get<ForecastResponse>('/predictions/forecast-parking', { signal }).then(r => r.data)
+export const fetchForecastParking = (sector: string = 'todos', signal?: AbortSignal) =>
+  api.get<ForecastResponse>('/predictions/forecast-parking', { signal, params: { sector } }).then(r => r.data)
 
 export const fetchAlerts = (signal?: AbortSignal) =>
   api.get<AlertsResponse>('/predictions/alerts', { signal }).then(r => r.data)

@@ -18,6 +18,7 @@ import {
 } from '../../utils/excelExport'
 
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
+import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
 
 export interface ChartExportItem {
   id: string
@@ -81,7 +82,7 @@ export const ExcelBatchExportModal: React.FC<Props> = ({
     setIsExporting(true)
     setStatusMsg(null)
 
-    const filename = `Reporte_Consolidado_${moduloNombre.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0, 10)}`
+    const filename = `Reporte_Consolidado_${moduloNombre.replace(/[^a-zA-Z0-9]/g, '_')}_${obtenerFechaHoyChileIso()}`
 
     try {
       const ok = await ejecutarDescarga({
@@ -240,7 +241,7 @@ export const ExcelBatchExportModal: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={async () => {
-                    const nombreArchivo = `Informe_Oficial_Salas_Estudio_Biblioteca_${new Date().toISOString().slice(0, 10)}.xlsx`
+                    const nombreArchivo = `Informe_Oficial_Salas_Estudio_Biblioteca_${obtenerFechaHoyChileIso()}.xlsx`
                     await ejecutarDescarga({
                       titulo: 'Plantilla Informe Oficial (Salas de Estudio)',
                       subtitulo: 'Biblioteca CSF • Tablas maestras y gráficos nativos vinculados',

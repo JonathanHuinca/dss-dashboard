@@ -69,6 +69,11 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
                       : filters.sala}
                   </span>
                 )}
+                {isEstacionamiento && filters?.sector && filters.sector !== 'todos' && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                    Sector {filters.sector}
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500">
                 {isEstacionamiento
@@ -191,7 +196,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                {isEstacionamiento ? 'Mayor flujo vehicular matutino' : 'Mayor afluencia histórica'}
+                {isEstacionamiento ? 'Mayor ocupación simultánea' : 'Mayor ocupación simultánea'}
               </p>
             </div>
 
@@ -215,7 +220,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                {isEstacionamiento ? 'Máximo aforo vehicular en 1h' : 'Máximo horario registrado'}
+                {isEstacionamiento ? 'Pico vehicular concurrente (sesiones)' : 'Máximo horario registrado'}
               </p>
             </div>
           </div>

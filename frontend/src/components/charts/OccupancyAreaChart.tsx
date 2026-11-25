@@ -1,11 +1,63 @@
-import React, {  useState, useMemo, useEffect , memo } from 'react'
+import React, { useState, useMemo, useEffect, useRef, memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
 import type { Data, Layout  } from 'plotly.js-dist-min'
-import { useQuery } from '@tanstack/react-query'
-import { obtenerResumenAnualCalendario, DiaCalendarioResumen, fetchHorarios, HorarioOperacion } from '../../api/client'
-import { Calendar } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  obtenerResumenAnualCalendario,
+  DiaCalendarioResumen,
+  fetchHorarios,
+  HorarioOperacion,
+  IncidenciaOperativaResumen,
+  eliminarContingencia,
+} from '../../api/client'
+import { Calendar, Info, ClipboardEdit, Trash2, ChevronDown, X } from 'lucide-react'
+import { useAuth } from '../../context/AuthContext'
+import { ModalRegistrarMotivoOperativo } from '../ui/ModalRegistrarMotivoOperativo'
+import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
+
+const TIPOS_INCIDENCIA_OPERATIVA = new Set([
+  'falla_sensor',
+  'apertura_manual',
+  'mantencion_cierre',
+  'suspension_sala',
+  'sin_demanda',
+  'otro',
+])
+
+const ETIQUETAS_INCIDENCIA: Record<string, { etiqueta: string; tono: string; texto: string }> = {
+  falla_sensor: {
+    etiqueta: 'Falla de sensor / torniquete',
+    tono: 'bg-indigo-50/90 border-indigo-200 text-indigo-900',
+    texto: 'text-indigo-600',
+  },
+  apertura_manual: {
+    etiqueta: 'Apertura manual sin marcaje',
+    tono: 'bg-sky-50/90 border-sky-200 text-sky-900',
+    texto: 'text-sky-600',
+  },
+  mantencion_cierre: {
+    etiqueta: 'Cierre / mantención',
+    tono: 'bg-orange-50/90 border-orange-200 text-orange-900',
+    texto: 'text-orange-600',
+  },
+  suspension_sala: {
+    etiqueta: 'Suspensión de sala / sector',
+    tono: 'bg-orange-50/90 border-orange-200 text-orange-900',
+    texto: 'text-orange-600',
+  },
+  sin_demanda: {
+    etiqueta: 'Sin afluencia confirmada',
+    tono: 'bg-emerald-50/90 border-emerald-200 text-emerald-900',
+    texto: 'text-emerald-600',
+  },
+  otro: {
+    etiqueta: 'Observación operativa',
+    tono: 'bg-slate-100/90 border-slate-300 text-slate-800',
+    texto: 'text-slate-600',
+  },
+}
 
 interface Props {
   data: {
@@ -28,6 +80,12 @@ interface Props {
     salidas_csf21?: number
     entradas_chs01?: number
     salidas_chs01?: number
+    capacidad_csf11?: number
+    capacidad_csf21?: number
+    capacidad_chs01?: number
+    sin_registros?: boolean
+    sin_registros_sala1?: boolean
+    sin_registros_sala2?: boolean
   }[]
   capacidad: number
   title?: string
@@ -35,7 +93,13 @@ interface Props {
   salaLabel?: string
   capSala1?: number
   capSala2?: number
+  capCSF11?: number
+  capCSF21?: number
+  capCHS01?: number
   comparativaSalas?: { hora: string; entradas_sala1: number; entradas_sala2: number }[]
+  ultimaLectura?: string | null
+  ultimaLecturaSala1?: string | null
+  ultimaLecturaSala2?: string | null
 }
 
 function OccupancyAreaChartComponent({
@@ -43,23 +107,30 @@ function OccupancyAreaChartComponent({
   capacidad,
   unit = 'ocupantes',
   salaLabel,
-  capSala1 = 124,
-  capSala2 = 226,
+  capSala1 = 150,
+  capSala2 = 126,
+  capCSF11,
+  capCSF21,
+  capCHS01,
+  ultimaLectura,
+  ultimaLecturaSala1,
+  ultimaLecturaSala2,
 }: Props) {
   const esBiblioteca = unit !== 'vehículos'
 
-  // Controles independientes para Sala 1 y Sala 2
+  // Controles independientes para Sala 1, Sala 2 y Total Combinado
   const [mostrarSala1, setMostrarSala1] = useState(true)
   const [mostrarSala2, setMostrarSala2] = useState(true)
+  const [mostrarTotalCombinado, setMostrarTotalCombinado] = useState(false)
 
   // Controles independientes para Sectores de Estacionamiento (CSF11, CSF21, CHS01)
   const [mostrarCSF11, setMostrarCSF11] = useState(true)
   const [mostrarCSF21, setMostrarCSF21] = useState(true)
   const [mostrarCHS01, setMostrarCHS01] = useState(true)
 
-  const capSector1 = 40
-  const capSector2 = 50
-  const capSector3 = 35
+  const capSector1 = capCSF11 ?? data?.[0]?.capacidad_csf11 ?? 40
+  const capSector2 = capCSF21 ?? data?.[0]?.capacidad_csf21 ?? 50
+  const capSector3 = capCHS01 ?? data?.[0]?.capacidad_chs01 ?? 35
 
   // Estados para conmutar las categorías contextuales del calendario institucional y operacional
   const [mostrarFeriados, setMostrarFeriados] = useState(true)
@@ -72,6 +143,34 @@ function OccupancyAreaChartComponent({
   const [mostrar24h, setMostrar24h] = useState(true)
 
   const espacioId = esBiblioteca ? 1 : 2
+  const { isAuthenticated, canAccessAdmin } = useAuth()
+  const puedeEditarIncidente = Boolean(isAuthenticated && canAccessAdmin)
+  const queryClient = useQueryClient()
+  const [modalMotivoAbierto, setModalMotivoAbierto] = useState(false)
+  const [fechaModalMotivo, setFechaModalMotivo] = useState<string>('')
+  const [subespacioModalMotivo, setSubespacioModalMotivo] = useState<string>('')
+  const [popoverDiasAbierto, setPopoverDiasAbierto] = useState(false)
+  const [filtroEstadoDias, setFiltroEstadoDias] = useState<'todos' | 'sin_motivo' | 'con_motivo' | 'calendario'>('todos')
+  const [filtroSalaDias, setFiltroSalaDias] = useState<'todas' | 'sala_1' | 'sala_2'>('todas')
+  const popoverDiasRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!popoverDiasAbierto) return
+    const handleOutside = (ev: MouseEvent) => {
+      if (popoverDiasRef.current && !popoverDiasRef.current.contains(ev.target as Node)) {
+        setPopoverDiasAbierto(false)
+      }
+    }
+    const handleKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setPopoverDiasAbierto(false)
+    }
+    document.addEventListener('mousedown', handleOutside)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleOutside)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [popoverDiasAbierto])
 
   const { data: horariosOperacion = [] } = useQuery<HorarioOperacion[]>({
     queryKey: ['horarios-capas-ocupacion', espacioId],
@@ -133,6 +232,100 @@ function OccupancyAreaChartComponent({
     })
     return mapa
   }, [diasCalendario])
+
+  const subespacioActivo = useMemo(() => {
+    const lbl = (salaLabel || '').toLowerCase()
+    if (esBiblioteca) {
+      if (lbl.includes('sala 1') || lbl.includes('csf02')) return 'sala_1'
+      if (lbl.includes('sala 2') || lbl.includes('csf04') || lbl.includes('pecera')) return 'sala_2'
+      return 'todos'
+    }
+    if (lbl.includes('csf11')) return 'CSF11'
+    if (lbl.includes('csf21')) return 'CSF21'
+    if (lbl.includes('chs01')) return 'CHS01'
+    return 'todos'
+  }, [esBiblioteca, salaLabel])
+
+  const obtenerIncidenciasDia = (fechaIso: string, subespacioObjetivo?: string): IncidenciaOperativaResumen[] => {
+    const incs = mapaFechas.get(fechaIso)?.incidencias_operativas || []
+    const objetivo = (subespacioObjetivo ?? subespacioActivo).toLowerCase()
+    return incs.filter((inc) => {
+      if (!TIPOS_INCIDENCIA_OPERATIVA.has((inc.tipo || '').toLowerCase())) return false
+      if (inc.espacio_id != null && inc.espacio_id !== espacioId) return false
+      const sub = (inc.subespacio || 'todos').trim().toLowerCase()
+      if (sub === 'todos' || objetivo === 'todos') return true
+      return sub === objetivo
+    })
+  }
+
+  const obtenerContextoAcademicoDia = (
+    fechaIso: string,
+  ): { etiqueta: string; tono: string; detalle?: string } | null => {
+    const cal = mapaFechas.get(fechaIso)
+    if (!cal) return null
+    if (cal.is_strike_federado) {
+      return {
+        etiqueta: 'Paro Federado FEUCT',
+        tono: 'bg-rose-50 border-rose-200 text-rose-800',
+        detalle: cal.descripcion || undefined,
+      }
+    }
+    if (cal.is_strike_carrera) {
+      return {
+        etiqueta: 'Paro por Carrera',
+        tono: 'bg-rose-50 border-rose-200 text-rose-800',
+        detalle: cal.descripcion || undefined,
+      }
+    }
+    if (cal.is_break) {
+      const esVac = (cal.descripcion || '').toLowerCase().includes('vacacion')
+      return {
+        etiqueta: esVac ? 'Vacaciones institucionales' : 'Semana de receso',
+        tono: esVac
+          ? 'bg-teal-50 border-teal-200 text-teal-800'
+          : 'bg-sky-50 border-sky-200 text-sky-800',
+        detalle: cal.descripcion || undefined,
+      }
+    }
+    if (cal.is_holiday) {
+      return {
+        etiqueta: 'Feriado oficial',
+        tono: 'bg-red-50 border-red-200 text-red-800',
+        detalle: cal.descripcion || undefined,
+      }
+    }
+    if (cal.suspension_actividades) {
+      return {
+        etiqueta: 'Suspensión institucional',
+        tono: 'bg-orange-50 border-orange-200 text-orange-800',
+        detalle: cal.descripcion || undefined,
+      }
+    }
+    return null
+  }
+
+  const eliminarIncidenciaMutation = useMutation({
+    mutationFn: (id: number) => eliminarContingencia(id),
+    onSuccess: () => {
+      const claves = [
+        'calendario-resumen-anual',
+        'contingencias',
+        'calendar-events',
+        'calendar-status',
+        'attendance-presence-curve',
+        'attendance-kpis',
+        'occupancy-realtime',
+        'hourly-flow',
+        'vehicle-presence-curve',
+        'vehicle-hourly-flow',
+        'vehicle-kpis',
+        'forecast-attendance',
+        'forecast-parking',
+        'forecast-14days',
+      ]
+      claves.forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }))
+    },
+  })
 
   const sortedData = useMemo(() => {
     const base = [...(data || [])].sort((a, b) => {
@@ -270,13 +463,284 @@ function OccupancyAreaChartComponent({
   const minFechaStr = minDateIso ? minDateIso.slice(0, 10) : ''
   const maxFechaStr = maxDateIso ? maxDateIso.slice(0, 10) : ''
 
+  const estadoSinRegistros = useMemo(() => {
+    const puntosSinReg = sortedData.filter(d => Boolean(d.sin_registros))
+    const todoSinReg = sortedData.length > 0 && puntosSinReg.length === sortedData.length
+    const ultimoPunto = sortedData.length > 0 ? sortedData[sortedData.length - 1] : null
+    const tramoFinalSinReg = Boolean(ultimoPunto?.sin_registros)
+    const fechaFinalIso = ultimoPunto
+      ? String(ultimoPunto.bucket || (ultimoPunto as any).fecha || '').slice(0, 10)
+      : ''
+
+    const formatearFecha = (isoRaw?: string | null, incluirHora = false) => {
+      if (!isoRaw) return ''
+      // Evita desfase UTC en fechas YYYY-MM-DD sin componente horario
+      const normalizado = /^\d{4}-\d{2}-\d{2}$/.test(isoRaw) ? `${isoRaw}T12:00:00` : isoRaw
+      const dt = new Date(normalizado)
+      if (Number.isNaN(dt.getTime())) return ''
+      return format(dt, incluirHora ? 'dd/MM/yyyy HH:mm' : 'dd/MM/yyyy', { locale: es })
+    }
+
+    const formatearDiaLista = (fechaIso: string) => {
+      const dt = new Date(`${fechaIso}T12:00:00`)
+      if (Number.isNaN(dt.getTime())) return fechaIso
+      const txt = format(dt, 'EEE dd/MM/yyyy', { locale: es })
+      return txt.charAt(0).toUpperCase() + txt.slice(1)
+    }
+
+    let incidenciasDiaFinal: IncidenciaOperativaResumen[] = fechaFinalIso ? obtenerIncidenciasDia(fechaFinalIso) : []
+    if (todoSinReg && incidenciasDiaFinal.length === 0 && puntosSinReg.length > 0) {
+      const vistas = new Set<number>()
+      const fechasVacias = Array.from(
+        new Set(puntosSinReg.map(p => String(p.bucket || (p as any).fecha || '').slice(0, 10)).filter(Boolean))
+      )
+      incidenciasDiaFinal = fechasVacias
+        .flatMap(f => obtenerIncidenciasDia(f))
+        .filter(inc => {
+          if (vistas.has(inc.id)) return false
+          vistas.add(inc.id)
+          return true
+        })
+    }
+
+    interface AlertaSinMotivo {
+      key: string
+      subespacio: string
+      etiqueta: string
+      fechaIso: string
+      fechaFmt: string
+      todoPeriodo: boolean
+      ultimaLecturaFmt: string
+      contextoAcademico?: string
+    }
+    const alertasSinMotivo: AlertaSinMotivo[] = []
+    if (esBiblioteca && fechaFinalIso) {
+      const ctxFinal = obtenerContextoAcademicoDia(fechaFinalIso)?.etiqueta
+      const puntosDiaFinal = sortedData.filter(
+        p => String(p.bucket || (p as any).fecha || '').slice(0, 10) === fechaFinalIso
+      )
+      const s1VaciaFinal = puntosDiaFinal.some(p => Boolean(p.sin_registros_sala1))
+      const s2VaciaFinal = puntosDiaFinal.some(p => Boolean(p.sin_registros_sala2))
+
+      if (todoSinReg || tramoFinalSinReg) {
+        const tieneMotivo = todoSinReg
+          ? incidenciasDiaFinal.length > 0
+          : obtenerIncidenciasDia(fechaFinalIso, subespacioActivo).length > 0
+        if (!tieneMotivo) {
+          alertasSinMotivo.push({
+            key: `global-${subespacioActivo}`,
+            subespacio: subespacioActivo,
+            etiqueta: salaLabel || 'Biblioteca',
+            fechaIso: fechaFinalIso,
+            fechaFmt: formatearFecha(ultimoPunto?.bucket || (ultimoPunto as any)?.fecha, false),
+            todoPeriodo: todoSinReg,
+            ultimaLecturaFmt: formatearFecha(ultimaLectura, true),
+            contextoAcademico: ctxFinal,
+          })
+        } else if (!salaLabel && !todoSinReg) {
+          // Si solo una sala registró motivo en un cierre total de vista global, advertir por la otra sala sin motivo
+          if (s1VaciaFinal && obtenerIncidenciasDia(fechaFinalIso, 'sala_1').length === 0) {
+            alertasSinMotivo.push({
+              key: 'sala_1',
+              subespacio: 'sala_1',
+              etiqueta: 'Sala 1 (CSF02 2° Piso)',
+              fechaIso: fechaFinalIso,
+              fechaFmt: formatearFecha(fechaFinalIso, false),
+              todoPeriodo: false,
+              ultimaLecturaFmt: formatearFecha(ultimaLecturaSala1, true),
+              contextoAcademico: ctxFinal,
+            })
+          }
+          if (s2VaciaFinal && obtenerIncidenciasDia(fechaFinalIso, 'sala_2').length === 0) {
+            alertasSinMotivo.push({
+              key: 'sala_2',
+              subespacio: 'sala_2',
+              etiqueta: 'Sala 2 (CSF04 Pecera 1° Piso)',
+              fechaIso: fechaFinalIso,
+              fechaFmt: formatearFecha(fechaFinalIso, false),
+              todoPeriodo: false,
+              ultimaLecturaFmt: formatearFecha(ultimaLecturaSala2, true),
+              contextoAcademico: ctxFinal,
+            })
+          }
+        }
+      } else if (!salaLabel) {
+        if (s1VaciaFinal && obtenerIncidenciasDia(fechaFinalIso, 'sala_1').length === 0) {
+          alertasSinMotivo.push({
+            key: 'sala_1',
+            subespacio: 'sala_1',
+            etiqueta: 'Sala 1 (CSF02 2° Piso)',
+            fechaIso: fechaFinalIso,
+            fechaFmt: formatearFecha(fechaFinalIso, false),
+            todoPeriodo: false,
+            ultimaLecturaFmt: formatearFecha(ultimaLecturaSala1, true),
+            contextoAcademico: ctxFinal,
+          })
+        }
+        if (s2VaciaFinal && obtenerIncidenciasDia(fechaFinalIso, 'sala_2').length === 0) {
+          alertasSinMotivo.push({
+            key: 'sala_2',
+            subespacio: 'sala_2',
+            etiqueta: 'Sala 2 (CSF04 Pecera 1° Piso)',
+            fechaIso: fechaFinalIso,
+            fechaFmt: formatearFecha(fechaFinalIso, false),
+            todoPeriodo: false,
+            ultimaLecturaFmt: formatearFecha(ultimaLecturaSala2, true),
+            contextoAcademico: ctxFinal,
+          })
+        }
+      }
+    }
+
+    interface DiaSinRegistroResumen {
+      key: string
+      fechaIso: string
+      fechaFmt: string
+      diaCorto: string
+      subespacio: string
+      etiquetaSala: string
+      incidencias: IncidenciaOperativaResumen[]
+      contextoAcademico: { etiqueta: string; tono: string; detalle?: string } | null
+    }
+    const diasResumen: DiaSinRegistroResumen[] = []
+    if (esBiblioteca) {
+      const porFecha = new Map<string, { sinGlobal: boolean; sinS1: boolean; sinS2: boolean }>()
+      sortedData.forEach(p => {
+        const raw = p.bucket || (p as any).fecha || ''
+        const f = raw ? String(raw).slice(0, 10) : ''
+        if (!f) return
+        let entry = porFecha.get(f)
+        if (!entry) {
+          entry = { sinGlobal: false, sinS1: false, sinS2: false }
+          porFecha.set(f, entry)
+        }
+        if (p.sin_registros) entry.sinGlobal = true
+        if (p.sin_registros_sala1) entry.sinS1 = true
+        if (p.sin_registros_sala2) entry.sinS2 = true
+      })
+
+      const incRepresentadas = new Set<string>()
+      const registrarItem = (f: string, sub: string, etiquetaSala: string, incs: IncidenciaOperativaResumen[]) => {
+        incs.forEach(i => incRepresentadas.add(`${f}:${i.id}`))
+        diasResumen.push({
+          key: `${f}-${sub}`,
+          fechaIso: f,
+          fechaFmt: formatearFecha(f, false),
+          diaCorto: formatearDiaLista(f),
+          subespacio: sub,
+          etiquetaSala,
+          incidencias: incs,
+          contextoAcademico: obtenerContextoAcademicoDia(f),
+        })
+      }
+
+      porFecha.forEach((flags, f) => {
+        if (subespacioActivo === 'sala_1' || subespacioActivo === 'sala_2') {
+          if (flags.sinGlobal) {
+            const etiq = subespacioActivo === 'sala_1' ? 'Sala 1 (CSF02)' : 'Sala 2 (CSF04 Pecera)'
+            registrarItem(f, subespacioActivo, etiq, obtenerIncidenciasDia(f, subespacioActivo))
+          }
+        } else {
+          if (flags.sinGlobal) {
+            registrarItem(f, 'todos', 'Ambas salas', obtenerIncidenciasDia(f, 'todos'))
+          } else {
+            if (flags.sinS1) {
+              registrarItem(f, 'sala_1', 'Sala 1 (CSF02)', obtenerIncidenciasDia(f, 'sala_1'))
+            }
+            if (flags.sinS2) {
+              registrarItem(f, 'sala_2', 'Sala 2 (CSF04 Pecera)', obtenerIncidenciasDia(f, 'sala_2'))
+            }
+          }
+        }
+      })
+
+      // Complementar con días del rango con incidencia operativa aunque no tengan puntos sin_registros (>7d)
+      if (minFechaStr && maxFechaStr) {
+        diasCalendario.forEach((d: DiaCalendarioResumen) => {
+          if (d.fecha < minFechaStr || d.fecha > maxFechaStr) return
+          const incsDia = obtenerIncidenciasDia(d.fecha).filter(
+            inc => !incRepresentadas.has(`${d.fecha}:${inc.id}`)
+          )
+          if (incsDia.length === 0) return
+          const grupos = new Map<string, IncidenciaOperativaResumen[]>()
+          incsDia.forEach(inc => {
+            const subRaw = (inc.subespacio || 'todos').trim().toLowerCase()
+            const subKey = subespacioActivo !== 'todos'
+              ? subespacioActivo
+              : (subRaw === 'sala_1' || subRaw === 'sala_2' ? subRaw : 'todos')
+            const arr = grupos.get(subKey) || []
+            arr.push(inc)
+            grupos.set(subKey, arr)
+          })
+          grupos.forEach((lista, subKey) => {
+            const existente = diasResumen.find(item => item.fechaIso === d.fecha && item.subespacio === subKey)
+            if (existente) {
+              lista.forEach(inc => {
+                if (!existente.incidencias.some(x => x.id === inc.id)) {
+                  existente.incidencias.push(inc)
+                }
+              })
+              return
+            }
+            const etiq = subKey === 'sala_1'
+              ? 'Sala 1 (CSF02)'
+              : subKey === 'sala_2'
+                ? 'Sala 2 (CSF04 Pecera)'
+                : 'Biblioteca (Global)'
+            registrarItem(d.fecha, subKey, etiq, lista)
+          })
+        })
+      }
+
+      diasResumen.sort((a, b) => (a.fechaIso < b.fechaIso ? 1 : a.fechaIso > b.fechaIso ? -1 : a.subespacio.localeCompare(b.subespacio)))
+    }
+
+    const conMotivoCount = diasResumen.filter(d => d.incidencias.length > 0).length
+    const contextoCalendarioCount = diasResumen.filter(d => d.incidencias.length === 0 && Boolean(d.contextoAcademico)).length
+    const sinMotivoCount = diasResumen.length - conMotivoCount - contextoCalendarioCount
+
+    return {
+      todoSinReg,
+      tramoFinalSinReg,
+      fechaFinalIso,
+      fechaFinalFmt: formatearFecha(ultimoPunto?.bucket || (ultimoPunto as any)?.fecha, false),
+      ultimaLecturaFmt: formatearFecha(ultimaLectura, true),
+      incidenciasDiaFinal,
+      alertasSinMotivo,
+      diasResumen,
+      sinMotivoCount,
+      conMotivoCount,
+      contextoCalendarioCount,
+    }
+  }, [
+    sortedData,
+    ultimaLectura,
+    ultimaLecturaSala1,
+    ultimaLecturaSala2,
+    mapaFechas,
+    diasCalendario,
+    minFechaStr,
+    maxFechaStr,
+    espacioId,
+    subespacioActivo,
+    salaLabel,
+    esBiblioteca,
+  ])
+
+  const abrirModalMotivo = (fechaIso?: string, subespacioOverride?: string) => {
+    setFechaModalMotivo(fechaIso || estadoSinRegistros.fechaFinalIso || obtenerFechaHoyChileIso())
+    setSubespacioModalMotivo(subespacioOverride ?? '')
+    setPopoverDiasAbierto(false)
+    setModalMotivoAbierto(true)
+  }
+
   // Disparar resize reactivo al montar o cuando cambian los datos o filtros
   useEffect(() => {
     const timer = setTimeout(() => {
       window.dispatchEvent(new Event('resize'))
     }, 120)
     return () => clearTimeout(timer)
-  }, [sortedData.length, mostrarSala1, mostrarSala2, capacidad, salaLabel])
+  }, [sortedData.length, mostrarSala1, mostrarSala2, mostrarTotalCombinado, capacidad, salaLabel])
 
   const xVals: string[] = []
   const yVals: number[] = []
@@ -355,10 +819,36 @@ function OccupancyAreaChartComponent({
       if (cal.is_strike_carrera) contextParts.push('<b>Paro por Carrera</b>')
       if (cal.descripcion) contextParts.push(`Detalle: ${cal.descripcion}`)
     }
+    const incidenciasDia = obtenerIncidenciasDia(fechaIso)
+    if (incidenciasDia.length > 0) {
+      incidenciasDia.forEach((inc) => {
+        const meta = ETIQUETAS_INCIDENCIA[inc.tipo] || ETIQUETAS_INCIDENCIA.otro
+        const rangoH = inc.hora_inicio && inc.hora_fin ? ` (${inc.hora_inicio}–${inc.hora_fin})` : ''
+        contextParts.push(`<b>${meta.etiqueta}${rangoH}:</b> ${inc.titulo}`)
+        if (inc.descripcion && (!cal?.descripcion || !cal.descripcion.includes(inc.descripcion))) {
+          contextParts.push(`Observación: ${inc.descripcion}`)
+        }
+      })
+    }
     if (mostrar24h && es24hFecha(fechaIso)) {
       contextParts.push('<b>Campaña 24 Horas Activa</b>')
     }
-    const contextStr = contextParts.length > 0 ? `<br>${contextParts.join('<br>')}` : ''
+    const contextPartsComb = [...contextParts]
+    if (d.sin_registros && incidenciasDia.length === 0) {
+      contextPartsComb.push('<i>Sin marcajes registrados en esta franja operativa</i>')
+    }
+    const contextStr = contextPartsComb.length > 0 ? `<br>${contextPartsComb.join('<br>')}` : ''
+
+    let contextStrS1 = contextStr
+    let contextStrS2 = contextStr
+    if (esSuperponible) {
+      if (d.sin_registros_sala1 && obtenerIncidenciasDia(fechaIso, 'sala_1').length === 0) {
+        contextStrS1 = `${contextStr}<br><i>Sin marcajes registrados en Sala 1 en esta franja operativa</i>`
+      }
+      if (d.sin_registros_sala2 && obtenerIncidenciasDia(fechaIso, 'sala_2').length === 0) {
+        contextStrS2 = `${contextStr}<br><i>Sin marcajes registrados en Sala 2 en esta franja operativa</i>`
+      }
+    }
 
     // Cabecera exacta: Miércoles 13 de mayo 2026, 10:00 hrs
     let fullDateHeader = ''
@@ -374,12 +864,12 @@ function OccupancyAreaChartComponent({
     const pctCHS01 = capSector3 > 0 ? Math.round((valCHS01 / capSector3) * 100) : 0
     const pctComb = capacidad > 0 ? Math.round((aforo / capacidad) * 100) : 0
 
-    customDataListSala1.push([fullDateHeader, pctS1, contextStr])
-    customDataListSala2.push([fullDateHeader, pctS2, contextStr])
+    customDataListSala1.push([fullDateHeader, pctS1, contextStrS1])
+    customDataListSala2.push([fullDateHeader, pctS2, contextStrS2])
     customDataListCSF11.push([fullDateHeader, pctCSF11, contextStr, d.entradas_csf11 ?? 0, d.salidas_csf11 ?? 0])
     customDataListCSF21.push([fullDateHeader, pctCSF21, contextStr, d.entradas_csf21 ?? 0, d.salidas_csf21 ?? 0])
     customDataListCHS01.push([fullDateHeader, pctCHS01, contextStr, d.entradas_chs01 ?? 0, d.salidas_chs01 ?? 0])
-    customDataListCombinado.push([fullDateHeader, pctComb, contextStr, inCount, d.salidas ?? 0])
+    customDataListCombinado.push([fullDateHeader, pctComb, contextStr, inCount, d.salidas ?? 0, valS1, valS2])
   })
 
   // Franjas verticales continuas calculadas desde el calendario institucional vinculadas a las categorías
@@ -609,10 +1099,29 @@ function OccupancyAreaChartComponent({
   const alerta70 = Math.round(capacidad * 0.70)
   const alerta85 = Math.round(capacidad * 0.85)
 
-  // Construir datos del gráfico según los checkboxes de Sala 1 y Sala 2
+  // Construir datos del gráfico según los checkboxes de Sala 1, Sala 2 y Total Combinado
   const chartData: Data[] = useMemo(() => {
-    if (esSuperponible && (mostrarSala1 || mostrarSala2)) {
+    if (esSuperponible && (mostrarSala1 || mostrarSala2 || mostrarTotalCombinado)) {
       const traces: Data[] = []
+
+      if (mostrarTotalCombinado) {
+        traces.push({
+          x: xVals,
+          y: yVals,
+          customdata: customDataListCombinado,
+          type: 'scatter',
+          mode: 'lines',
+          name: `Total Combinado (${capacidad} as.)`,
+          fill: 'tozeroy',
+          fillcolor: 'rgba(5, 150, 105, 0.08)',
+          line: { color: '#059669', width: 2.5, shape: 'spline' },
+          hovertemplate:
+            `<b>%{customdata[0]}</b><br>` +
+            `<b>Total Combinado:</b> %{y} personas (Sala 1: %{customdata[5]} | Sala 2: %{customdata[6]})<br>` +
+            `Ocupación agregada: <b>%{customdata[1]}%</b> (Capacidad: ${capacidad} asientos)` +
+            `%{customdata[2]}<extra></extra>`,
+        })
+      }
 
       if (mostrarSala1) {
         traces.push({
@@ -747,15 +1256,26 @@ function OccupancyAreaChartComponent({
     ]
   }, [
     esSuperponible,
+    esSuperponibleVehicular,
     mostrarSala1,
     mostrarSala2,
+    mostrarTotalCombinado,
+    mostrarCSF11,
+    mostrarCSF21,
+    mostrarCHS01,
     salaLabel,
     xVals,
     yValsSala1,
     yValsSala2,
+    yValsCSF11,
+    yValsCSF21,
+    yValsCHS01,
     yVals,
     customDataListSala1,
     customDataListSala2,
+    customDataListCSF11,
+    customDataListCSF21,
+    customDataListCHS01,
     customDataListCombinado,
     capSala1,
     capSala2,
@@ -765,8 +1285,20 @@ function OccupancyAreaChartComponent({
 
   // Formar líneas de umbrales según salas activas
   const thresholdShapes = useMemo(() => {
-    if (esSuperponible && (mostrarSala1 || mostrarSala2)) {
+    if (esSuperponible && (mostrarSala1 || mostrarSala2 || mostrarTotalCombinado)) {
       const lines: any[] = []
+
+      if (mostrarTotalCombinado) {
+        lines.push({
+          type: 'line' as const,
+          x0: 0,
+          x1: 1,
+          xref: 'paper' as const,
+          y0: capacidad,
+          y1: capacidad,
+          line: { color: '#059669', width: 1.8, dash: 'dash' },
+        })
+      }
 
       if (mostrarSala2) {
         lines.push({
@@ -866,11 +1398,23 @@ function OccupancyAreaChartComponent({
         line: { color: '#16A34A', width: 1.2, dash: 'dot' },
       },
     ]
-  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capacidad, alerta70, alerta85])
+  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarTotalCombinado, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capSector1, capSector2, capSector3, capacidad, alerta70, alerta85])
 
   const annotations = useMemo(() => {
-    if (esSuperponible && (mostrarSala1 || mostrarSala2)) {
+    if (esSuperponible && (mostrarSala1 || mostrarSala2 || mostrarTotalCombinado)) {
       const ann: any[] = []
+
+      if (mostrarTotalCombinado) {
+        ann.push({
+          xref: 'paper' as const,
+          x: 1.01,
+          y: capacidad,
+          text: `Máx Total (${capacidad})`,
+          showarrow: false,
+          font: { size: 9, color: '#059669' },
+          xanchor: 'left' as const,
+        })
+      }
 
       if (mostrarSala2) {
         ann.push({
@@ -970,12 +1514,16 @@ function OccupancyAreaChartComponent({
         xanchor: 'left' as const,
       },
     ]
-  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capacidad, alerta70, alerta85])
+  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarTotalCombinado, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capSector1, capSector2, capSector3, capacidad, alerta70, alerta85])
 
   const maxY = useMemo(() => {
-    if (esSuperponible && (mostrarSala1 || mostrarSala2)) {
+    if (esSuperponible && (mostrarSala1 || mostrarSala2 || mostrarTotalCombinado)) {
       let maxVal = 0
       let maxCap = 0
+      if (mostrarTotalCombinado) {
+        maxVal = Math.max(maxVal, ...(yVals.length > 0 ? yVals : [0]))
+        maxCap = Math.max(maxCap, capacidad)
+      }
       if (mostrarSala1) {
         maxVal = Math.max(maxVal, ...(yValsSala1.length > 0 ? yValsSala1 : [0]))
         maxCap = Math.max(maxCap, capSala1)
@@ -1006,13 +1554,13 @@ function OccupancyAreaChartComponent({
     }
 
     const maxVal = yVals.length > 0 ? Math.max(...yVals) : 0
-    return Math.max(capacidad + 15, maxVal + 10, 60)
-  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capacidad, yValsSala1, yValsSala2, yValsCSF11, yValsCSF21, yValsCHS01, yVals])
+    return Math.max(Math.ceil(capacidad * 1.15), maxVal + 5, 20)
+  }, [esSuperponible, esSuperponibleVehicular, mostrarSala1, mostrarSala2, mostrarTotalCombinado, mostrarCSF11, mostrarCSF21, mostrarCHS01, capSala1, capSala2, capSector1, capSector2, capSector3, capacidad, yValsSala1, yValsSala2, yValsCSF11, yValsCSF21, yValsCHS01, yVals])
 
   const layout: Partial<Layout> = {
     autosize: true,
     hovermode: 'closest',
-    uirevision: `${sortedData.length}_${capacidad}_${mostrarSala1}_${mostrarSala2}_${mostrarCSF11}_${mostrarCSF21}_${mostrarCHS01}_${salaLabel || 'global'}_${contextShapes.length}`,
+    uirevision: `${sortedData.length}_${capacidad}_${mostrarSala1}_${mostrarSala2}_${mostrarTotalCombinado}_${mostrarCSF11}_${mostrarCSF21}_${mostrarCHS01}_${salaLabel || 'global'}_${contextShapes.length}`,
     margin: { t: 30, r: 75, b: isMultiDay ? 70 : 45, l: 45 },
     xaxis: {
       type: 'category',
@@ -1026,7 +1574,7 @@ function OccupancyAreaChartComponent({
     },
     yaxis: {
       rangemode: 'tozero' as const,
-      range: [0, Math.max(maxY, esBiblioteca ? 240 : 130)],
+      range: [0, salaLabel ? maxY : Math.max(maxY, esBiblioteca ? 240 : 65)],
       zeroline: true,
       zerolinecolor: '#cbd5e1',
       zerolinewidth: 1.5,
@@ -1038,7 +1586,7 @@ function OccupancyAreaChartComponent({
     },
     shapes: [...contextShapes, ...thresholdShapes],
     annotations,
-    showlegend: Boolean((esSuperponible && (mostrarSala1 || mostrarSala2)) || (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01))),
+    showlegend: Boolean((esSuperponible && (mostrarSala1 || mostrarSala2 || mostrarTotalCombinado)) || (esSuperponibleVehicular && (mostrarCSF11 || mostrarCSF21 || mostrarCHS01))),
     legend: {
       orientation: 'h' as const,
       y: 1.12,
@@ -1076,6 +1624,16 @@ function OccupancyAreaChartComponent({
                 />
                 <span className="inline-block w-2.5 h-2.5 rounded-sm bg-[#D97706]" />
                 <span>Sala 2 (CSF04 Pecera)</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer font-semibold text-[#059669] select-none hover:opacity-85 ml-1.5">
+                <input
+                  type="checkbox"
+                  checked={mostrarTotalCombinado}
+                  onChange={(e) => setMostrarTotalCombinado(e.target.checked)}
+                  className="rounded text-[#059669] focus:ring-[#059669] h-3.5 w-3.5 cursor-pointer"
+                />
+                <span className="inline-block w-2.5 h-2.5 rounded-sm bg-[#059669]" />
+                <span>Total Combinado</span>
               </label>
             </div>
           ) : esSuperponibleVehicular ? (
@@ -1217,7 +1775,329 @@ function OccupancyAreaChartComponent({
             </label>
           </div>
         )}
+
+        <div className="ml-auto flex flex-wrap items-center gap-2 relative" ref={popoverDiasRef}>
+          {esBiblioteca && isMultiDay && estadoSinRegistros.diasResumen.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setPopoverDiasAbierto((v) => !v)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-semibold text-[11px] transition cursor-pointer shadow-2xs ${
+                  estadoSinRegistros.sinMotivoCount > 0
+                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300/90'
+                    : estadoSinRegistros.conMotivoCount > 0
+                      ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                }`}
+                title="Auditar días operativos sin marcajes e incidencias registradas en este período"
+              >
+                <Info
+                  size={13}
+                  className={
+                    estadoSinRegistros.sinMotivoCount > 0
+                      ? 'text-amber-600'
+                      : estadoSinRegistros.conMotivoCount > 0
+                        ? 'text-indigo-600'
+                        : 'text-slate-500'
+                  }
+                />
+                <span>
+                  {(() => {
+                    const { sinMotivoCount, conMotivoCount, contextoCalendarioCount } = estadoSinRegistros
+                    const otros = conMotivoCount + contextoCalendarioCount
+                    if (sinMotivoCount > 0) {
+                      return `${sinMotivoCount} día${sinMotivoCount === 1 ? '' : 's'} sin motivo${otros > 0 ? ` · ${otros} con contexto` : ''}`
+                    }
+                    if (conMotivoCount > 0) {
+                      return `${conMotivoCount} incidencia${conMotivoCount === 1 ? '' : 's'} operativa${conMotivoCount === 1 ? '' : 's'}`
+                    }
+                    return `${contextoCalendarioCount} día${contextoCalendarioCount === 1 ? '' : 's'} en receso/paro`
+                  })()}
+                </span>
+                <ChevronDown
+                  size={13}
+                  className={`transition-transform duration-150 ${popoverDiasAbierto ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {popoverDiasAbierto && (
+                <div className="absolute right-0 top-full mt-1.5 w-[min(92vw,460px)] bg-white border border-slate-200 rounded-xl shadow-xl z-40 p-3 text-xs text-slate-700">
+                  <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-100">
+                    <div>
+                      <div className="font-bold text-slate-900">Días operativos sin marcajes e incidencias</div>
+                      <div className="text-[11px] text-slate-500">
+                        {estadoSinRegistros.sinMotivoCount} sin motivo | {estadoSinRegistros.conMotivoCount} incidencia{estadoSinRegistros.conMotivoCount === 1 ? '' : 's'} | {estadoSinRegistros.contextoCalendarioCount} calendario
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPopoverDiasAbierto(false)}
+                      className="p-1 text-slate-400 hover:text-slate-700 rounded-md cursor-pointer"
+                      aria-label="Cerrar resumen"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {([
+                        { id: 'todos', label: 'Todos' },
+                        { id: 'sin_motivo', label: 'Sin motivo' },
+                        { id: 'calendario', label: 'Calendario' },
+                        { id: 'con_motivo', label: 'Con motivo' },
+                      ] as const).map((op) => (
+                        <button
+                          key={op.id}
+                          type="button"
+                          onClick={() => setFiltroEstadoDias(op.id)}
+                          className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border transition cursor-pointer ${
+                            filtroEstadoDias === op.id
+                              ? 'bg-slate-800 text-white border-slate-800'
+                              : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {op.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {subespacioActivo === 'todos' && (
+                      <div className="flex items-center gap-1">
+                        {([
+                          { id: 'todas', label: 'Todas' },
+                          { id: 'sala_1', label: 'Sala 1' },
+                          { id: 'sala_2', label: 'Sala 2' },
+                        ] as const).map((op) => (
+                          <button
+                            key={op.id}
+                            type="button"
+                            onClick={() => setFiltroSalaDias(op.id)}
+                            className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border transition cursor-pointer ${
+                              filtroSalaDias === op.id
+                                ? 'bg-uct-blue-primary text-white border-uct-blue-primary'
+                                : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            {op.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="max-h-[280px] overflow-y-auto divide-y divide-slate-100 pr-0.5">
+                    {(() => {
+                      const salaDiasEfectiva = subespacioActivo === 'todos' ? filtroSalaDias : 'todas'
+                      const filtrados = estadoSinRegistros.diasResumen.filter((item) => {
+                        if (filtroEstadoDias === 'sin_motivo' && (item.incidencias.length > 0 || item.contextoAcademico)) return false
+                        if (filtroEstadoDias === 'con_motivo' && item.incidencias.length === 0) return false
+                        if (filtroEstadoDias === 'calendario' && (item.incidencias.length > 0 || !item.contextoAcademico)) return false
+                        if (salaDiasEfectiva !== 'todas' && item.subespacio !== 'todos' && item.subespacio !== salaDiasEfectiva) {
+                          return false
+                        }
+                        return true
+                      })
+                      if (filtrados.length === 0) {
+                        return (
+                          <div className="py-6 text-center text-slate-400 text-[11px]">
+                            No hay registros que coincidan con el filtro seleccionado.
+                          </div>
+                        )
+                      }
+                      return filtrados.map((item) => {
+                        const sinCobertura = item.incidencias.length === 0 && !item.contextoAcademico
+                        return (
+                          <div key={item.key} className="py-2 flex items-start justify-between gap-2">
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-semibold text-slate-900">{item.diaCorto}</span>
+                                <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">
+                                  {item.etiquetaSala}
+                                </span>
+                                {sinCobertura ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-bold">
+                                    Sin motivo
+                                  </span>
+                                ) : item.contextoAcademico && (
+                                  <span
+                                    className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${item.contextoAcademico.tono}`}
+                                    title={item.contextoAcademico.detalle || item.contextoAcademico.etiqueta}
+                                  >
+                                    {item.contextoAcademico.etiqueta}
+                                  </span>
+                                )}
+                              </div>
+                              {item.incidencias.length > 0 && (
+                                <div className="space-y-1">
+                                  {item.incidencias.map((inc) => {
+                                    const meta = ETIQUETAS_INCIDENCIA[inc.tipo] || ETIQUETAS_INCIDENCIA.otro
+                                    return (
+                                      <div key={inc.id} className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                                        <span className={`px-1.5 py-0.5 rounded border ${meta.tono} font-semibold`}>
+                                          {meta.etiqueta}
+                                        </span>
+                                        <span className="text-slate-700 truncate max-w-[210px]" title={inc.titulo}>
+                                          {inc.titulo}
+                                        </span>
+                                        {puedeEditarIncidente && (
+                                          <button
+                                            type="button"
+                                            disabled={eliminarIncidenciaMutation.isPending}
+                                            onClick={() => {
+                                              if (window.confirm(`¿Eliminar el registro "${inc.titulo}"?`)) {
+                                                eliminarIncidenciaMutation.mutate(inc.id)
+                                              }
+                                            }}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-50 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 text-[10px] font-semibold cursor-pointer disabled:opacity-50"
+                                            title="Quitar incidencia"
+                                          >
+                                            <Trash2 size={10} />
+                                            <span>Quitar</span>
+                                          </button>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+
+                            {puedeEditarIncidente && (
+                              <button
+                                type="button"
+                                onClick={() => abrirModalMotivo(item.fechaIso, item.subespacio)}
+                                className={`shrink-0 px-2 py-1 rounded-md text-[11px] font-semibold border transition cursor-pointer ${
+                                  sinCobertura
+                                    ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
+                                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                                }`}
+                              >
+                                {sinCobertura ? 'Registrar' : item.incidencias.length > 0 ? '+ Otro' : '+ Incidencia'}
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })
+                    })()}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {puedeEditarIncidente && (
+            <button
+              type="button"
+              onClick={() => abrirModalMotivo(estadoSinRegistros.fechaFinalIso, subespacioActivo)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-800 border border-slate-200 hover:border-amber-300 font-semibold text-[11px] transition cursor-pointer shadow-2xs"
+              title="Documentar falla de sensor, apertura manual, mantención o jornada sin afluencia"
+            >
+              <ClipboardEdit size={13} />
+              <span>Anotar incidente</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {estadoSinRegistros.incidenciasDiaFinal.length > 0 && (
+        <div className="space-y-1.5 shrink-0">
+          {estadoSinRegistros.incidenciasDiaFinal.map((inc) => {
+            const meta = ETIQUETAS_INCIDENCIA[inc.tipo] || ETIQUETAS_INCIDENCIA.otro
+            const rangoH = inc.hora_inicio && inc.hora_fin ? ` (${inc.hora_inicio}–${inc.hora_fin} hrs)` : ''
+            const scopeTag =
+              subespacioActivo === 'todos' && inc.subespacio === 'sala_1'
+                ? '[Sala 1] '
+                : subespacioActivo === 'todos' && inc.subespacio === 'sala_2'
+                  ? '[Sala 2] '
+                  : ''
+            return (
+              <div
+                key={inc.id}
+                className={`flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 rounded-lg border text-xs ${meta.tono}`}
+              >
+                <div className="flex items-start sm:items-center gap-2 min-w-0">
+                  <Info size={14} className={`${meta.texto} shrink-0 mt-0.5 sm:mt-0`} />
+                  <span className="leading-snug">
+                    {scopeTag && <span className="font-bold">{scopeTag}</span>}
+                    <span className="font-bold">{meta.etiqueta}{rangoH}:</span>{' '}
+                    <span className="font-semibold">{inc.titulo}</span>
+                    {inc.descripcion ? ` — ${inc.descripcion}` : ''}
+                    {estadoSinRegistros.ultimaLecturaFmt && (estadoSinRegistros.todoSinReg || estadoSinRegistros.tramoFinalSinReg) && (
+                      <span className="ml-1.5 opacity-80">
+                        (Último marcaje: {estadoSinRegistros.ultimaLecturaFmt})
+                      </span>
+                    )}
+                  </span>
+                </div>
+                {puedeEditarIncidente && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => abrirModalMotivo(estadoSinRegistros.fechaFinalIso, inc.subespacio || subespacioActivo)}
+                      className="px-2 py-0.5 rounded bg-white/80 hover:bg-white border border-current/20 text-[11px] font-semibold transition cursor-pointer"
+                    >
+                      Agregar otro
+                    </button>
+                    <button
+                      type="button"
+                      disabled={eliminarIncidenciaMutation.isPending}
+                      onClick={() => {
+                        if (window.confirm(`¿Eliminar el registro "${inc.titulo}"?`)) {
+                          eliminarIncidenciaMutation.mutate(inc.id)
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white/80 hover:bg-rose-50 hover:text-rose-700 border border-current/20 text-[11px] font-semibold transition cursor-pointer disabled:opacity-50"
+                      title="Quitar observación registrada"
+                    >
+                      <Trash2 size={11} />
+                      <span>Quitar</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {estadoSinRegistros.alertasSinMotivo.length > 0 && (
+        <div className="space-y-1.5 shrink-0">
+          {estadoSinRegistros.alertasSinMotivo.map((alerta) => (
+            <div
+              key={alerta.key}
+              className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-amber-900 text-xs"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <Info size={14} className="text-amber-600 shrink-0" />
+                <span>
+                  {alerta.todoPeriodo
+                    ? `Sin marcajes registrados en ${alerta.etiqueta} para este período (horario operativo graficado en 0).`
+                    : `Sin marcajes registrados en ${alerta.etiqueta} el ${alerta.fechaFmt} (horario operativo graficado en 0).`}
+                  {alerta.contextoAcademico && (
+                    <span className="ml-1 opacity-85">({alerta.contextoAcademico}).</span>
+                  )}
+                  {alerta.ultimaLecturaFmt && (
+                    <span className="font-semibold ml-1">
+                      Último marcaje registrado: {alerta.ultimaLecturaFmt}.
+                    </span>
+                  )}
+                </span>
+              </div>
+              {puedeEditarIncidente && (
+                <button
+                  type="button"
+                  onClick={() => abrirModalMotivo(alerta.fechaIso, alerta.subespacio)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-semibold text-[11px] transition cursor-pointer shrink-0"
+                >
+                  <ClipboardEdit size={12} />
+                  <span>Registrar motivo</span>
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="flex-1 w-full min-h-[380px]">
         <InteractiveChart
@@ -1231,8 +2111,15 @@ function OccupancyAreaChartComponent({
 
       {/* Leyenda Dinámica de Aforo y Capacidades */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-slate-100 text-xs text-slate-600">
-        {esSuperponible && (mostrarSala1 || mostrarSala2) ? (
+        {esSuperponible && (mostrarSala1 || mostrarSala2 || mostrarTotalCombinado) ? (
           <div className="flex flex-wrap items-center gap-4">
+            {mostrarTotalCombinado && (
+              <span className="flex items-center gap-1.5 font-medium text-slate-800">
+                <span className="w-3.5 h-1 rounded-xs bg-[#059669] inline-block" />
+                <span>Total Combinado</span>
+                <span className="text-slate-500 font-normal">| Capacidad: <b>{capacidad} as.</b></span>
+              </span>
+            )}
             {mostrarSala1 && (
               <span className="flex items-center gap-1.5 font-medium text-slate-800">
                 <span className="w-3.5 h-1 rounded-xs bg-[#002B49] inline-block" />
@@ -1290,6 +2177,23 @@ function OccupancyAreaChartComponent({
           </div>
         )}
       </div>
+
+      {puedeEditarIncidente && (
+        <ModalRegistrarMotivoOperativo
+          abierto={modalMotivoAbierto}
+          onClose={() => setModalMotivoAbierto(false)}
+          espacioId={espacioId as 1 | 2}
+          subespacioInicial={subespacioModalMotivo || subespacioActivo}
+          fechaInicial={fechaModalMotivo || estadoSinRegistros.fechaFinalIso}
+          etiquetaRecinto={
+            subespacioModalMotivo === 'sala_1'
+              ? 'Sala 1 (CSF02 2° Piso)'
+              : subespacioModalMotivo === 'sala_2'
+                ? 'Sala 2 (CSF04 Pecera 1° Piso)'
+                : salaLabel
+          }
+        />
+      )}
     </div>
   )
 }

@@ -75,10 +75,10 @@ export function useFleetComposition(fechaInicio?: string, fechaFin?: string, sec
   })
 }
 
-export function useForecastParking(opts?: { enabled?: boolean }) {
+export function useForecastParking(sector: string = 'todos', opts?: { enabled?: boolean }) {
   return useQuery({
-    queryKey: ['forecast-parking'],
-    queryFn: ({ signal }) => fetchForecastParking(signal),
+    queryKey: ['forecast-parking', sector],
+    queryFn: ({ signal }) => fetchForecastParking(sector, signal),
     ...opcionesConsultaAnalitica(60 * 60_000),
     ...opts,
   })

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.core.tiempo import ahora_utc
 from app.ml.gestor_modelos import invalidar_cache_modelo
 
 logger = logging.getLogger("app.ml.orquestador")
@@ -62,10 +63,37 @@ MODELOS_CATALOGO = [
         "clave": "prophet_vehicular",
         "familia": "Prophet",
         "recinto": "vehicular",
-        "sala": "todas",
+        "sala": "todos",
         "archivo_activo": "prophet_vehicular_active.joblib",
         "wape_referencia": 17.4,
         "mae_referencia": 5.2,
+    },
+    {
+        "clave": "prophet_vehicular_csf11",
+        "familia": "Prophet",
+        "recinto": "vehicular",
+        "sala": "CSF11",
+        "archivo_activo": "prophet_vehicular_csf11_active.joblib",
+        "wape_referencia": 22.0,
+        "mae_referencia": 3.0,
+    },
+    {
+        "clave": "prophet_vehicular_csf21",
+        "familia": "Prophet",
+        "recinto": "vehicular",
+        "sala": "CSF21",
+        "archivo_activo": "prophet_vehicular_csf21_active.joblib",
+        "wape_referencia": 22.0,
+        "mae_referencia": 3.0,
+    },
+    {
+        "clave": "prophet_vehicular_chs01",
+        "familia": "Prophet",
+        "recinto": "vehicular",
+        "sala": "CHS01",
+        "archivo_activo": "prophet_vehicular_chs01_active.joblib",
+        "wape_referencia": 25.0,
+        "mae_referencia": 2.0,
     },
     {
         "clave": "kmeans_parking",
@@ -152,9 +180,8 @@ def _evaluar_campeon_existente(
         obj = joblib.load(ruta_activo)
 
         if familia == "Prophet":
-            regressors = [r for r in getattr(obj, "extra_regressors", {}).keys() if r in test_features.columns]
-            growth_mode = getattr(obj, "growth", "linear")
-            cols = ["ds"] + (["cap", "floor"] if growth_mode == "logistic" and "cap" in test_features.columns else []) + regressors
+            from app.ml.prophet_service import _preparar_columnas_prediccion
+            cols = _preparar_columnas_prediccion(obj, test_features)
             forecast = obj.predict(test_features[cols])
             y_pred = forecast["yhat"].values
             if cap_val is not None:
@@ -193,7 +220,6 @@ async def _entrenar_retador_prophet(
     from app.ml.prophet_service import (
         MIN_ROWS_REQUIRED,
         TRAIN_RATIO,
-        REGRESORES_PROPHET,
         _build_prophet,
         _enrich_features,
         _fetch_calendar,
@@ -201,16 +227,25 @@ async def _entrenar_retador_prophet(
         _fetch_capacidades,
         _fetch_horarios_info,
         _fetch_contingencias_info,
-        aplicar_mascara_anomalias_entrenamiento,
+        _hiperparametros_prophet_por_recinto,
+        _normalizar_sector_vehicular,
+        _preparar_columnas_prediccion,
+        _preparar_df_entrenamiento_abierto,
     )
 
     es_presencia = "presencia" in clave_modelo
+    if recinto == "vehicular":
+        sala = _normalizar_sector_vehicular(sala)
 
     cal = await _fetch_calendar(session)
     capacidades = await _fetch_capacidades(session)
     cap_val = float(capacidades.get(sala, capacidades.get("todas", 426)))
     if recinto == "vehicular":
-        cap_val = float(capacidades.get("vehicular", 150))
+        cap_val = float(
+            capacidades.get(sala, capacidades.get("vehicular", 125))
+            if sala != "todos"
+            else capacidades.get("vehicular", 125)
+        )
 
     if es_presencia:
         from app.services.attendance_service import AttendanceService
@@ -227,7 +262,7 @@ async def _entrenar_retador_prophet(
 
         anchor_dt = max_t.replace(minute=0, second=0, microsecond=0)
         f_fin = anchor_dt.date()
-        f_ini = max(min_t.date(), f_fin - timedelta(days=90))
+        f_ini = max(min_t.date(), f_fin - timedelta(days=180))
 
         raw_hist = await AttendanceService.get_realtime_presence_curve(
             session=session,
@@ -271,7 +306,17 @@ async def _entrenar_retador_prophet(
         df = await _fetch_hourly_data(session, recinto=recinto, sala=sala)
         if len(df) < MIN_ROWS_REQUIRED:
             raise ValueError(f"Datos insuficientes para '{clave_modelo}': {len(df)} filas encontradas (requiere >= {MIN_ROWS_REQUIRED}).")
-        df = _enrich_features(df, cal, sala=sala)
+        espacio_id_ent = 2 if recinto == "vehicular" else 1
+        horarios_cfg = await _fetch_horarios_info(session, espacio_id=espacio_id_ent)
+        contingencias_cfg = await _fetch_contingencias_info(session, espacio_id=espacio_id_ent)
+        df = _enrich_features(
+            df,
+            cal,
+            sala=sala,
+            horarios=horarios_cfg,
+            contingencias=contingencias_cfg,
+            espacio_id=espacio_id_ent,
+        )
 
     df["cap"] = cap_val
     df["floor"] = 0.0
@@ -280,23 +325,24 @@ async def _entrenar_retador_prophet(
     train_df = df.iloc[:split_idx].copy()
     test_df = df.iloc[split_idx:].copy()
 
-    regressors = [r for r in REGRESORES_PROPHET if r in df.columns]
-    train_df_fit = aplicar_mascara_anomalias_entrenamiento(train_df)
-
-    growth_mode = "logistic" if es_presencia else "linear"
-    model = _build_prophet(growth=growth_mode)
-
-    fit_cols = ["ds", "y"] + (["cap", "floor"] if growth_mode == "logistic" else []) + regressors
+    hp = _hiperparametros_prophet_por_recinto(recinto)
+    train_df_fit, solo_ab, inc_dom = _preparar_df_entrenamiento_abierto(train_df)
+    model_eval = _build_prophet(
+        growth="linear",
+        solo_abierto=solo_ab,
+        incluir_domingo=inc_dom,
+        **hp,
+    )
+    fit_cols = ["y"] + _preparar_columnas_prediccion(model_eval, train_df_fit)
 
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model.fit(train_df_fit[fit_cols])
+        model_eval.fit(train_df_fit[fit_cols])
 
     # Evaluación sobre la ventana de validación
-    test_cols = ["ds"] + (["cap", "floor"] if growth_mode == "logistic" else []) + regressors
-    test_features = test_df[test_cols].copy()
-    forecast_test = model.predict(test_features)
+    test_cols = _preparar_columnas_prediccion(model_eval, test_df)
+    forecast_test = model_eval.predict(test_df[test_cols])
 
     y_true = test_df["y"].values
     y_pred = np.clip(forecast_test["yhat"].values, a_min=0, a_max=cap_val)
@@ -311,19 +357,32 @@ async def _entrenar_retador_prophet(
         clave_modelo=clave_modelo,
         archivo_activo=f"{clave_modelo}_active.joblib",
         familia="Prophet",
-        test_features=test_features,
+        test_features=test_df,
         y_true=y_true,
         cap_val=cap_val,
         es_horario_abierto=test_df["es_horario_abierto"].values,
     )
 
+    # Reentrenar modelo final de producción sobre el 100% de la serie histórica
+    df_prod_fit, solo_ab_p, inc_dom_p = _preparar_df_entrenamiento_abierto(df)
+    model_prod = _build_prophet(
+        growth="linear",
+        solo_abierto=solo_ab_p,
+        incluir_domingo=inc_dom_p,
+        **hp,
+    )
+    prod_cols = ["y"] + _preparar_columnas_prediccion(model_prod, df_prod_fit)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model_prod.fit(df_prod_fit[prod_cols])
+
     # Guardar artefacto retador temporal
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     ruta_retador = DIRECTORIO_MODELOS / f"{clave_modelo}_retador_v{ts}.joblib"
-    joblib.dump(model, ruta_retador)
+    joblib.dump(model_prod, ruta_retador)
 
     return {
-        "objeto_modelo": model,
+        "objeto_modelo": model_prod,
         "ruta_retador": ruta_retador,
         "wape": round(wape, 2),
         "mae": round(mae, 2),
@@ -332,6 +391,7 @@ async def _entrenar_retador_prophet(
         "filas_train": len(train_df),
         "filas_test": len(test_df),
         "version": ts,
+        "target_tipo": "presencia_plazas" if recinto == "vehicular" else "presencia_sala",
     }
 
 
@@ -768,10 +828,18 @@ async def entrenar_todos_los_modelos(
 
                 wape_campeon_pareado = retador.get("wape_campeon_test")
                 mae_campeon_pareado = retador.get("mae_campeon_test")
-                es_pareado = wape_campeon_pareado is not None
+                target_retador = retador.get("target_tipo")
+                target_campeon = campeon.get("target_tipo")
 
-                wape_benchmark = wape_campeon_pareado if es_pareado else wape_campeon
-                mae_benchmark = mae_campeon_pareado if es_pareado else mae_campeon
+                # Migración única de modelos vehiculares desde flujo (veh/h) a presencia física (plazas)
+                if config_m.get("recinto") == "vehicular" and target_retador == "presencia_plazas" and target_campeon != "presencia_plazas":
+                    es_pareado = False
+                    wape_benchmark = None
+                    mae_benchmark = None
+                else:
+                    es_pareado = wape_campeon_pareado is not None
+                    wape_benchmark = wape_campeon_pareado if es_pareado else wape_campeon
+                    mae_benchmark = mae_campeon_pareado if es_pareado else mae_campeon
 
                 # 2. Evaluación de Promoción: Supera o iguala al benchmark del campeón
                 if config_m["familia"] == "KMeans":
@@ -807,12 +875,13 @@ async def entrenar_todos_los_modelos(
                         "archivo": config_m["archivo_activo"],
                         "wape": wape_retador,
                         "mae": mae_retador,
-                        "actualizado_en": datetime.utcnow().isoformat(),
+                        "actualizado_en": ahora_utc().isoformat(),
                         "estado": "activo",
                         "es_campeon": True,
-                        "promovido_en": datetime.utcnow().isoformat(),
+                        "promovido_en": ahora_utc().isoformat(),
                         "campeon_anterior_wape": wape_benchmark,
                         "evaluacion_pareada": es_pareado,
+                        "target_tipo": retador.get("target_tipo"),
                     }
                     _guardar_metadatos_campeon(clave, nuevos_meta)
                     invalidar_cache_modelo(ruta_activa)
@@ -840,7 +909,7 @@ async def entrenar_todos_los_modelos(
                         f"[orquestador] Retador descartado para {clave}: WAPE={wape_retador}% no superó al campeón ({desc_benchmark})."
                     )
                     meta_campeon_existente = _leer_metadatos_campeon(clave, config_m)
-                    meta_campeon_existente["ultima_auditoria_en"] = datetime.utcnow().isoformat()
+                    meta_campeon_existente["ultima_auditoria_en"] = ahora_utc().isoformat()
                     meta_campeon_existente["ultimo_resultado_auditoria"] = f"Campeón validado (WAPE={wape_benchmark}% vs retador {wape_retador}%)"
                     _guardar_metadatos_campeon(clave, meta_campeon_existente)
                     resultados.append({

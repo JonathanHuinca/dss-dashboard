@@ -44,13 +44,16 @@ function DailyAverageAttendancePlotlyChartComponent({ data }: Props) {
     return diasFiltrados.map(d => `${d.dia_nombre}<br><span style="font-size:9px;color:#94A3B8">(${d.dias_muestreados} días)</span>`)
   }, [diasFiltrados])
 
+  const capSala1 = resumen.sala1_capacidad || 124
+  const capSala2 = resumen.sala2_capacidad || 226
+
   const plotData = useMemo<Data[]>(() => {
     if (vista === 'desglose_salas') {
       return [
         {
           x: etiquetasX,
           y: diasFiltrados.map(d => d.promedio_entradas_sala1),
-          name: 'Sala 1 (CSF02 — 124 asientos)',
+          name: `Sala 1 (CSF02 — ${capSala1} asientos)`,
           type: 'bar',
           marker: {
             color: '#002B49',
@@ -62,12 +65,12 @@ function DailyAverageAttendancePlotlyChartComponent({ data }: Props) {
           hovertemplate:
             '<b>%{x}</b><br>' +
             'Promedio Sala 1: <b>%{y:.1f} ingresos/día</b><br>' +
-            'Capacidad física: 124 asientos<extra></extra>',
+            `Capacidad física: ${capSala1} asientos<extra></extra>`,
         },
         {
           x: etiquetasX,
           y: diasFiltrados.map(d => d.promedio_entradas_sala2),
-          name: 'Sala 2 (CSF04 Pecera — 226 asientos)',
+          name: `Sala 2 (CSF04 Pecera — ${capSala2} asientos)`,
           type: 'bar',
           marker: {
             color: '#C59B27',
@@ -79,7 +82,7 @@ function DailyAverageAttendancePlotlyChartComponent({ data }: Props) {
           hovertemplate:
             '<b>%{x}</b><br>' +
             'Promedio Sala 2: <b>%{y:.1f} ingresos/día</b><br>' +
-            'Capacidad física: 226 asientos<extra></extra>',
+            `Capacidad física: ${capSala2} asientos<extra></extra>`,
         },
         {
           x: etiquetasX,
@@ -124,7 +127,7 @@ function DailyAverageAttendancePlotlyChartComponent({ data }: Props) {
         {
           x: etiquetasX,
           y: diasFiltrados.map(d => d.ocupacion_relativa_sala1_pct),
-          name: 'Sala 1 — Rotación Diaria (% sobre 124 asientos)',
+          name: `Sala 1 — Rotación Diaria (% sobre ${capSala1} asientos)`,
           type: 'bar',
           marker: { color: '#002B49' },
           text: diasFiltrados.map(d => `${d.ocupacion_relativa_sala1_pct.toFixed(0)}%`),
@@ -133,12 +136,12 @@ function DailyAverageAttendancePlotlyChartComponent({ data }: Props) {
           hovertemplate:
             '<b>%{x}</b><br>' +
             'Rotación Sala 1: <b>%{y:.1f}%</b> de la capacidad física<br>' +
-            'Base: 124 asientos<extra></extra>',
+            `Base: ${capSala1} asientos<extra></extra>`,
         },
         {
           x: etiquetasX,
           y: diasFiltrados.map(d => d.ocupacion_relativa_sala2_pct),
-          name: 'Sala 2 — Rotación Diaria (% sobre 226 asientos)',
+          name: `Sala 2 — Rotación Diaria (% sobre ${capSala2} asientos)`,
           type: 'bar',
           marker: { color: '#C59B27' },
           text: diasFiltrados.map(d => `${d.ocupacion_relativa_sala2_pct.toFixed(0)}%`),
@@ -147,11 +150,11 @@ function DailyAverageAttendancePlotlyChartComponent({ data }: Props) {
           hovertemplate:
             '<b>%{x}</b><br>' +
             'Rotación Sala 2: <b>%{y:.1f}%</b> de la capacidad física<br>' +
-            'Base: 226 asientos<extra></extra>',
+            `Base: ${capSala2} asientos<extra></extra>`,
         },
       ]
     }
-  }, [vista, etiquetasX, diasFiltrados, resumen.dia_mayor_afluencia])
+  }, [vista, etiquetasX, diasFiltrados, resumen.dia_mayor_afluencia, capSala1, capSala2])
 
   const layout = useMemo<Partial<Layout>>(() => ({
     autosize: true,

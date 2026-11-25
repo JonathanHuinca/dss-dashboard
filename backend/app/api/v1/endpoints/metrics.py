@@ -31,8 +31,12 @@ async def get_kpi_summary(
     carrera: Optional[str] = Query(None),
     facultad: Optional[str] = Query(None),
     cohorte: Optional[str] = Query(None),
+    sector: Optional[str] = Query(None),
+    tipo_vehiculo: Optional[str] = Query(None),
     incluir_pausas_bano: bool = Query(True),
     desduplicar_rafagas: bool = Query(True),
+    incluir_funcionarios: bool = Query(True),
+    incluir_sin_identificar: bool = Query(True),
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -53,8 +57,12 @@ async def get_kpi_summary(
         carrera=carrera,
         facultad=facultad,
         cohorte=cohorte,
+        sector=sector,
+        tipo_vehiculo=tipo_vehiculo,
         incluir_pausas_bano=incluir_pausas_bano,
         desduplicar_rafagas=desduplicar_rafagas,
+        incluir_funcionarios=incluir_funcionarios,
+        incluir_sin_identificar=incluir_sin_identificar,
     )
 
 

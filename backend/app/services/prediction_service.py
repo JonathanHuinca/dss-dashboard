@@ -3,7 +3,7 @@ from typing import Dict, Any
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.config_service import get_espacios_activos_capacidades
-from app.ml.prophet_service import predict_continuous, predict_next_7_days, predict_presence_continuous
+from app.ml.prophet_service import predict_continuous, predict_next_7_days, predict_presence_continuous, _fetch_capacidades
 from app.ml.train_gbr_demand import predict_next_14_days
 from app.services.attendance_service import AttendanceService
 
@@ -113,10 +113,87 @@ async def get_active_alerts(db: AsyncSession) -> Dict[str, Any]:
             }
 
         alerts = []
+        caps_detalle: Dict[str, Any] = {}
+        if "biblioteca" in CAPACIDADES or "vehicular" in CAPACIDADES:
+            try:
+                caps_detalle = await _fetch_capacidades(db)
+            except Exception:
+                caps_detalle = {}
+
         for recinto, cap in CAPACIDADES.items():
             if cap == 0:
                 continue
-                
+
+            if recinto == "biblioteca":
+                cap_s1 = float(caps_detalle.get("sala1", 150))
+                cap_s2 = float(caps_detalle.get("sala2", 126))
+                cap_tot = float(caps_detalle.get("todas", cap))
+                subespacios_bib = [
+                    ("sala1", "Sala 1 (CSF02)", cap_s1),
+                    ("sala2", "Sala 2 (CSF04 Pecera)", cap_s2),
+                    ("todas", "Biblioteca Global", cap_tot),
+                ]
+                for sub_key, sub_label, cap_sub in subespacios_bib:
+                    if cap_sub <= 0:
+                        continue
+                    res_pres = await predict_presence_continuous(db, sala=sub_key)
+                    if res_pres.get("model_status", {}).get("status") == "unavailable":
+                        continue
+                    proximas_3h = res_pres.get("pronostico_7d", [])[:3]
+                    horas_sobre_umbral = [
+                        f for f in proximas_3h if f["yhat"] >= cap_sub * UMBRAL_ALERTA
+                    ]
+                    if len(horas_sobre_umbral) >= 2:
+                        alerts.append({
+                            "recinto": recinto,
+                            "subespacio": sub_key,
+                            "subespacio_label": sub_label,
+                            "nivel": "critico" if len(horas_sobre_umbral) == 3 else "preventivo",
+                            "mensaje": (
+                                f"{sub_label}: ocupación proyectada ≥ {int(UMBRAL_ALERTA * 100)}% de capacidad "
+                                f"({int(cap_sub)} asientos) en {len(horas_sobre_umbral)} de las próximas 3 horas."
+                            ),
+                            "horas_afectadas": horas_sobre_umbral,
+                            "capacidad_max": cap_sub,
+                        })
+                continue
+
+            if recinto == "vehicular":
+                cap_c11 = float(caps_detalle.get("CSF11", 40))
+                cap_c21 = float(caps_detalle.get("CSF21", 50))
+                cap_ch01 = float(caps_detalle.get("CHS01", 35))
+                cap_tot_v = float(caps_detalle.get("vehicular", cap))
+                subespacios_veh = [
+                    ("CSF11", "CSF11 — Edificio 11", cap_c11),
+                    ("CSF21", "CSF21 — Edificio 21", cap_c21),
+                    ("CHS01", "CHS01 — Hosp. Simulación", cap_ch01),
+                    ("todos", "Estacionamiento Global", cap_tot_v),
+                ]
+                for sub_key, sub_label, cap_sub in subespacios_veh:
+                    if cap_sub <= 0:
+                        continue
+                    res_veh = await predict_continuous(db, recinto="vehicular", sala=sub_key)
+                    if res_veh.get("model_status", {}).get("status") == "unavailable":
+                        continue
+                    proximas_3h = res_veh.get("pronostico_7d", [])[:3]
+                    horas_sobre_umbral = [
+                        f for f in proximas_3h if f["yhat"] >= cap_sub * UMBRAL_ALERTA
+                    ]
+                    if len(horas_sobre_umbral) >= 2:
+                        alerts.append({
+                            "recinto": recinto,
+                            "subespacio": sub_key,
+                            "subespacio_label": sub_label,
+                            "nivel": "critico" if len(horas_sobre_umbral) == 3 else "preventivo",
+                            "mensaje": (
+                                f"{sub_label}: ocupación proyectada ≥ {int(UMBRAL_ALERTA * 100)}% de capacidad "
+                                f"({int(cap_sub)} plazas) en {len(horas_sobre_umbral)} de las próximas 3 horas."
+                            ),
+                            "horas_afectadas": horas_sobre_umbral,
+                            "capacidad_max": cap_sub,
+                        })
+                continue
+
             forecasts, model_status = await predict_next_7_days(db, recinto=recinto)
             if model_status["status"] == "unavailable":
                 continue

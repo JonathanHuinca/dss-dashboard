@@ -9,6 +9,8 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { useAssistant } from '../../context/AssistantContext'
+import { useAuth } from '../../context/AuthContext'
+import { buildUserStorageKey } from '../../utils/userStorage'
 
 export interface SeccionModuloItem {
   id: string
@@ -37,6 +39,8 @@ export function BarraLateralSecciones({
   alAlternarApertura,
 }: PropiedadesBarraLateralSecciones) {
   const { isOpen: asistenteAbierto } = useAssistant()
+  const { userId, userEmail } = useAuth()
+  const claveStorageBarra = buildUserStorageKey(CLAVE_STORAGE_BARRA, userId, userEmail)
 
   // Control responsivo de apertura de la barra lateral
   const [barraAbierta, setBarraAbierta] = useState<boolean>(() => {
@@ -44,7 +48,7 @@ export function BarraLateralSecciones({
     try {
       // En pantallas reducidas (split screen o móvil), iniciar colapsada para no entorpecer la visualización
       if (window.innerWidth < 1280) return false
-      const guardado = localStorage.getItem(CLAVE_STORAGE_BARRA)
+      const guardado = localStorage.getItem(claveStorageBarra)
       return guardado !== null ? guardado === 'true' : true
     } catch {
       return true
@@ -77,7 +81,7 @@ export function BarraLateralSecciones({
     setBarraAbierta(prev => {
       const nuevoEstado = !prev
       try {
-        localStorage.setItem(CLAVE_STORAGE_BARRA, String(nuevoEstado))
+        localStorage.setItem(claveStorageBarra, String(nuevoEstado))
       } catch { }
       return nuevoEstado
     })

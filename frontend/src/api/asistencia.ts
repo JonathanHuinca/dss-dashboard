@@ -3,6 +3,10 @@ import { api, DataFilters, HourlyFlowPoint, parseFilters } from './clienteBase'
 export interface AttendanceKpis {
   total_registros: number
   usuarios_unicos: number
+  total_registros_sala1?: number
+  total_registros_sala2?: number
+  usuarios_unicos_sala1?: number
+  usuarios_unicos_sala2?: number
   dias_operativos: number
   promedio_marcajes_diarios: number
   tasa_recurrencia_mensual: number
@@ -12,6 +16,8 @@ export interface AttendanceKpis {
   horas_estudiante_total: number
   hora_punta?: string
   max_aforo_historico?: number
+  max_aforo_sala1?: number
+  max_aforo_sala2?: number
 }
 
 export interface OccupancyRealtime {
@@ -20,6 +26,16 @@ export interface OccupancyRealtime {
   ocupacion_pct: number
   nivel_alerta: 'normal' | 'preventivo' | 'critico'
   timestamp: string
+  aforo_sala1?: number
+  aforo_sala2?: number
+  capacidad_sala1?: number
+  capacidad_sala2?: number
+  ocupacion_pct_sala1?: number
+  ocupacion_pct_sala2?: number
+  nivel_alerta_sala1?: 'normal' | 'preventivo' | 'critico'
+  nivel_alerta_sala2?: 'normal' | 'preventivo' | 'critico'
+  ultimo_marcaje_sala1?: string | null
+  ultimo_marcaje_sala2?: string | null
 }
 
 export interface HeatmapPoint {
@@ -253,12 +269,28 @@ export const fetchAttendanceKpis = (fechaInicio?: string, fechaFin?: string, fil
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
 
-export const fetchOccupancyRealtime = (signal?: AbortSignal) =>
-  api.get<OccupancyRealtime>('/attendance/occupancy-realtime', { signal }).then(r => r.data)
+export const fetchOccupancyRealtime = (
+  filters?: DataFilters | string | AbortSignal,
+  signal?: AbortSignal,
+) => {
+  const isAbort = typeof AbortSignal !== 'undefined' && filters instanceof AbortSignal
+  const effectiveSignal = isAbort ? filters : signal
+  const f = isAbort ? {} : parseFilters(filters as DataFilters | string | undefined)
+  return api.get<OccupancyRealtime>('/attendance/occupancy-realtime', {
+    signal: effectiveSignal,
+    params: {
+      sala: f.sala || undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
+    },
+  }).then(r => r.data)
+}
 
 export const fetchAttendanceHourlyFlow = (fechaInicio?: string, fechaFin?: string, filters?: DataFilters | string, signal?: AbortSignal) => {
   const f = parseFilters(filters)
@@ -279,6 +311,8 @@ export const fetchAttendanceHourlyFlow = (fechaInicio?: string, fechaFin?: strin
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -302,6 +336,8 @@ export const fetchAttendancePresenceCurve = (fechaInicio?: string, fechaFin?: st
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -332,6 +368,8 @@ export const fetchHeatmap = (
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -365,6 +403,8 @@ export const fetchWeeklyEvolution = (
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -395,6 +435,8 @@ export const fetchMonthlyVolume = (
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -425,6 +467,8 @@ export const fetchAcademicMilestones = (
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -445,8 +489,11 @@ export const fetchDoorsUsage = (fechaInicio?: string, fechaFin?: string, filters
       sala: f.sala,
       carrera: f.carrera,
       facultad: f.facultad,
+      cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -484,11 +531,17 @@ export const fetchRoomsComparison = (
       direccion: f.direccion,
       dias_semana: f.dias_semana,
       door: f.door,
+      perfil_visita: f.perfil_visita,
       marcajes: f.marcajes,
+      sala: f.sala,
       carrera: f.carrera,
       facultad: f.facultad,
       cohorte: f.cohorte,
       espacio_id: espacioId,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -510,11 +563,17 @@ export const fetchDailyAverageAttendance = (
       direccion: f.direccion,
       dias_semana: f.dias_semana,
       door: f.door,
+      perfil_visita: f.perfil_visita,
       marcajes: f.marcajes,
+      sala: f.sala,
       carrera: f.carrera,
       facultad: f.facultad,
       cohorte: f.cohorte,
       espacio_id: espacioId,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -536,11 +595,17 @@ export const fetchCurricularDistribution = (
       direccion: f.direccion,
       dias_semana: f.dias_semana,
       door: f.door,
+      perfil_visita: f.perfil_visita,
       marcajes: f.marcajes,
+      sala: f.sala,
       carrera: f.carrera,
       facultad: f.facultad,
       cohorte: f.cohorte,
       espacio_id: espacioId,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -567,6 +632,8 @@ export const fetchCheckinsDistribution = (fechaInicio?: string, fechaFin?: strin
       cohorte: f.cohorte,
       incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
       desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -595,6 +662,10 @@ export const fetchVisitProfilesDonut = (
       facultad: f.facultad,
       cohorte: f.cohorte,
       espacio_id: espacioId,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
 }
@@ -613,8 +684,14 @@ export const fetchRawAttendance = (params: {
   diasSemana?: string
   perfilVisita?: string
   marcajes?: string
+  sala?: string
+  carrera?: string
+  facultad?: string
+  cohorte?: string
   incluirPausasBano?: boolean
   desduplicarRafagas?: boolean
+  incluirFuncionarios?: boolean
+  incluirSinIdentificar?: boolean
 }) =>
   api.get<RawAttendanceResponse>('/attendance/raw-events', {
     params: {
@@ -631,8 +708,14 @@ export const fetchRawAttendance = (params: {
       dias_semana: params.diasSemana || undefined,
       perfil_visita: params.perfilVisita || undefined,
       marcajes: params.marcajes || undefined,
+      sala: params.sala || undefined,
+      carrera: params.carrera || undefined,
+      facultad: params.facultad || undefined,
+      cohorte: params.cohorte || undefined,
       incluir_pausas_bano: params.incluirPausasBano !== undefined ? params.incluirPausasBano : undefined,
       desduplicar_rafagas: params.desduplicarRafagas !== undefined ? params.desduplicarRafagas : undefined,
+      incluir_funcionarios: params.incluirFuncionarios !== undefined ? params.incluirFuncionarios : undefined,
+      incluir_sin_identificar: params.incluirSinIdentificar !== undefined ? params.incluirSinIdentificar : undefined,
     },
   }).then(r => r.data)
 
@@ -749,14 +832,32 @@ export const fetchAnalisis24h = (params?: {
   fechaInicio?: string
   fechaFin?: string
   bloqueHorario?: 'todos' | 'lunes_jueves' | 'viernes'
-}) =>
-  api.get<Analisis24hResponse>('/attendance/analisis-24h', {
+  filters?: DataFilters | string
+}) => {
+  const f = parseFilters(params?.filters)
+  return api.get<Analisis24hResponse>('/attendance/analisis-24h', {
     params: {
       espacio_id: params?.espacioId ?? 1,
       campana_id: params?.campanaId !== undefined ? params.campanaId : undefined,
       fecha_inicio: params?.fechaInicio || undefined,
       fecha_fin: params?.fechaFin || undefined,
       bloque_horario: params?.bloqueHorario || 'todos',
+      alcance: f.alcance,
+      regimen_horario: f.regimen_horario,
+      direccion: f.direccion,
+      dias_semana: f.dias_semana,
+      door: f.door,
+      perfil_visita: f.perfil_visita,
+      marcajes: f.marcajes,
+      sala: f.sala,
+      carrera: f.carrera,
+      facultad: f.facultad,
+      cohorte: f.cohorte,
+      incluir_pausas_bano: f.incluir_pausas_bano !== undefined ? f.incluir_pausas_bano : undefined,
+      desduplicar_rafagas: f.desduplicar_rafagas !== undefined ? f.desduplicar_rafagas : undefined,
+      incluir_funcionarios: f.incluir_funcionarios !== undefined ? f.incluir_funcionarios : undefined,
+      incluir_sin_identificar: f.incluir_sin_identificar !== undefined ? f.incluir_sin_identificar : undefined,
     },
   }).then(r => r.data)
+}
 

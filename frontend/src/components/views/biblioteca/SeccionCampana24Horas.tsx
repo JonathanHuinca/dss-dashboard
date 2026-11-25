@@ -17,9 +17,12 @@ import {
   BarChart3,
   Download,
   Check,
+  AlertTriangle,
+  SlidersHorizontal,
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { Analisis24hResponse } from '../../../api/asistencia'
+import { DataFilters } from '../../../api/clienteBase'
 import { DateRange } from '../../../types/dateRange'
 import { HeatmapChart } from '../../charts/HeatmapChart'
 
@@ -39,6 +42,10 @@ interface SeccionCampana24HorasProps {
   isRegimenDeltaActive?: boolean
   onToggleRegimenDelta?: () => void
   ocultarAccionesReporte?: boolean
+  bloquesVisibles?: string[]
+  activeFilters?: DataFilters
+  onCambiarASala2?: () => void
+  onIncluirFranja24h?: () => void
 }
 
 function formatFechaCl(isoStr?: string | null): string {
@@ -64,9 +71,91 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
   isRegimenDeltaActive = false,
   onToggleRegimenDelta = () => {},
   ocultarAccionesReporte = false,
+  bloquesVisibles,
+  activeFilters,
+  onCambiarASala2,
+  onIncluirFranja24h,
 }) => {
   const [exportando, setExportando] = useState(false)
   const [semanaHeatmap, setSemanaHeatmap] = useState<string>('todas')
+
+  const mostrarBloque = (bloqueId: string): boolean => {
+    if (!bloquesVisibles) return true
+    return bloquesVisibles.includes(bloqueId)
+  }
+
+  // Evaluación de conflictos bajo Enfoque A (coherencia estricta con filtros globales)
+  const salaNorm = (activeFilters?.sala || '').trim().toLowerCase()
+  const esSala1Seleccionada =
+    salaNorm === '1' ||
+    ['csf02', 'sala_1', 'sala 1', 'edificio 2', 'locker', '2do piso'].some((k) => salaNorm.includes(k))
+
+  const doorTokens = (activeFilters?.door || '')
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter((d) => d && d !== 'todos')
+  const esSoloTorniquetesSala1 =
+    doorTokens.length > 0 &&
+    doorTokens.every((d) =>
+      ['s1_principal', 's1_universal', '2202', '2184', '2177', '2170', '1', 't1', 'torniquete 1'].includes(d) ||
+      d.includes('csf02') ||
+      d.startsWith('s1_')
+    ) &&
+    !doorTokens.some((d) => d.includes('csf04') || d.startsWith('s2_'))
+
+  const conflictoSala1 = esSala1Seleccionada || esSoloTorniquetesSala1
+
+  const regTokens = (activeFilters?.regimen_horario || '')
+    .split(',')
+    .map((r) => r.trim().toLowerCase())
+    .filter(Boolean)
+  const conflictoRegimenSin24h =
+    regTokens.length > 0 &&
+    !regTokens.includes('todos') &&
+    !regTokens.some((r) =>
+      ['24h_delta', 'nocturno_24h', 'delta_24h', '24h_total', '24h', 'extendido_24h'].includes(r) ||
+      r.startsWith('horario_')
+    )
+
+  const chipsFiltrosActivos: string[] = []
+  if (activeFilters) {
+    const alc = activeFilters.alcance || 'conformes'
+    chipsFiltrosActivos.push(
+      alc === 'anomalias'
+        ? 'Alcance: Solo Anomalías'
+        : alc === 'todos'
+        ? 'Alcance: Todos los Registros'
+        : 'Alcance: Datos Conformes'
+    )
+    if (activeFilters.sala && activeFilters.sala !== 'todos') {
+      chipsFiltrosActivos.push(
+        esSala1Seleccionada ? 'Sala: Sala 1 (CSF02)' : 'Sala: Sala 2 (Pecera)'
+      )
+    }
+    if (activeFilters.facultad) chipsFiltrosActivos.push(`Facultad: ${activeFilters.facultad}`)
+    if (activeFilters.carrera) chipsFiltrosActivos.push(`Carrera: ${activeFilters.carrera}`)
+    if (activeFilters.cohorte) chipsFiltrosActivos.push(`Cohorte: ${activeFilters.cohorte}`)
+    if (activeFilters.regimen_horario && activeFilters.regimen_horario !== 'todos') {
+      chipsFiltrosActivos.push(`Régimen: ${activeFilters.regimen_horario}`)
+    }
+    if (activeFilters.direccion && activeFilters.direccion !== 'todos') {
+      chipsFiltrosActivos.push(`Flujo: ${activeFilters.direccion}`)
+    }
+    if (activeFilters.dias_semana) chipsFiltrosActivos.push(`Días: ${activeFilters.dias_semana}`)
+    if (activeFilters.door && activeFilters.door !== 'todos') {
+      chipsFiltrosActivos.push(`Torniquetes: ${activeFilters.door}`)
+    }
+    if (activeFilters.perfil_visita && activeFilters.perfil_visita !== 'todos') {
+      chipsFiltrosActivos.push(`Perfil: ${activeFilters.perfil_visita}`)
+    }
+    if (activeFilters.marcajes && activeFilters.marcajes !== 'todos') {
+      chipsFiltrosActivos.push(`Marcajes: ${activeFilters.marcajes}`)
+    }
+    if (activeFilters.incluir_pausas_bano === false) chipsFiltrosActivos.push('Sin pausas cortas')
+    if (activeFilters.desduplicar_rafagas === false) chipsFiltrosActivos.push('Con ráfagas')
+    if (activeFilters.incluir_funcionarios === false) chipsFiltrosActivos.push('Sin funcionarios')
+    if (activeFilters.incluir_sin_identificar === false) chipsFiltrosActivos.push('Solo identificados')
+  }
 
   const campanaActual = data?.campana
   const kpis = data?.kpis_comparativa
@@ -97,14 +186,15 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
       const wb = XLSX.utils.book_new()
 
       // Hoja 1: Resumen General y Métricas Clave
+      const capSala2Export = campanaActual?.capacidad_asientos || 226
       const resumenRows = [
         ['REPORTE ESPECIAL DE RENDIMIENTO OPERATIVO — HORARIO 24 HORAS'],
-        ['Análisis de Demanda Nocturna Extendida (20:30 a 07:00 hrs) — Sala 2 Pecera (Capacidad: 226 Asientos)'],
+        [`Análisis de Demanda Nocturna Extendida (20:30 a 07:00 hrs) — Sala 2 Pecera (Capacidad: ${capSala2Export} Asientos)`],
         [''],
         ['Métrica', 'Valor'],
         ['Campaña Analizada', campanaActual?.descripcion || 'N/A'],
         ['Vigencia Período', `${formatFechaCl(campanaActual?.fecha_inicio)} al ${formatFechaCl(campanaActual?.fecha_fin)}`],
-        ['Capacidad Nominal de Asientos', campanaActual?.capacidad_asientos || 226],
+        ['Capacidad Nominal de Asientos', capSala2Export],
         ['Ingresos Diurnos (08:30 a 20:30 hrs)', kpis?.ingresos_diurnos ?? 0],
         ['Ingresos Nocturnos Extendidos (20:30 a 07:00 hrs)', kpis?.ingresos_nocturnos ?? 0],
         ['Total General de Ingresos', kpis?.total_ingresos ?? 0],
@@ -209,7 +299,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
                   8. Campaña 24 Horas Exámenes & Análisis de Flujo Nocturno
                 </h2>
                 <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-400/30">
-                  Sala 2 CSF04 Pecera (226 Asientos)
+                  Sala 2 CSF04 Pecera ({campanaActual?.capacidad_asientos || 226} Asientos)
                 </span>
               </div>
               <p className="text-xs text-indigo-200/80 mt-1 max-w-3xl leading-relaxed">
@@ -446,6 +536,73 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         )}
       </div>
 
+      {activeFilters && chipsFiltrosActivos.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+          <span className="inline-flex items-center gap-1.5 font-semibold text-slate-600 mr-1">
+            <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600" />
+            Filtros aplicados a Sección 5:
+          </span>
+          {chipsFiltrosActivos.map((chip, idx) => (
+            <span
+              key={idx}
+              className="px-2.5 py-0.5 rounded-full bg-white border border-slate-200 text-slate-700 font-medium text-[11px] shadow-2xs"
+            >
+              {chip}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {conflictoSala1 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+            <div>
+              <p className="text-xs sm:text-sm font-bold text-amber-900">
+                Filtro activo apunta a Sala 1 (CSF02) — Campaña 24h opera en Sala 2 (Pecera CSF04)
+              </p>
+              <p className="text-xs text-amber-800/90 mt-0.5">
+                Por coherencia con los filtros seleccionados, la evaluación nocturna de Sala 2 retorna 0 accesos mientras Sala 1 o sus torniquetes estén restringidos.
+              </p>
+            </div>
+          </div>
+          {onCambiarASala2 && !ocultarAccionesReporte && (
+            <button
+              type="button"
+              onClick={onCambiarASala2}
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shrink-0 shadow-2xs transition-colors cursor-pointer"
+            >
+              Cambiar a Sala 2 (Pecera)
+            </button>
+          )}
+        </div>
+      )}
+
+      {conflictoRegimenSin24h && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+            <div>
+              <p className="text-xs sm:text-sm font-bold text-amber-900">
+                El régimen horario seleccionado excluye la franja nocturna 24 Horas
+              </p>
+              <p className="text-xs text-amber-800/90 mt-0.5">
+                Las métricas nocturnas muestran 0 porque el filtro de régimen actual acota el análisis únicamente a horario diurno o de excepción.
+              </p>
+            </div>
+          </div>
+          {onIncluirFranja24h && !ocultarAccionesReporte && (
+            <button
+              type="button"
+              onClick={onIncluirFranja24h}
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shrink-0 shadow-2xs transition-colors cursor-pointer"
+            >
+              Incluir franja 24h
+            </button>
+          )}
+        </div>
+      )}
+
       {data && data.campana && data.campana.tiene_campana_activa === false && (
         <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900">
           <AlertCircle className="text-amber-600 shrink-0" size={20} />
@@ -464,7 +621,8 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         </div>
       ) : data ? (
         <>
-          {/* Tarjetas KPI de Rendimiento Nocturno */}
+          {/* Bloque 1: Tarjetas KPI de Rendimiento Nocturno */}
+          {mostrarBloque('campana_24h_resumen') && (
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
             <div className="bg-white p-4 rounded-xl border border-slate-200/90 shadow-2xs">
               <div className="text-[11px] text-slate-500 font-medium">Aporte Nocturno (Delta 24h)</div>
@@ -518,7 +676,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
                 {pico?.tasa_ocupacion_asientos_pct}%
               </div>
               <div className="text-[10px] text-slate-400 mt-0.5">
-                sobre los 226 asientos
+                sobre los {campanaActual?.capacidad_asientos || 226} asientos
               </div>
             </div>
 
@@ -532,7 +690,11 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
               </div>
             </div>
           </div>
+          )}
 
+          {/* Bloque 2: Curva Continua y Mapa de Calor */}
+          {mostrarBloque('campana_24h_curva_calor') && (
+          <>
           {/* Gráfico 1: Curva Continua de Flujo Nocturno por Hora */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4 pb-3 border-b border-slate-100">
@@ -649,8 +811,11 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
               </div>
             </div>
           )}
+          </>
+          )}
 
-          {/* Gráfico 2 y Gráfico 3: Fases de la Noche y Distribución por Día de la Semana */}
+          {/* Bloque 3: Fases de la Noche y Distribución por Día de la Semana */}
+          {mostrarBloque('campana_24h_fases_dias') && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             
             {/* Fases de Madrugada */}
@@ -717,8 +882,10 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
             </div>
 
           </div>
+          )}
 
-          {/* Gráfico 4: Segmentación Curricular Nocturna */}
+          {/* Bloque 4: Segmentación Curricular Nocturna */}
+          {mostrarBloque('campana_24h_academico') && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             {/* Top Carreras */}
             <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
@@ -778,9 +945,10 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
               </div>
             </div>
           </div>
+          )}
 
-          {/* Gráfico 5: Tabla Comparativa entre Períodos / Campañas */}
-          {data.comparativa_campanas && data.comparativa_campanas.length > 0 && (
+          {/* Bloque 5: Tabla Comparativa entre Períodos / Campañas */}
+          {mostrarBloque('campana_24h_comparativa') && data.comparativa_campanas && data.comparativa_campanas.length > 0 && (
             <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
               <div className="flex items-center justify-between gap-2 mb-3 pb-2.5 border-b border-slate-100">
                 <div>
