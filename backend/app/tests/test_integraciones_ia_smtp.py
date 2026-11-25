@@ -1296,7 +1296,7 @@ def test_gobernanza_opcion_a_guardia_y_consultores_prueba():
         creado, tok_pl, _ = await invitar_usuario(db, req, creator=None)
         assert creado.allowed_datasets == []
         assert creado.espacio_id is None
-        assert creado.can_use_ai is False
+        assert creado.can_use_ai is True
         assert any(obj.__class__.__name__ == "DestinatarioReporte" for obj in agregados)
         assert len(tok_pl) > 10
 
@@ -1539,7 +1539,12 @@ def test_edicion_graficos_persistencia_ia_reporte_y_auditoria_superadmin():
             assert inst["indicadores_visibles"] == ["dias_operativos", "afluencia_total"]
 
         # 2. Persistencia en MensajeIAReporte + registro auditoría con status="éxito", origen y respuesta_text
-        consultor_usr = SimpleNamespace(id=77, email="consultor1@uct.cl")
+        consultor_usr = SimpleNamespace(
+            id=77,
+            email="consultor1@uct.cl",
+            can_use_ai=True,
+            roles=[Rol(id=5, nombre="Consultor_Reporte", rate_limit_quota="50/day")],
+        )
         agregados = []
         auditoria_llamadas = []
 
@@ -1556,6 +1561,7 @@ def test_edicion_graficos_persistencia_ia_reporte_y_auditoria_superadmin():
             side_effect=[
                 _ResObj(obj=reporte_mock),
                 _ResObj(obj=consultor_usr),
+                _ResObj(obj=0),
                 _ResObj(items=[]),
             ]
         )
@@ -1576,6 +1582,7 @@ def test_edicion_graficos_persistencia_ia_reporte_y_auditoria_superadmin():
             assert resp_ia["id"] == 501
             assert resp_ia["sesion_id"] == "sesion_abc"
             assert "10 días operativos" in resp_ia["respuesta"]
+            assert resp_ia["cuota"] == {"usadas": 1, "limite": 50, "restantes": 49, "ilimitado": False}
             msgs = [o for o in agregados if isinstance(o, MensajeIAReporte)]
             assert len(msgs) == 1
             assert msgs[0].usuario_id == 77

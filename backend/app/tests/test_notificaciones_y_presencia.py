@@ -1530,3 +1530,120 @@ def test_chat_prophet_enruta_presencia_y_sector(monkeypatch):
 
     asyncio.run(_run())
 
+
+def test_consultor_can_use_ai_y_cuota_reportes(monkeypatch):
+    """Verifica toggle can_use_ai en Consultor_Reporte y bloqueo/cuota en IA de reportes compartidos."""
+    import json
+    import uuid
+    from datetime import date, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+    from app.domain.auth_models import Rol
+    from app.services import auth_service
+    from app.services.servicio_reportes_compartidos import ServicioReportesCompartidos
+
+    consultor_target = SimpleNamespace(
+        id=90,
+        email="consultor.test@uct.cl",
+        is_active=True,
+        can_use_ai=False,
+        roles=[Rol(id=5, nombre="Consultor_Reporte", rate_limit_quota="2/day")],
+    )
+
+    class _FakeDbStatus:
+        def __init__(self):
+            self.commit = AsyncMock()
+            self.refresh = AsyncMock()
+
+    monkeypatch.setattr(auth_service, "limpiar_cache_usuario", lambda _uid: None)
+    monkeypatch.setattr(auth_service, "get_user_by_id", AsyncMock(return_value=consultor_target))
+
+    class _ResMock:
+        def __init__(self, obj=None):
+            self._obj = obj
+
+        def scalar_one_or_none(self):
+            return self._obj
+
+    dest = SimpleNamespace(id=1, email="consultor.test@uct.cl", nombre_completo="Consultor", cargo="Jefe", unidad_academica="Ing", activo=True)
+    reporte_mock = SimpleNamespace(
+        id=uuid.uuid4(),
+        token_acceso="tok_cuota",
+        codigo_corto="UCT-2026-CUOTA",
+        creado_por_id=1,
+        destinatario_id=1,
+        destinatario=dest,
+        creador=None,
+        espacio_id=1,
+        titulo_reporte="Reporte Cuota",
+        finalidad_reporte="Control cuota",
+        nota_general=None,
+        notas_items_json="[]",
+        fecha_inicio=date(2026, 4, 1),
+        fecha_fin=date(2026, 4, 10),
+        modo_datos="instantanea_fija",
+        filtros_bloqueados_json="{}",
+        graficos_visibles_json="[]",
+        indicadores_visibles_json='["dias_operativos"]',
+        datos_instantanea_json=json.dumps({
+            "kpis_base": {},
+            "indicadores_ejecutivos": {"dias_operativos": 10},
+            "indicadores_visibles": ["dias_operativos"],
+            "graficos_visibles": [],
+            "graficos": {},
+        }),
+        permitir_exportacion=True,
+        permitir_ia=True,
+        activo=True,
+        expira_en=None,
+        total_accesos=1,
+        ultimo_acceso_en=None,
+        creado_en=datetime(2026, 11, 24, 10, 0, 0),
+    )
+
+    async def _run():
+        actualizado = await auth_service.update_user_status(_FakeDbStatus(), 90, can_use_ai=True)
+        assert actualizado.can_use_ai is True
+
+        # 1. Usuario con can_use_ai=False recibe 403 en reporte compartido
+        consultor_deshab = SimpleNamespace(
+            id=90,
+            email="consultor.test@uct.cl",
+            can_use_ai=False,
+            roles=[Rol(id=5, nombre="Consultor_Reporte", rate_limit_quota="2/day")],
+        )
+        db_403 = AsyncMock()
+        db_403.execute = AsyncMock(side_effect=[_ResMock(reporte_mock), _ResMock(consultor_deshab)])
+        try:
+            await ServicioReportesCompartidos.consultar_ia_reporte_confinado(
+                session=db_403,
+                token_acceso="tok_cuota",
+                pregunta="Hola",
+            )
+            assert False, "Debió rechazar con 403 si can_use_ai=False"
+        except HTTPException as exc_403:
+            assert exc_403.status_code == 403
+
+        # 2. Usuario habilitado con 2/2 usadas hoy recibe 429
+        consultor_hab = SimpleNamespace(
+            id=90,
+            email="consultor.test@uct.cl",
+            can_use_ai=True,
+            roles=[Rol(id=5, nombre="Consultor_Reporte", rate_limit_quota="2/day")],
+        )
+        db_429 = AsyncMock()
+        db_429.execute = AsyncMock(side_effect=[_ResMock(reporte_mock), _ResMock(consultor_hab), _ResMock(2)])
+        try:
+            await ServicioReportesCompartidos.consultar_ia_reporte_confinado(
+                session=db_429,
+                token_acceso="tok_cuota",
+                pregunta="Hola",
+            )
+            assert False, "Debió rechazar con 429 al agotar cuota diaria"
+        except HTTPException as exc_429:
+            assert exc_429.status_code == 429
+
+    asyncio.run(_run())
+
+
