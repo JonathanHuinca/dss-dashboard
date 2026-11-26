@@ -1,0 +1,11 @@
+[run]
+source = app
+omit =
+    app/tests/*
+    app/cli/*
+    */__init__.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

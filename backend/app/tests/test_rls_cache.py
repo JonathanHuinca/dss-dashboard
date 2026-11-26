@@ -243,6 +243,9 @@ def test_endpoint_fastapi_director_recinto_espacio_cruzado_retorna_403():
     Un Director_Recinto de Espacio 2 solicita /api/v1/attendance/kpis?espacio_id=1.
     Debe responder con código HTTP 403 Forbidden.
     """
+    from unittest.mock import AsyncMock
+    from app.core.database import get_db
+
     director_recinto_2 = _crear_usuario_prueba(
         "director.estacionamiento@uct.cl",
         ["Director_Recinto"],
@@ -250,24 +253,33 @@ def test_endpoint_fastapi_director_recinto_espacio_cruzado_retorna_403():
         allowed_datasets=["estacionamiento"],
     )
 
+    async def _fake_db():
+        yield AsyncMock()
+
     app.dependency_overrides[get_current_user] = lambda: director_recinto_2
+    app.dependency_overrides[get_db] = _fake_db
 
     try:
-        with TestClient(app) as client:
-            response = client.get(
-                "/api/v1/attendance/kpis",
-                params={"espacio_id": 1, "fecha_inicio": "2026-03-01", "fecha_fin": "2026-03-31"},
-            )
-            assert response.status_code == status.HTTP_403_FORBIDDEN
-            body = response.json()
-            assert "Acceso denegado" in body.get("detail", "")
-            assert "recinto 2, no al recinto 1" in body.get("detail", "")
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/attendance/kpis",
+            params={"espacio_id": 1, "fecha_inicio": "2026-03-01", "fecha_fin": "2026-03-31"},
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        body = response.json()
+        assert "Acceso denegado" in body.get("detail", "")
+        assert "recinto 2, no al recinto 1" in body.get("detail", "")
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.clear()
 
 
 def test_endpoint_fastapi_admin_acceso_global_permitido():
-    """Un Admin_Sistema puede consultar legítimamente tanto espacio_id=1 como espacio_id=2."""
+    """Un Admin_Sistema puede consultar legítimamente tanto espacio_id=1 como espacio_id=2 sin BD viva."""
+    from unittest.mock import AsyncMock, patch
+    from app.core.database import get_db
+    from app.services.attendance_service import AttendanceService
+    from app.services.vehicle_service import VehicleService
+
     admin_global = _crear_usuario_prueba(
         "admin.global@uct.cl",
         ["Admin_Sistema"],
@@ -275,23 +287,37 @@ def test_endpoint_fastapi_admin_acceso_global_permitido():
         allowed_datasets=["biblioteca", "estacionamiento"],
     )
 
+    async def _fake_db():
+        yield AsyncMock()
+
     app.dependency_overrides[get_current_user] = lambda: admin_global
+    app.dependency_overrides[get_db] = _fake_db
 
     try:
-        with TestClient(app) as client:
-            # Espacio 1
+        with (
+            patch.object(
+                AttendanceService,
+                "get_kpis",
+                new=AsyncMock(return_value={"total_registros": 10, "usuarios_unicos": 5}),
+            ),
+            patch.object(
+                VehicleService,
+                "get_kpis",
+                new=AsyncMock(return_value={"vehiculos_unicos": 4, "total_entradas": 8}),
+            ),
+        ):
+            client = TestClient(app)
             resp_1 = client.get(
                 "/api/v1/attendance/kpis",
                 params={"espacio_id": 1, "fecha_inicio": "2026-03-01", "fecha_fin": "2026-03-31"},
             )
             assert resp_1.status_code == status.HTTP_200_OK
 
-            # Espacio 2
             resp_2 = client.get(
                 "/api/v1/vehicles/kpis",
                 params={"espacio_id": 2, "fecha_inicio": "2026-03-01", "fecha_fin": "2026-03-31"},
             )
             assert resp_2.status_code == status.HTTP_200_OK
     finally:
-        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.clear()
 
