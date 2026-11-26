@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Computed, Date, DateTime,
     ForeignKey, Index, Integer, Numeric, SmallInteger,
-    String, Text, func,
+    String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.mssql import DATETIME2, UNIQUEIDENTIFIER as UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -133,11 +133,15 @@ class ContingenciaAcademica(Base):
     descripcion: Mapped[Optional[str]] = mapped_column(Text)
     carreras_afectadas: Mapped[Optional[str]] = mapped_column(Text)
     implica_cierre_total: Mapped[bool] = mapped_column(Boolean, default=False)
-    espacio_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    espacio_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("espacios.id"), nullable=True)
     subespacio: Mapped[Optional[str]] = mapped_column(String(50), default="todos", nullable=True)
     hora_inicio: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     hora_fin: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DATETIME2, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_contingencias_fechas", "fecha_inicio", "fecha_fin"),
+    )
 
 
 
@@ -153,7 +157,7 @@ class IngestionJob(Base):
     registros_ok: Mapped[int] = mapped_column(Integer, default=0)
     registros_error: Mapped[int] = mapped_column(Integer, default=0)
     error_detail: Mapped[Optional[str]] = mapped_column(Text)
-    creado_por: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("usuarios.id"))
+    creado_por: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("usuarios.id", ondelete="SET NULL"))
     creado_en: Mapped[datetime] = mapped_column(DATETIME2, server_default=func.now())
     completado_en: Mapped[Optional[datetime]] = mapped_column(DATETIME2)
     file_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -165,10 +169,14 @@ class IngestionJob(Base):
     espacio_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("espacios.id"), nullable=True)
 
     __table_args__ = (
-        CheckConstraint("tipo IN ('asistencia', 'marcajes_torniquete', 'vehicular', 'vehicular_anpr', 'academico', 'curricular', 'custom')", name="ck_ij_tipo"),
+        CheckConstraint(
+            "tipo IN ('asistencia', 'marcajes_torniquete', 'vehicular', 'vehicular_anpr', 'academico', 'curricular', 'custom', 'institucional_uct')",
+            name="ck_ij_tipo",
+        ),
         CheckConstraint(
             "estado IN ('queued', 'processing', 'completed', 'failed')", name="ck_ij_estado"
         ),
+        Index("ix_ingestion_jobs_creado_en", "creado_en"),
     )
 
 
@@ -243,6 +251,10 @@ class EstadoSincronizacionFuente(Base):
     filas_duplicadas: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="exitoso")  # 'exitoso', 'fallido', 'en_curso'
     ultimo_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("fuente", "espacio_id", name="uq_estado_sincronizacion_fuente_espacio"),
+    )
 
 
 class SectorEstacionamiento(Base):

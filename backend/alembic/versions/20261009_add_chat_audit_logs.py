@@ -38,7 +38,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f('ix_chat_audit_logs_timestamp'), table_name='chat_audit_logs')
-    op.drop_index(op.f('ix_chat_audit_logs_dataset_tipo'), table_name='chat_audit_logs')
-    op.drop_index(op.f('ix_chat_audit_logs_usuario_id'), table_name='chat_audit_logs')
+    op.execute("""
+        DROP INDEX IF EXISTS ix_chat_audit_logs_timestamp ON dbo.chat_audit_logs;
+        DROP INDEX IF EXISTS ix_chat_audit_logs_dataset_tipo ON dbo.chat_audit_logs;
+        DROP INDEX IF EXISTS ix_chat_audit_logs_usuario_id ON dbo.chat_audit_logs;
+    """)
     op.drop_table('chat_audit_logs')

@@ -33,6 +33,13 @@ def downgrade() -> None:
         ALTER TABLE dbo.contingencias_academicas DROP COLUMN hora_fin;
     IF COL_LENGTH('dbo.contingencias_academicas', 'hora_inicio') IS NOT NULL
         ALTER TABLE dbo.contingencias_academicas DROP COLUMN hora_inicio;
+    DECLARE @df_sub NVARCHAR(200);
+    SELECT @df_sub = dc.name
+    FROM sys.default_constraints dc
+    JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+    WHERE dc.parent_object_id = OBJECT_ID('dbo.contingencias_academicas') AND c.name = 'subespacio';
+    IF @df_sub IS NOT NULL
+        EXEC('ALTER TABLE dbo.contingencias_academicas DROP CONSTRAINT [' + @df_sub + ']');
     IF COL_LENGTH('dbo.contingencias_academicas', 'subespacio') IS NOT NULL
         ALTER TABLE dbo.contingencias_academicas DROP COLUMN subespacio;
     IF COL_LENGTH('dbo.contingencias_academicas', 'espacio_id') IS NOT NULL

@@ -63,7 +63,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table('dim_estudiante_carrera')
     op.drop_table('dim_carrera_programa')
-    op.drop_index('ix_ij_file_hash', 'ingestion_jobs')
+    op.execute("""
+        DROP INDEX IF EXISTS ix_ij_file_hash ON dbo.ingestion_jobs;
+        DROP INDEX IF EXISTS ix_ingestion_jobs_file_hash ON dbo.ingestion_jobs;
+    """)
     op.drop_column('ingestion_jobs', 'espacio_id')
     op.drop_column('ingestion_jobs', 'modo_enlace')
     op.drop_column('ingestion_jobs', 'clave_enlace')

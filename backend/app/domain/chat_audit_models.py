@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Double, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Double, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -28,5 +28,9 @@ class ChatAuditLog(Base):
     )
 
     usuario: Mapped[Optional[Usuario]] = relationship(
-        "Usuario", foreign_keys=[usuario_id], lazy="joined"
+        "Usuario", foreign_keys=[usuario_id], lazy="raise_on_sql"
+    )
+
+    __table_args__ = (
+        Index("ix_chat_audit_logs_usuario_ts", "usuario_id", "timestamp"),
     )

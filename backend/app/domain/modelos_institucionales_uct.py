@@ -12,6 +12,7 @@ from sqlalchemy import (
     Date,
     Boolean,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
 )
 from sqlalchemy.dialects.mssql import DATETIME2
@@ -60,7 +61,9 @@ class InstitucionalAmbiente(Base):
     __tablename__ = "uct_ambiente"
 
     ambi_codigo: Mapped[int] = mapped_column(Integer, primary_key=True)
-    camp_codigo: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    camp_codigo: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("uct_campus.camp_codigo_campus"), index=True
+    )
     inmu_codigo: Mapped[Optional[int]] = mapped_column(Integer)
     nive_codigo: Mapped[Optional[int]] = mapped_column(Integer)
     tami_codigo: Mapped[Optional[int]] = mapped_column(Integer)
@@ -96,12 +99,24 @@ class InstitucionalCarreraPrograma(Base):
     usuario_mod: Mapped[Optional[str]] = mapped_column(String(50))
     fecha_mod: Mapped[Optional[datetime]] = mapped_column(DATETIME2)
 
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tcar_codigo", "clac_codigo"],
+            ["uct_tipo_carrera.tcar_codigo", "uct_tipo_carrera.clac_codigo"],
+            name="fk_uct_carrera_programa_tipo",
+        ),
+    )
+
 
 class InstitucionalCarreraCampus(Base):
     __tablename__ = "uct_carrera_campus"
 
-    carr_codigo: Mapped[int] = mapped_column(Integer, primary_key=True)
-    camp_codigo: Mapped[int] = mapped_column(Integer, primary_key=True)
+    carr_codigo: Mapped[int] = mapped_column(
+        Integer, ForeignKey("uct_carrera_programa.carr_codigo"), primary_key=True
+    )
+    camp_codigo: Mapped[int] = mapped_column(
+        Integer, ForeignKey("uct_campus.camp_codigo_campus"), primary_key=True
+    )
     usuario_mod: Mapped[Optional[str]] = mapped_column(String(50))
     fecha_mod: Mapped[Optional[datetime]] = mapped_column(DATETIME2)
 
@@ -151,11 +166,17 @@ class InstitucionalEstudianteCarrera(Base):
     estu_registro: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     estd_rut_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     estd_dv: Mapped[Optional[str]] = mapped_column(String(2))
-    carr_codigo: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    carr_codigo: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("uct_carrera_programa.carr_codigo"), index=True
+    )
     plan_codigo: Mapped[Optional[int]] = mapped_column(Integer)
     men_codigo: Mapped[Optional[int]] = mapped_column(Integer)
-    salu_codigo: Mapped[Optional[int]] = mapped_column(Integer, index=True)
-    ving_codigo: Mapped[Optional[int]] = mapped_column(Integer)
+    salu_codigo: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("uct_situacion_alumno.salu_codigo"), index=True
+    )
+    ving_codigo: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("uct_vias_ingreso.ving_codigo")
+    )
     estu_anho_ing: Mapped[Optional[int]] = mapped_column(SmallInteger)
     estu_semestre_ing: Mapped[Optional[int]] = mapped_column(SmallInteger)
     timp_codigo: Mapped[Optional[int]] = mapped_column(Integer)

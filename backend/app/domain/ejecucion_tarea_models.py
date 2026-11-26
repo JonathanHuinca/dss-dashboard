@@ -37,7 +37,7 @@ class EjecucionTarea(Base):
     __table_args__ = (
         Index("ix_ejecuciones_tareas_tarea_inicio", "tarea", "inicio_en"),
         CheckConstraint(
-            "disparador IN ('programado', 'manual', 'recuperacion')",
+            "disparador IN ('programado', 'manual', 'recuperacion', 'reintento')",
             name="ck_ejecuciones_tareas_disparador",
         ),
         CheckConstraint(

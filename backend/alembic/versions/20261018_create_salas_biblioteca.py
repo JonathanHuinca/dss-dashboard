@@ -45,26 +45,36 @@ def upgrade() -> None:
         SET IDENTITY_INSERT espacios OFF;
     END
 
-    INSERT INTO salas_biblioteca (
-        espacio_id, codigo, nombre, edificio, piso, descripcion, capacidad_asientos, 
-        permite_horario_extendido, puerta_principal_in, puerta_principal_out, 
-        puerta_universal_in, puerta_universal_out, activo
-    ) VALUES 
-    (
-        1, 'SALA_1_CSF02', 'Sala 1 — Estudio y Biblioteca con Locker', 'CSF02', '2do Piso',
-        '2do piso, sala de estudio y biblioteca con locker. Acceso 1 torniquete principal y 1 universal.',
-        124, 0, 'CSF02_320 CTRA IN 02', 'CSF02_320 CTRA OUT 02',
-        'CSF02_320 CTRA IN 01', 'CSF02_320 CTRA OUT 01', 1
-    ),
-    (
-        1, 'SALA_2_CSF04', 'Sala 2 — Pecera de Estudio', 'CSF04', '1er Piso',
-        '1er piso, sala pecera de estudio. Capacidad 226 asientos con posibilidad de horario extendido en exámenes.',
-        226, 1, 'CSF04_110 IN 01', 'CSF04_110 OUT',
-        'CSF04_110 IN 02_Door_1', 'CSF04_110 OUT 02_Door_1', 1
-    );
+    IF NOT EXISTS (SELECT 1 FROM salas_biblioteca WHERE codigo = 'SALA_1_CSF02')
+    BEGIN
+        INSERT INTO salas_biblioteca (
+            espacio_id, codigo, nombre, edificio, piso, descripcion, capacidad_asientos, 
+            permite_horario_extendido, puerta_principal_in, puerta_principal_out, 
+            puerta_universal_in, puerta_universal_out, activo
+        ) VALUES (
+            1, 'SALA_1_CSF02', 'Sala 1 — Estudio y Biblioteca con Locker', 'CSF02', '2do Piso',
+            '2do piso, sala de estudio y biblioteca con locker. Acceso 1 torniquete principal y 1 universal.',
+            124, 0, 'CSF02_320 CTRA IN 02', 'CSF02_320 CTRA OUT 02',
+            'CSF02_320 CTRA IN 01', 'CSF02_320 CTRA OUT 01', 1
+        );
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM salas_biblioteca WHERE codigo = 'SALA_2_CSF04')
+    BEGIN
+        INSERT INTO salas_biblioteca (
+            espacio_id, codigo, nombre, edificio, piso, descripcion, capacidad_asientos, 
+            permite_horario_extendido, puerta_principal_in, puerta_principal_out, 
+            puerta_universal_in, puerta_universal_out, activo
+        ) VALUES (
+            1, 'SALA_2_CSF04', 'Sala 2 — Pecera de Estudio', 'CSF04', '1er Piso',
+            '1er piso, sala pecera de estudio. Capacidad 226 asientos con posibilidad de horario extendido en exámenes.',
+            226, 1, 'CSF04_110 IN 01', 'CSF04_110 OUT',
+            'CSF04_110 IN 02_Door_1', 'CSF04_110 OUT 02_Door_1', 1
+        );
+    END
     """)
 
 
 def downgrade() -> None:
-    op.drop_index('ix_sb_espacio_id', table_name='salas_biblioteca')
+    op.execute("DROP INDEX IF EXISTS ix_sb_espacio_id ON dbo.salas_biblioteca;")
     op.drop_table('salas_biblioteca')

@@ -111,8 +111,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint('fk_usuarios_created_by', 'usuarios', type_='foreignkey')
-    op.drop_constraint('fk_usuarios_espacio_id', 'usuarios', type_='foreignkey')
+    op.execute("""
+        IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'fk_usuarios_created_by')
+            ALTER TABLE dbo.usuarios DROP CONSTRAINT fk_usuarios_created_by;
+        IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'fk_usuarios_espacio_id')
+            ALTER TABLE dbo.usuarios DROP CONSTRAINT fk_usuarios_espacio_id;
+        DECLARE @col NVARCHAR(100), @df NVARCHAR(200);
+        DECLARE cur CURSOR LOCAL FAST_FORWARD FOR
+            SELECT c.name, dc.name
+            FROM sys.default_constraints dc
+            JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+            WHERE dc.parent_object_id = OBJECT_ID('dbo.usuarios')
+              AND c.name IN ('can_use_ai', 'can_export', 'can_ingest');
+        OPEN cur;
+        FETCH NEXT FROM cur INTO @col, @df;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC('ALTER TABLE dbo.usuarios DROP CONSTRAINT [' + @df + ']');
+            FETCH NEXT FROM cur INTO @col, @df;
+        END
+        CLOSE cur;
+        DEALLOCATE cur;
+    """)
     op.drop_column('usuarios', 'created_by_user_id')
     op.drop_column('usuarios', 'espacio_id')
     op.drop_column('usuarios', 'can_ingest')

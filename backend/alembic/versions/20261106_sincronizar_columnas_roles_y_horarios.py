@@ -32,6 +32,13 @@ def downgrade() -> None:
     op.execute("""
         IF COL_LENGTH('dbo.horarios_operacion', 'subespacio') IS NOT NULL
         BEGIN
+            DECLARE @df_sub NVARCHAR(256);
+            SELECT @df_sub = dc.name
+            FROM sys.default_constraints dc
+            JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+            WHERE dc.parent_object_id = OBJECT_ID('dbo.horarios_operacion') AND c.name = 'subespacio';
+            IF @df_sub IS NOT NULL
+                EXEC('ALTER TABLE dbo.horarios_operacion DROP CONSTRAINT [' + @df_sub + ']');
             ALTER TABLE dbo.horarios_operacion DROP COLUMN subespacio;
         END
     """)

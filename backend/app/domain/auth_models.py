@@ -77,7 +77,7 @@ class Usuario(Base):
     )
 
     usuario_roles: Mapped[List[UsuarioRol]] = relationship(
-        "UsuarioRol", back_populates="usuario", cascade="all, delete-orphan", lazy="selectin"
+        "UsuarioRol", back_populates="usuario", cascade="all, delete-orphan", lazy="raise_on_sql"
     )
     roles: Mapped[List[Rol]] = relationship(
         "Rol",
@@ -90,7 +90,7 @@ class Usuario(Base):
         "Usuario", remote_side="Usuario.id", foreign_keys=[created_by_user_id]
     )
     tokens_activacion: Mapped[List["TokenActivacion"]] = relationship(
-        "TokenActivacion", back_populates="usuario", cascade="all, delete-orphan", lazy="selectin"
+        "TokenActivacion", back_populates="usuario", cascade="all, delete-orphan", lazy="raise_on_sql"
     )
 
     @property

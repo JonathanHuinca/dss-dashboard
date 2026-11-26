@@ -183,7 +183,10 @@ def downgrade() -> None:
     op.execute("DROP VIEW IF EXISTS vw_estudiante_carrera_actual;")
 
     # Eliminar tablas institucionales en orden inverso de dependencias
-    op.drop_index(op.f('ix_uct_edificios_camp_codigo_campus'), table_name='uct_edificios')
+    op.execute("""
+        IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'ix_uct_edificios_camp_codigo_campus' AND object_id = OBJECT_ID('dbo.uct_edificios'))
+            DROP INDEX ix_uct_edificios_camp_codigo_campus ON dbo.uct_edificios;
+    """)
     op.drop_table('uct_edificios')
     op.drop_table('uct_vias_ingreso')
     op.drop_table('uct_tipo_inmueble')

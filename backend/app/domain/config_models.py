@@ -14,7 +14,7 @@ class ConfiguracionEspacios(Base):
     __tablename__ = "configuracion_espacios"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    espacio_id: Mapped[int] = mapped_column(Integer, ForeignKey("espacios.id"), nullable=False)
+    espacio_id: Mapped[int] = mapped_column(Integer, ForeignKey("espacios.id"), nullable=False, unique=True)
     ia_asistente_activo: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     active_provider: Mapped[str] = mapped_column(String(50), default="gemini", nullable=False)
     default_model: Mapped[str] = mapped_column(String(100), default="gemini-3.1-flash-lite", nullable=False)

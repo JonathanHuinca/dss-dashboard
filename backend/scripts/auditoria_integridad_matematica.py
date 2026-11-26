@@ -1,119 +1,175 @@
 """
-auditoria_integridad_matematica.py — Script de Auditoria de Integridad Analitica para Tesis de Grado.
-Compara matematicamente las metricas del consolidado historico 2026 de referencia (Documentos_soloVista)
-contra la logica refactorizada implementada en el motor relacional y servicios de analitica (DSS UCT).
+auditoria_integridad_matematica.py — Auditoría de integridad numérica sobre dataset fixture controlado.
+Contrasta los valores esperados analíticamente contra las salidas reales de AttendanceService y VehicleService.
 """
-
+import asyncio
+import os
 import sys
-from pathlib import Path
-import pandas as pd
-import numpy as np
+from datetime import date, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
-def resolver_directorio_referencia() -> Path:
-    posibles_rutas = [
-        Path("Documentos_soloVista"),
-        Path("../Documentos_soloVista"),
-        Path(__file__).resolve().parent.parent.parent / "Documentos_soloVista",
-        Path(__file__).resolve().parent.parent / "Documentos_soloVista",
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from app.services.attendance_service import (
+    AttendanceService,
+    _calcular_curva_presencia_por_hora,
+)
+from app.services.vehicle_service import (
+    VehicleService,
+    _calcular_curva_presencia_vehicular_por_hora,
+)
+
+
+def _crear_sesion_mock_filas(filas_primera: list[SimpleNamespace]) -> AsyncMock:
+    db = AsyncMock()
+    resultados = []
+    for fila in filas_primera:
+        res = MagicMock()
+        res.first.return_value = fila
+        res.one.return_value = fila
+        resultados.append(res)
+    db.execute = AsyncMock(side_effect=resultados)
+    return db
+
+
+async def _auditar_servicios() -> list[tuple[str, str, float, float]]:
+    ahora_ref = datetime(2026, 10, 14, 18, 0, 0)
+    fecha_ev = date(2026, 10, 14)
+
+    # 1. Fixture controlado para barrido cronológico de presencia peatonal (AttendanceService)
+    sesiones_bib = [
+        (fecha_ev, 1, datetime(2026, 10, 14, 9, 30, 0), datetime(2026, 10, 14, 10, 30, 0)),
+        (fecha_ev, 1, datetime(2026, 10, 14, 10, 10, 0), datetime(2026, 10, 14, 10, 45, 0)),
+        (fecha_ev, 2, datetime(2026, 10, 14, 10, 15, 0), datetime(2026, 10, 14, 11, 20, 0)),
     ]
-    for ruta in posibles_rutas:
-        if ruta.exists() and (ruta / "datos_procesados").exists():
-            return ruta.resolve()
-    raise FileNotFoundError("No se encontro el directorio Documentos_soloVista.")
+    flujo_bib = [
+        SimpleNamespace(bucket=datetime(2026, 10, 14, 9, 0, 0), fecha=fecha_ev, ingresos=1, salidas=0, ingresos_sala1=1, ingresos_sala2=0),
+        SimpleNamespace(bucket=datetime(2026, 10, 14, 10, 0, 0), fecha=fecha_ev, ingresos=2, salidas=2, ingresos_sala1=1, ingresos_sala2=1),
+        SimpleNamespace(bucket=datetime(2026, 10, 14, 11, 0, 0), fecha=fecha_ev, ingresos=0, salidas=1, ingresos_sala1=0, ingresos_sala2=0),
+    ]
+    curva_bib = _calcular_curva_presencia_por_hora(sesiones_bib, flujo_bib, ahora_ref)
+    pico_bib_10 = next(p for p in curva_bib if p["bucket"].endswith("10:00:00"))
+    pico_bib_11 = next(p for p in curva_bib if p["bucket"].endswith("11:00:00"))
 
-def ejecutar_auditoria():
-    base_dir = resolver_directorio_referencia()
-    print(f"Directorio de referencia detectado: {base_dir}")
+    # 2. Fixture controlado para AttendanceService.get_kpis
+    fila_bib = SimpleNamespace(
+        total_registros=3,
+        usuarios_unicos=2,
+        total_registros_sala1=2,
+        total_registros_sala2=1,
+        usuarios_unicos_sala1=2,
+        usuarios_unicos_sala2=1,
+        dias_operativos=1,
+        permanencia_promedio_min=60.0,
+        tasa_rebote_pct=33.33,
+        horas_estudiante_total=3.0,
+        permanencia_mediana_min=50.0,
+        hora_punta_num=10,
+    )
+    db_bib = _crear_sesion_mock_filas([fila_bib])
+    with (
+        patch.object(AttendanceService, "_build_attendance_filters", new=AsyncMock(return_value=("1=1", {}))),
+        patch.object(AttendanceService, "get_realtime_presence_curve", new=AsyncMock(return_value=curva_bib)),
+    ):
+        kpis_bib = await AttendanceService.get_kpis(db_bib, espacio_id=1, fecha_inicio=fecha_ev, fecha_fin=fecha_ev)
 
-    # =========================================================================
-    # 1. AUDITORIA DATASET A: Consolidado Curado 2026 (asistencia_con_variables.parquet)
-    # =========================================================================
-    parquet_path = base_dir / "datos_procesados" / "asistencia_con_variables.parquet"
-    df_curado = pd.read_parquet(parquet_path)
+    # 3. Fixture controlado para barrido cronológico vehicular (VehicleService)
+    sesiones_veh = [
+        (fecha_ev, 1, datetime(2026, 10, 14, 8, 10, 0), datetime(2026, 10, 14, 9, 40, 0)),
+        (fecha_ev, 2, datetime(2026, 10, 14, 8, 20, 0), datetime(2026, 10, 14, 8, 50, 0)),
+        (fecha_ev, 3, datetime(2026, 10, 14, 8, 30, 0), datetime(2026, 10, 14, 9, 10, 0)),
+    ]
+    flujo_veh = [
+        SimpleNamespace(
+            bucket=datetime(2026, 10, 14, 8, 0, 0),
+            fecha=fecha_ev,
+            entradas=3,
+            salidas=1,
+            entradas_csf11=1,
+            salidas_csf11=0,
+            entradas_csf21=1,
+            salidas_csf21=1,
+            entradas_chs01=1,
+            salidas_chs01=0,
+        ),
+        SimpleNamespace(
+            bucket=datetime(2026, 10, 14, 9, 0, 0),
+            fecha=fecha_ev,
+            entradas=0,
+            salidas=2,
+            entradas_csf11=0,
+            salidas_csf11=1,
+            entradas_csf21=0,
+            salidas_csf21=0,
+            entradas_chs01=0,
+            salidas_chs01=1,
+        ),
+    ]
+    caps_sector = {"CSF11": 40, "CSF21": 50, "CHS01": 35, "todos": 125}
+    curva_veh = _calcular_curva_presencia_vehicular_por_hora(sesiones_veh, flujo_veh, ahora_ref, caps_sector, 125)
+    pico_veh_08 = next(p for p in curva_veh if p["bucket"].endswith("08:00:00"))
+    pico_veh_09 = next(p for p in curva_veh if p["bucket"].endswith("09:00:00"))
 
-    # Metricas de referencia original
-    ref_total_curado = len(df_curado)
-    ref_unicos_curado = df_curado["person_id_hash"].nunique()
-    ref_horas_curado = round(float(df_curado["tiempo_bruto_horas"].sum()), 2)
-    ref_diurnas_curado = int(((df_curado["hora_llegada"] >= 7) & (df_curado["hora_llegada"] < 22)).sum())
-    ref_nocturnas_curado = int(((df_curado["hora_llegada"] >= 22) | (df_curado["hora_llegada"] < 7)).sum())
+    # 4. Fixture controlado para VehicleService.get_kpis
+    fila_veh_g = SimpleNamespace(
+        vehiculos_unicos=4,
+        total_entradas=3,
+        total_salidas=3,
+        total_accesos_csf11=1,
+        total_accesos_csf21=1,
+        total_accesos_chs01=1,
+        dias_operativos=1,
+        tasa_lectura_fallida_pct=0.0,
+        hora_punta_num=8,
+        max_entradas=3,
+    )
+    fila_veh_p = SimpleNamespace(permanencia_mediana_min=45.0)
+    db_veh = _crear_sesion_mock_filas([fila_veh_g, fila_veh_p])
+    with (
+        patch.object(VehicleService, "_build_vehicle_filters", new=AsyncMock(return_value=("1=1", {}))),
+        patch("app.services.vehicle_service._obtener_capacidades_sectores_vehiculares", new=AsyncMock(return_value=caps_sector)),
+        patch.object(VehicleService, "get_realtime_presence_curve", new=AsyncMock(return_value=curva_veh)),
+    ):
+        kpis_veh = await VehicleService.get_kpis(db_veh, espacio_id=2, fecha_inicio=fecha_ev, fecha_fin=fecha_ev)
 
-    # Metricas calculadas bajo la logica refactorizada del motor (hora_dia y dia_semana_iso)
-    pe_dt_curado = pd.to_datetime(df_curado["fecha"] + " " + df_curado["primera_entrada"], format="%d-%m-%Y %H:%M:%S", errors="coerce")
-    hora_dia_curado = pe_dt_curado.dt.hour
-
-    eng_total_curado = len(df_curado)
-    eng_unicos_curado = len(df_curado.groupby("person_id_hash").size())
-    eng_diurnas_curado = int(((hora_dia_curado >= 7) & (hora_dia_curado < 22)).sum())
-    eng_nocturnas_curado = int(((hora_dia_curado >= 22) | (hora_dia_curado < 7)).sum())
-    eng_horas_curado = round(float(df_curado["tiempo_bruto_horas"].sum()), 2)
-
-    # =========================================================================
-    # 2. AUDITORIA DATASET B: Consolidado Historico Base (asistencia_base.csv)
-    # =========================================================================
-    csv_path = base_dir / "datos_bases" / "asistencia_base.csv"
-    df_base = pd.read_csv(csv_path, encoding="utf-8-sig")
-
-    pe_base = pd.to_datetime(df_base["Primera entrada"], errors="coerce")
-    us_base = pd.to_datetime(df_base["Última salida"], errors="coerce")
-
-    ref_total_base = len(df_base)
-    ref_unicos_base = df_base["personId"].nunique()
-
-    duracion_min = (us_base - pe_base).dt.total_seconds() / 60.0
-    mask_valida = pe_base.notna() & us_base.notna() & (us_base > pe_base)
-    ref_horas_base = round(float(duracion_min[mask_valida].sum() / 60.0), 2)
-
-    hora_pe_base = pe_base.dt.hour
-    ref_diurnas_base = int(((hora_pe_base >= 7) & (hora_pe_base < 22)).sum())
-    ref_nocturnas_base = int(((hora_pe_base >= 22) | (hora_pe_base < 7) | hora_pe_base.isna()).sum())
-
-    # Motor refactorizado sobre la base completa
-    eng_hora_dia_base = pe_base.dt.hour
-    eng_total_base = len(df_base)
-    eng_unicos_base = len(df_base.groupby("personId").size())
-    eng_diurnas_base = int(((eng_hora_dia_base >= 7) & (eng_hora_dia_base < 22)).sum())
-    eng_nocturnas_base = int(((eng_hora_dia_base >= 22) | (eng_hora_dia_base < 7) | eng_hora_dia_base.isna()).sum())
-    eng_horas_base = round(float(duracion_min[mask_valida].sum() / 60.0), 2)
-
-    # =========================================================================
-    # 3. CONCILIACION MATEMATICA Y EVALUACION DE DISCREPANCIA
-    # =========================================================================
-    filas = [
-        ("Consolidado Curado 2026 (Parquet)", "Asistencias Totales", ref_total_curado, eng_total_curado, "Eventos"),
-        ("Consolidado Curado 2026 (Parquet)", "Asistencias Diurnas (07:00-21:59)", ref_diurnas_curado, eng_diurnas_curado, "Eventos"),
-        ("Consolidado Curado 2026 (Parquet)", "Asistencias Nocturnas (22:00-06:59)", ref_nocturnas_curado, eng_nocturnas_curado, "Eventos"),
-        ("Consolidado Curado 2026 (Parquet)", "Estudiantes Unicos (Hash)", ref_unicos_curado, eng_unicos_curado, "Personas"),
-        ("Consolidado Curado 2026 (Parquet)", "Horas-Persona Acumuladas", ref_horas_curado, eng_horas_curado, "Horas"),
-
-        ("Consolidado Historico Base (CSV)", "Asistencias Totales", ref_total_base, eng_total_base, "Eventos"),
-        ("Consolidado Historico Base (CSV)", "Asistencias Diurnas (07:00-21:59)", ref_diurnas_base, eng_diurnas_base, "Eventos"),
-        ("Consolidado Historico Base (CSV)", "Asistencias Nocturnas / Anomalias", ref_nocturnas_base, eng_nocturnas_base, "Eventos"),
-        ("Consolidado Historico Base (CSV)", "Estudiantes Unicos (personId)", ref_unicos_base, eng_unicos_base, "Personas"),
-        ("Consolidado Historico Base (CSV)", "Horas-Persona Validas", ref_horas_base, eng_horas_base, "Horas"),
+    return [
+        ("AttendanceService (Presencia 10h)", "Pico simultáneo global", 3.0, float(pico_bib_10["personas_unicas"])),
+        ("AttendanceService (Presencia 10h)", "Pico simultáneo Sala 1", 2.0, float(pico_bib_10["personas_sala1"])),
+        ("AttendanceService (Presencia 11h)", "Arrastre continuo Sala 2", 1.0, float(pico_bib_11["personas_unicas"])),
+        ("AttendanceService (KPIs)", "Total registros", 3.0, float(kpis_bib["total_registros"])),
+        ("AttendanceService (KPIs)", "Horas estudiante total", 3.0, float(kpis_bib["horas_estudiante_total"])),
+        ("AttendanceService (KPIs)", "Ocupación pico curva", 3.0, float(kpis_bib["max_aforo_historico"])),
+        ("VehicleService (Presencia 08h)", "Vehículos simultáneos total", 3.0, float(pico_veh_08["vehiculos_presentes"])),
+        ("VehicleService (Presencia 09h)", "Arrastre vehicular CSF11+CHS01", 2.0, float(pico_veh_09["vehiculos_presentes"])),
+        ("VehicleService (KPIs)", "Vehículos únicos", 4.0, float(kpis_veh["vehiculos_unicos"])),
+        ("VehicleService (KPIs)", "Total accesos (entradas)", 3.0, float(kpis_veh["total_accesos"])),
+        ("VehicleService (KPIs)", "Pico simultáneo vehicular", 3.0, float(kpis_veh["max_aforo_historico"])),
     ]
 
-    print("\n" + "=" * 115)
-    print("MATRIZ DE CONCILIACION MATEMATICA — AUDITORIA DE INTEGRIDAD NUMERICA")
-    print("=" * 115)
-    print(f"{'Dataset de Referencia':<35} | {'Metrica Analitica':<35} | {'Ref. Original':<13} | {'Motor Refact.':<13} | {'Discrepancia':<12}")
-    print("-" * 115)
+
+def ejecutar_auditoria() -> list[tuple[str, str, float, float]]:
+    filas = asyncio.run(_auditar_servicios())
+    print("\n" + "=" * 105)
+    print("MATRIZ DE CONCILIACIÓN MATEMÁTICA — FIXTURE CONTROLADO VS SERVICIOS REALES")
+    print("=" * 105)
+    print(f"{'Servicio / Caso':<36} | {'Métrica Analítica':<32} | {'Esperado':<10} | {'Servicio':<10} | {'Error':<8}")
+    print("-" * 105)
 
     max_delta_pct = 0.0
-    for ds, metrica, v_ref, v_eng, unidad in filas:
-        delta = abs(v_eng - v_ref)
-        pct = (delta / v_ref * 100.0) if v_ref != 0 else 0.0
-        if pct > max_delta_pct:
-            max_delta_pct = pct
-        print(f"{ds:<35} | {metrica:<35} | {v_ref:<13} | {v_eng:<13} | {pct:.2f}%")
-        assert pct == 0.0, f"Fallo de integridad en {metrica}: discrepancia = {pct}%"
+    for servicio, metrica, esperado, obtenido in filas:
+        delta = abs(obtenido - esperado)
+        pct = (delta / esperado * 100.0) if esperado != 0 else 0.0
+        max_delta_pct = max(max_delta_pct, pct)
+        print(f"{servicio:<36} | {metrica:<32} | {esperado:<10.2f} | {obtenido:<10.2f} | {pct:.2f}%")
+        assert pct == 0.0, f"Discrepancia detectada en {servicio} -> {metrica}: esperado={esperado}, obtenido={obtenido}"
 
-    print("-" * 115)
-    print(f"DISCREPANCIA MAXIMA OBSERVADA: {max_delta_pct:.2f}%")
-    print("ESTADO DEL DICTAMEN: CONCILIACION CERTIFICADA AL 100.00% (0.00% ERROR)")
-    print("=" * 115 + "\n")
+    print("-" * 105)
+    print(f"DISCREPANCIA MÁXIMA OBSERVADA: {max_delta_pct:.2f}%")
+    print("DICTAMEN: CONCILIACIÓN CERTIFICADA AL 100.00% (0.00% ERROR)")
+    print("=" * 105 + "\n")
     return filas
+
 
 if __name__ == "__main__":
     ejecutar_auditoria()
-

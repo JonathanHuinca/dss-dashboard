@@ -28,5 +28,5 @@ class DownloadAuditLog(Base):
     )
 
     usuario: Mapped[Optional[Usuario]] = relationship(
-        "Usuario", foreign_keys=[usuario_id], lazy="joined"
+        "Usuario", foreign_keys=[usuario_id], lazy="raise_on_sql"
     )

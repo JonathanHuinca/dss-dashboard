@@ -16,6 +16,7 @@ import app.domain.chat_audit_models  # noqa: F401
 import app.domain.chat_models  # noqa: F401
 import app.domain.ejecucion_tarea_models  # noqa: F401
 import app.domain.reportes_compartidos_models  # noqa: F401
+import app.domain.download_audit_models  # noqa: F401
 
 config = context.config
 url_sincrona = os.environ.get("DATABASE_URL_SYNC") or settings.DATABASE_URL_SYNC

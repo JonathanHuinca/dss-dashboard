@@ -106,6 +106,8 @@ def inicializar_base_y_permisos():
         sys.exit(1)
 
     cursor = conn.cursor()
+    conn_uct = None
+    cursor_uct = None
 
     try:
         # 1. Adquirir bloqueo exclusivo aplicativo (sp_getapplock)
@@ -132,6 +134,16 @@ def inicializar_base_y_permisos():
             print("[inicializar_bd] Base de datos 'uct_dashboard' creada exitosamente.")
         else:
             print("[inicializar_bd] Base de datos 'uct_dashboard' ya existe.")
+
+        # Habilitar READ_COMMITTED_SNAPSHOT para evitar bloqueos entre lectores analíticos y escrituras
+        cursor.execute(
+            """
+            IF EXISTS (SELECT 1 FROM sys.databases WHERE name = 'uct_dashboard' AND is_read_committed_snapshot_on = 0)
+            BEGIN
+                ALTER DATABASE [uct_dashboard] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+            END
+            """
+        )
 
         # 3. Crear o actualizar login a nivel de servidor uct_app
         cursor.execute(f"SELECT name FROM sys.server_principals WHERE name = '{usuario_app}'")
@@ -180,7 +192,8 @@ def inicializar_base_y_permisos():
             command.upgrade(cfg, "head")
             print("[inicializar_bd] Migraciones Alembic aplicadas exitosamente sobre uct_dashboard.")
         except Exception as error_alembic:
-            print(f"[inicializar_bd] Advertencia durante Alembic upgrade: {error_alembic}")
+            print(f"[inicializar_bd] ERROR crítico durante Alembic upgrade: {error_alembic}")
+            raise
 
         print("[inicializar_bd] Verificando tablas para sincronización desde master...")
         try:
@@ -252,6 +265,10 @@ def inicializar_base_y_permisos():
         print("[inicializar_bd] Inicialización finalizada exitosamente con login 'uct_app' y base 'uct_dashboard'.")
 
     finally:
+        if cursor_uct is not None:
+            cursor_uct.close()
+        if conn_uct is not None:
+            conn_uct.close()
         cursor.close()
         conn.close()
 

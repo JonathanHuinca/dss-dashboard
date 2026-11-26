@@ -27,7 +27,8 @@ class DestinatarioReporte(Base):
         "ReporteCompartido",
         back_populates="destinatario",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        passive_deletes=True,
+        lazy="raise_on_sql",
     )
 
 
@@ -44,7 +45,7 @@ class ReporteCompartido(Base):
     destinatario_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("destinatarios_reportes.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    espacio_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    espacio_id: Mapped[int] = mapped_column(Integer, ForeignKey("espacios.id"), nullable=False, index=True)
     titulo_reporte: Mapped[str] = mapped_column(String(200), nullable=False)
     finalidad_reporte: Mapped[str] = mapped_column(String(500), nullable=False)
     nota_general: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -65,22 +66,23 @@ class ReporteCompartido(Base):
     creado_en: Mapped[datetime] = mapped_column(DATETIME2, default=datetime.now, nullable=False)
 
     destinatario: Mapped["DestinatarioReporte"] = relationship(
-        "DestinatarioReporte", back_populates="reportes", lazy="selectin"
+        "DestinatarioReporte", back_populates="reportes", lazy="raise_on_sql"
     )
     creador: Mapped[Optional["app.domain.auth_models.Usuario"]] = relationship(
-        "app.domain.auth_models.Usuario", lazy="selectin", foreign_keys=[creado_por_id]
+        "app.domain.auth_models.Usuario", lazy="raise_on_sql", foreign_keys=[creado_por_id]
     )
     accesos: Mapped[List["AuditoriaAccesoReporte"]] = relationship(
         "AuditoriaAccesoReporte",
         back_populates="reporte",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        passive_deletes=True,
+        lazy="raise_on_sql",
     )
     mensajes_ia: Mapped[List["MensajeIAReporte"]] = relationship(
         "MensajeIAReporte",
         back_populates="reporte",
         cascade="all, delete-orphan",
-        lazy="noload",
+        lazy="raise_on_sql",
     )
 
 
