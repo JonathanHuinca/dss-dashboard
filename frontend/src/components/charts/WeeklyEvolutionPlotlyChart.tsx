@@ -1,9 +1,13 @@
-import React, {  useState, useMemo , memo } from 'react'
+import { useState, useMemo, memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { WeeklyEvolutionPoint, obtenerResumenAnualCalendario, DiaCalendarioResumen } from '../../api/client'
+import {
+  type WeeklyEvolutionPoint,
+  obtenerResumenAnualCalendario,
+  type DiaCalendarioResumen,
+} from '../../api/client'
 import { useQuery } from '@tanstack/react-query'
 import type { Data  } from 'plotly.js-dist-min'
-import { Flag, AlertOctagon, Calendar, BookOpen } from 'lucide-react'
+import { Calendar } from 'lucide-react'
 import { formatDayMonthSpanish } from '../../types/dateRange'
 
 interface Props {

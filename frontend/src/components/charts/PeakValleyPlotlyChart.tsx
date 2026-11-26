@@ -1,6 +1,6 @@
 import {  useMemo , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { PeakValleyPoint } from '../../api/client'
+import { type PeakValleyPoint } from '../../api/client'
 import type { Data  } from 'plotly.js-dist-min'
 
 interface Props {

@@ -9,7 +9,6 @@ import {
   Search,
   CheckCircle2,
   AlertCircle,
-  Clock,
   Sparkles,
   X,
   Save,
@@ -24,9 +23,9 @@ import {
   actualizarEventoCalendario,
   crearEventoCalendario,
   eliminarEventoCalendario,
-  EventoCalendarioDetalle,
-  EventoCalendarioFormulario,
-  EventoCalendarioCrearFormulario,
+  type EventoCalendarioDetalle,
+  type EventoCalendarioFormulario,
+  type EventoCalendarioCrearFormulario,
 } from '../../../api/administracion'
 import { obtenerFechaHoyChileIso } from '../../../utils/fechaChile'
 
@@ -53,7 +52,7 @@ export const CalendarioSection: React.FC = () => {
   const [mensajeFeedback, setMensajeFeedback] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null)
 
   // Consulta de eventos
-  const { data: eventos = [], isLoading, refetch } = useQuery({
+  const { data: eventos = [], isLoading } = useQuery({
     queryKey: ['admin-calendar-events', anioSeleccionado, categoriaFiltro, busqueda, agruparPeriodos],
     queryFn: () =>
       fetchCalendarEvents({

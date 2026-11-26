@@ -8,17 +8,11 @@ import {
   RefreshCw,
   Globe,
   Trash,
-  AlertTriangle,
-  Search,
-  Filter,
-  Eye,
-  EyeOff,
   CheckCircle2,
   AlertCircle,
   X,
   Save,
   Info,
-  Clock,
 } from 'lucide-react'
 import {
   fetchCalendarStatus,
@@ -26,11 +20,9 @@ import {
   obtenerContingencias,
   crearContingencia,
   eliminarContingencia,
-  ContingenciaAcademica,
-  ContingenciaCrear,
-  fetchCalendarEvents,
+  type ContingenciaAcademica,
+  type ContingenciaCrear,
   depurarCalendarBasura,
-  EventoCalendarioDetalle,
 } from '../../../api/client'
 
 interface Props {
@@ -59,10 +51,6 @@ const obtenerFechaHoyISO = (): string => {
 export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }) => {
   const queryClient = useQueryClient()
   const [calendarSyncMsg, setCalendarSyncMsg] = useState<string | null>(null)
-  const [calendarSearch, setCalendarSearch] = useState('')
-  const [calendarCategory, setCalendarCategory] = useState<string>('todos')
-  const [showCalendarTable, setShowCalendarTable] = useState<boolean>(true)
-  const [agruparPeriodos, setAgruparPeriodos] = useState<boolean>(true)
 
   // Modal de contingencias
   const [isContingenciaModalOpen, setIsContingenciaModalOpen] = useState(false)
@@ -88,21 +76,6 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
     staleTime: 60_000,
   })
 
-  const {
-    data: calendarEvents = [],
-    isLoading: isCalendarLoading,
-    refetch: refetchCalendarEvents,
-  } = useQuery<EventoCalendarioDetalle[]>({
-    queryKey: ['calendar-events', selectedAnio, calendarCategory, calendarSearch, agruparPeriodos],
-    queryFn: () =>
-      fetchCalendarEvents({
-        anio: selectedAnio,
-        categoria: calendarCategory === 'todos' ? undefined : calendarCategory,
-        busqueda: calendarSearch.trim() || undefined,
-        agrupar_periodos: agruparPeriodos,
-      }),
-  })
-
   const { data: contingenciasList = [], isLoading: isLoadingContingencias } = useQuery({
     queryKey: ['contingencias', selectedAnio],
     queryFn: () => obtenerContingencias(selectedAnio),
@@ -123,7 +96,6 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
     queryClient.invalidateQueries({ queryKey: ['weekly-evolution'] })
     queryClient.invalidateQueries({ queryKey: ['forecast-attendance'] })
     queryClient.invalidateQueries({ queryKey: ['forecast-parking'] })
-    queryClient.invalidateQueries({ queryKey: ['forecast-14days'] })
   }
 
   const syncCalendarMutation = useMutation({
@@ -727,7 +699,7 @@ export const CalendarioContingenciasSection: React.FC<Props> = ({ selectedAnio }
                   Tratamiento en Motor Analítico y Modelos Predictivos:
                 </span>
                 <p className="text-[11px] text-purple-800 leading-relaxed">
-                  Este período se aísla automáticamente en el entrenamiento de Prophet y GBR para evitar distorsiones en los pronósticos de demanda habitual, reconociendo el aforo nulo o reducido como un evento extraordinario justificado.
+                  Este período se aísla automáticamente en el entrenamiento de Meta Prophet para evitar distorsiones en los pronósticos de demanda habitual, reconociendo el aforo nulo o reducido como un evento extraordinario justificado.
                 </p>
               </div>
             </div>

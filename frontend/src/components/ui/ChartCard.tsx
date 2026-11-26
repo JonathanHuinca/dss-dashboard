@@ -1,14 +1,25 @@
-import { ReactNode, useRef, useState, useEffect } from 'react'
-import { Sparkles, Download, Maximize2, Minimize2, X, ArrowLeftRight, FileSpreadsheet, Loader2, Table, Check, Layers } from 'lucide-react'
+import { type ReactNode, useRef, useState, useEffect } from 'react'
+import {
+  Sparkles,
+  Download,
+  Maximize2,
+  X,
+  ArrowLeftRight,
+  FileSpreadsheet,
+  Loader2,
+  Table,
+  Check,
+} from 'lucide-react'
 import { useAssistant } from '../../context/AssistantContext'
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
 import {
   exportarGraficoAExcel,
   detectarSubgraficosEnElemento,
   exportarSubgraficosCombinadosAExcel,
-  SubgraficoDetectado,
+  type SubgraficoDetectado,
 } from '../../utils/excelExport'
 import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
+import { descargarBlobSeguro } from '../../utils/descargaBlob'
 
 interface Props {
   title: string
@@ -64,7 +75,7 @@ export function ChartCard({
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '')
+      .replace(/(?:^_+)|(?:_+$)/g, '')
 
   const chartRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -80,34 +91,7 @@ export function ChartCard({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isMaximized])
 
-  // Despachar resize de Plotly cuando cambia maximizado, altura o ancho
-  useEffect(() => {
-    const t1 = setTimeout(() => window.dispatchEvent(new Event('resize')), 50)
-    const t2 = setTimeout(() => window.dispatchEvent(new Event('resize')), 180)
-    const t3 = setTimeout(() => window.dispatchEvent(new Event('resize')), 350)
-    return () => {
-      clearTimeout(t1)
-      clearTimeout(t2)
-      clearTimeout(t3)
-    }
-  }, [isMaximized, customHeight, isFullWidth])
-
-  // Escuchar redimensionamiento bidireccional mediante ResizeObserver en el card
-  useEffect(() => {
-    if (!cardRef.current) return
-    let animId: number
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(animId)
-      animId = requestAnimationFrame(() => {
-        window.dispatchEvent(new Event('resize'))
-      })
-    })
-    observer.observe(cardRef.current)
-    return () => {
-      observer.disconnect()
-      cancelAnimationFrame(animId)
-    }
-  }, [])
+  // InteractiveChart gestiona ResizeObserver + Plotly.Plots.resize sobre su contenedor sin eventos globales de window
 
   // Escuchar evento global de restablecimiento de gráficos
   useEffect(() => {
@@ -148,14 +132,7 @@ export function ChartCard({
 
   const downloadCsvBlob = (csvContent: string, filename: string) => {
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', `${filename}.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    descargarBlobSeguro(blob, `${filename}.csv`)
   }
 
   const generarCsvStringDesdePlotly = (plotEl: any): string | null => {
@@ -624,14 +601,6 @@ export function ChartCard({
     } else if (tipo === 'imagen') {
       ejecutarDescargaImagen(opcion, subgraficos)
     }
-  }
-
-  const adjustHeight = (delta: number) => {
-    setCustomHeight((prev) => {
-      const current = prev ?? 320
-      const next = Math.max(220, Math.min(800, current + delta))
-      return next
-    })
   }
 
   const getLayoutClass = () => {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, memo } from 'react'
+import { useState, useMemo, useEffect, useRef, memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { format } from 'date-fns'
 import { es } from 'date-fns/locale'
@@ -6,10 +6,10 @@ import type { Data, Layout  } from 'plotly.js-dist-min'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   obtenerResumenAnualCalendario,
-  DiaCalendarioResumen,
+  type DiaCalendarioResumen,
   fetchHorarios,
-  HorarioOperacion,
-  IncidenciaOperativaResumen,
+  type HorarioOperacion,
+  type IncidenciaOperativaResumen,
   eliminarContingencia,
 } from '../../api/client'
 import { Calendar, Info, ClipboardEdit, Trash2, ChevronDown, X } from 'lucide-react'
@@ -321,7 +321,6 @@ function OccupancyAreaChartComponent({
         'vehicle-kpis',
         'forecast-attendance',
         'forecast-parking',
-        'forecast-14days',
       ]
       claves.forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }))
     },

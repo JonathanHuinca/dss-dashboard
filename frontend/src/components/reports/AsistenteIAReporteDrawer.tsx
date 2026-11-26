@@ -15,14 +15,15 @@ import {
   Minimize2,
 } from 'lucide-react'
 import {
-  CuotaIAReporte,
-  MensajeIAReporteItem,
-  ReporteCompartidoResumen,
+  type CuotaIAReporte,
+  type MensajeIAReporteItem,
+  type ReporteCompartidoResumen,
   consultarIAReportePublico,
   fetchHistorialIAReportePublico,
 } from '../../api/reportesCompartidos'
 import { MarkdownRespuestaIA, markdownAHtmlSeguro } from '../ui/MarkdownRespuestaIA'
 import { useResizableDrawer } from '../../hooks/useResizableDrawer'
+import { escapeHtml } from '../../utils/escapeHtml'
 
 interface AsistenteIAReporteDrawerProps {
   tokenAcceso: string
@@ -185,18 +186,20 @@ export const AsistenteIAReporteDrawer: React.FC<AsistenteIAReporteDrawerProps> =
       .map(
         (m) => `
         <div style="margin-bottom:14px;border:1px solid #e2e8f0;border-radius:8px;padding:12px;">
-          <div style="font-weight:700;color:#003865;margin-bottom:6px;">Consulta (${formatearHora(m.creado_en)}): ${m.pregunta
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')}</div>
+          <div style="font-weight:700;color:#003865;margin-bottom:6px;">Consulta (${escapeHtml(formatearHora(m.creado_en))}): ${escapeHtml(m.pregunta)}</div>
           <div>${markdownAHtmlSeguro(m.respuesta)}</div>
         </div>`
       )
       .join('')
-    win.document.write(`<!doctype html><html><head><title>Conversación IA — ${reporte.codigo_corto}</title></head>
+    const codigoSeguro = escapeHtml(reporte.codigo_corto)
+    const tituloSeguro = escapeHtml(reporte.titulo_reporte)
+    const espacioSeguro = escapeHtml(reporte.espacio_nombre)
+    const inicioSeguro = escapeHtml(reporte.fecha_inicio)
+    const finSeguro = escapeHtml(reporte.fecha_fin)
+    win.document.write(`<!doctype html><html><head><title>Conversación IA — ${codigoSeguro}</title></head>
       <body style="font-family:Segoe UI,Arial,sans-serif;padding:24px;color:#0f172a;">
-        <h2 style="color:#003865;margin-bottom:4px;">Síntesis Asistente IA — ${reporte.titulo_reporte}</h2>
-        <p style="font-size:12px;color:#475569;margin-top:0;">Código: ${reporte.codigo_corto} | Módulo: ${reporte.espacio_nombre} | Período: ${reporte.fecha_inicio} al ${reporte.fecha_fin}</p>
+        <h2 style="color:#003865;margin-bottom:4px;">Síntesis Asistente IA — ${tituloSeguro}</h2>
+        <p style="font-size:12px;color:#475569;margin-top:0;">Código: ${codigoSeguro} | Módulo: ${espacioSeguro} | Período: ${inicioSeguro} al ${finSeguro}</p>
         <hr style="margin:16px 0;border:none;border-top:1px solid #cbd5e1;" />
         ${itemsHtml || '<p>Sin consultas registradas en esta conversación.</p>'}
       </body></html>`)

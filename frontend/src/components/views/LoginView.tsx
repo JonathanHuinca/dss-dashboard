@@ -1,4 +1,4 @@
-import React, { useState, FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import {
   Lock,
   Mail,
@@ -12,7 +12,7 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
-import { api, forgotPassword, ForgotPasswordResponse } from '../../api/client'
+import { api, forgotPassword, type ForgotPasswordResponse } from '../../api/client'
 
 export function LoginView() {
   const { login } = useAuth()

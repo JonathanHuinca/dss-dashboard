@@ -1,51 +1,49 @@
 import React, { Suspense, lazy, memo, useState, useEffect, useMemo } from 'react'
+import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
+import { useTemporizadorSeguro } from '../../hooks/useTemporizadorSeguro'
 import {
   Users,
   Clock,
   BarChart2,
   TrendingDown,
-  Wifi,
-  Flame,
-  TrendingUp,
   AlertTriangle,
   DoorClosed,
   Calendar,
-  BrainCircuit,
   Activity,
   Layers,
   RotateCcw,
-  RotateCw,
   LayoutGrid,
-  GraduationCap,
-  Building2,
   FileSpreadsheet,
   Loader2,
   Share2,
   Moon,
-  ShieldCheck,
-  Sparkles,
 } from 'lucide-react'
 import { ModalReporte24Horas } from '../reports/ModalReporte24Horas'
-import { fetchAnalisis24h, Analisis24hResponse } from '../../api/asistencia'
+import { fetchAnalisis24h, type Analisis24hResponse } from '../../api/asistencia'
 import { SeccionCampana24Horas } from './biblioteca/SeccionCampana24Horas'
 import { KpiCard } from '../ui/KpiCard'
 import { ChartCard } from '../ui/ChartCard'
 import { LiveBadge } from '../ui/LiveBadge'
-import { DateRange } from '../../types/dateRange'
+import { type DateRange } from '../../types/dateRange'
 import { RawDataTable } from '../ui/RawDataTable'
 import { ScopeSelector } from '../ui/ScopeSelector'
-import { ChartVisibilitySelector, ChartConfigItem } from '../ui/ChartVisibilitySelector'
+import { ChartVisibilitySelector, type ChartConfigItem } from '../ui/ChartVisibilitySelector'
 import { ExcelBatchExportModal } from '../ui/ExcelBatchExportModal'
 import { CompartirReporteModal } from '../reports/CompartirReporteModal'
-import { BarraLateralSecciones, SeccionModuloItem } from '../layout/BarraLateralSecciones'
+import { BarraLateralSecciones, type SeccionModuloItem } from '../layout/BarraLateralSecciones'
 import { KPIBanner } from '../layout/KPIBanner'
-import { DataFilters, fetchEspacioInfo, fetchHorarios, HorarioOperacion, dispararActualizacionModelos, consultarResumenTareasAdmin } from '../../api/client'
+import {
+  type DataFilters,
+  fetchEspacioInfo,
+  fetchHorarios,
+  type HorarioOperacion,
+} from '../../api/client'
 import { exportarPlantillaOficialSalasEstudio } from '../../utils/excelExport'
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
 import { buildUserStorageKey } from '../../utils/userStorage'
 import { useAuth } from '../../context/AuthContext'
 import { useAssistant } from '../../context/AssistantContext'
-import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 
 
 import {
@@ -56,7 +54,6 @@ import {
   useHeatmap,
   useForecastPresence,
   useAlerts,
-  usePeakValley,
   useWeeklyEvolution,
   useMonthlyVolume,
   useAcademicMilestones,
@@ -74,7 +71,6 @@ const OccupancyAreaChart = memo(lazy(() => import('../charts/OccupancyAreaChart'
 const ForecastLineChart = memo(lazy(() => import('../charts/ForecastLineChart').then(m => ({ default: m.ForecastLineChart }))))
 const HeatmapChart = memo(lazy(() => import('../charts/HeatmapChart').then(m => ({ default: m.HeatmapChart }))))
 const HourlyBarChart = memo(lazy(() => import('../charts/HourlyBarChart').then(m => ({ default: m.HourlyBarChart }))))
-const PeakValleyPlotlyChart = memo(lazy(() => import('../charts/PeakValleyPlotlyChart').then(m => ({ default: m.PeakValleyPlotlyChart }))))
 const WeeklyEvolutionPlotlyChart = memo(lazy(() => import('../charts/WeeklyEvolutionPlotlyChart').then(m => ({ default: m.WeeklyEvolutionPlotlyChart }))))
 const MonthlyVolumePlotlyChart = memo(lazy(() => import('../charts/MonthlyVolumePlotlyChart').then(m => ({ default: m.MonthlyVolumePlotlyChart }))))
 const AcademicMilestonesPlotlyChart = memo(lazy(() => import('../charts/AcademicMilestonesPlotlyChart').then(m => ({ default: m.AcademicMilestonesPlotlyChart }))))
@@ -177,7 +173,6 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   const claveSeccionBib = buildUserStorageKey('uct_seccion_activa_biblioteca', userId, userEmail)
   const claveGraficosBib = buildUserStorageKey('uct_charts_visible_biblioteca', userId, userEmail)
   const [modalCompartirAbierto, setModalCompartirAbierto] = useState(false)
-  const [loadStage, setLoadStage] = useState(2)
   const [precargaSilenciosaLista, setPrecargaSilenciosaLista] = useState(false)
   const [barraLateralExpandida, setBarraLateralExpandida] = useState(true)
   const [seccionActivaBiblioteca, setSeccionActivaBiblioteca] = useState<string | 'todas'>(() => {
@@ -301,15 +296,6 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     try { localStorage.setItem(claveGraficosBib, JSON.stringify(next)) } catch { }
   }
 
-  useEffect(() => {
-    const t1 = setTimeout(() => setLoadStage(1), 50)
-    const t2 = setTimeout(() => setLoadStage(2), 120)
-    return () => {
-      clearTimeout(t1)
-      clearTimeout(t2)
-    }
-  }, [])
-
   // Priorizar los gráficos de la sección visible al cambiar período o filtro antes de precargar secciones ocultas
   useEffect(() => {
     setPrecargaSilenciosaLista(false)
@@ -362,72 +348,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
     !(roles.length > 0 && roles.every((r) => r === 'Guardia_Seguridad' || r === 'Consultor_Reporte'))
   const accesoRestringidoBib =
     (kpis.error as any)?.response?.status === 403 || (live.error as any)?.response?.status === 403
-  const esAdminSistema = useMemo(() => {
-    return (
-      roles.includes('Admin_Sistema') ||
-      roles.includes('SuperAdmin') ||
-      userRole === 'Admin_Sistema' ||
-      userRole === 'SuperAdmin'
-    )
-  }, [roles, userRole])
-
-  const capacidad = capacidadActiva
-  const queryClient = useQueryClient()
-  const [isRetraining, setIsRetraining] = useState(false)
-  const [retrainMsg, setRetrainMsg] = useState<string | null>(null)
-  const sondeoRef = React.useRef<any>(null)
-
-  useEffect(() => {
-    return () => {
-      if (sondeoRef.current) clearInterval(sondeoRef.current)
-    }
-  }, [])
-
-  const handleRetrain = async () => {
-    if (isRetraining) return
-    try {
-      setIsRetraining(true)
-      setRetrainMsg('Iniciando...')
-      await dispararActualizacionModelos()
-      setRetrainMsg('Actualizando modelo...')
-
-      const inicioSondeo = Date.now()
-      if (sondeoRef.current) clearInterval(sondeoRef.current)
-
-      sondeoRef.current = setInterval(async () => {
-        try {
-          const resumen = await consultarResumenTareasAdmin()
-          const tareaMl = resumen.catalogo.find((t: any) => t.nombre === 'reentrenar_modelos_ml')
-          const transcurrido = Date.now() - inicioSondeo
-
-          if (!tareaMl?.en_curso || transcurrido > 60000) {
-            clearInterval(sondeoRef.current)
-            sondeoRef.current = null
-            queryClient.invalidateQueries({ queryKey: ['forecast-attendance'] })
-            queryClient.invalidateQueries({ queryKey: ['forecast-presence'] })
-            setIsRetraining(false)
-            setRetrainMsg('Modelo actualizado')
-            setTimeout(() => setRetrainMsg(null), 3500)
-          }
-        } catch {
-          if (Date.now() - inicioSondeo > 60000) {
-            clearInterval(sondeoRef.current)
-            sondeoRef.current = null
-            setIsRetraining(false)
-            setRetrainMsg(null)
-          }
-        }
-      }, 2500)
-    } catch (err: any) {
-      if (sondeoRef.current) {
-        clearInterval(sondeoRef.current)
-        sondeoRef.current = null
-      }
-      setIsRetraining(false)
-      setRetrainMsg(err.response?.data?.detail || 'Error al actualizar modelo')
-      setTimeout(() => setRetrainMsg(null), 3500)
-    }
-  }
+  const { programar } = useTemporizadorSeguro()
 
   const [salaPronosticoPresencia, setSalaPronosticoPresencia] = useState<'todas' | 'sala1' | 'sala2'>('todas')
   useEffect(() => {
@@ -490,7 +411,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
       el.style.height = ''
     })
     window.dispatchEvent(new CustomEvent('uct:reset-charts-layout'))
-    setTimeout(() => {
+    programar(() => {
       window.dispatchEvent(new Event('resize'))
     }, 100)
   }
@@ -685,7 +606,7 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
   })
 
   const handleDescargarPlantillaOficial = async () => {
-    const filename = `Informe_Oficial_Salas_Estudio_Biblioteca_${new Date().toISOString().slice(0, 10)}.xlsx`
+    const filename = `Informe_Oficial_Salas_Estudio_Biblioteca_${obtenerFechaHoyChileIso()}.xlsx`
     setIsExportingPlantilla(true)
     try {
       await ejecutarDescarga({
@@ -721,29 +642,6 @@ export function BibliotecaView({ dateRange, onRangeChange, filters: externalFilt
       setIsExportingPlantilla(false)
     }
   }
-
-  // Helpers para visibilidad de secciones combinados con la barra lateral (5 secciones unificadas)
-  const showSec1 = esSeccionVisible('seccion_1') && (
-    visibleCharts.aforo_presencia_intervalos !== false ||
-    visibleCharts.prophet_presencia_14dias !== false ||
-    visibleCharts.distribucion_curricular !== false ||
-    visibleCharts.perfiles_visita !== false ||
-    visibleCharts.flujo_horario !== false ||
-    visibleCharts.mapa_calor !== false
-  )
-  const showSec2 = esSeccionVisible('seccion_2') && (
-    visibleCharts.comparativa_salas !== false ||
-    visibleCharts.torniquetes !== false ||
-    visibleCharts.distribucion_marcajes !== false
-  )
-  const showSec3 = esSeccionVisible('seccion_3') && (
-    visibleCharts.volumen_mensual !== false ||
-    visibleCharts.evolucion_semanal !== false ||
-    visibleCharts.promedio_dias_semana !== false ||
-    visibleCharts.hitos_academicos !== false
-  )
-  const showSec4 = esSeccionVisible('seccion_4')
-  const showSec5 = tieneCampana24hActiva && esSeccionVisible('seccion_5')
 
   // Banner ejecutivo de Campaña 24 Horas
   const formatFechaCorta24h = (iso?: string | null): string => {

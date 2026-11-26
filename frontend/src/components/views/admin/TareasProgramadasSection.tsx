@@ -27,9 +27,10 @@ import {
   obtenerStatsCacheAdmin,
   dispararActualizacionModelos,
   consultarEstadoModelos,
-  TareaItem,
-  EjecucionTareaDetalle,
+  type TareaItem,
+  type EjecucionTareaDetalle,
 } from '../../../api/client'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 
 export const TareasProgramadasSection: React.FC = () => {
   const queryClient = useQueryClient()
@@ -42,6 +43,7 @@ export const TareasProgramadasSection: React.FC = () => {
   const [tareaDetalleModal, setTareaDetalleModal] = useState<TareaItem | null>(null)
   const [ejecucionSeleccionada, setEjecucionSeleccionada] = useState<EjecucionTareaDetalle | null>(null)
   const ultimasFinEnRef = useRef<Record<string, string>>({})
+  const { programar } = useTemporizadorSeguro()
 
   // 1. Consulta de tareas de APScheduler (refresco rápido cuando hay tareas en ejecución)
   const {
@@ -82,7 +84,6 @@ export const TareasProgramadasSection: React.FC = () => {
   // 3. Consulta de estado del calendario institucional
   const {
     data: estadoCalendario,
-    isLoading: cargandoCalendario,
     refetch: refetchCalendario,
   } = useQuery({
     queryKey: ['admin-calendar-status'],
@@ -93,7 +94,6 @@ export const TareasProgramadasSection: React.FC = () => {
   // 4. Consulta de métricas de la caché en memoria
   const {
     data: statsCache,
-    isLoading: cargandoCache,
     refetch: refetchCache,
   } = useQuery({
     queryKey: ['admin-cache-stats'],
@@ -163,11 +163,11 @@ export const TareasProgramadasSection: React.FC = () => {
     onSuccess: (res) => {
       setMensajeSmartCampus(res.mensaje || 'Sincronización manual ejecutada con éxito.')
       refrescarDatosDashboard()
-      setTimeout(() => setMensajeSmartCampus(null), 8000)
+      programar(() => setMensajeSmartCampus(null), 8000)
     },
     onError: (err: any) => {
       setMensajeSmartCampus(err?.response?.data?.detail || 'Error al ejecutar sincronización manual.')
-      setTimeout(() => setMensajeSmartCampus(null), 6000)
+      programar(() => setMensajeSmartCampus(null), 6000)
     },
     onSettled: () => setSincronizandoManual(false),
   })
@@ -187,11 +187,11 @@ export const TareasProgramadasSection: React.FC = () => {
     onSuccess: (res) => {
       setMensajeCache(`Caché purgada exitosamente: ${res.entradas_eliminadas} entradas eliminadas.`)
       queryClient.invalidateQueries({ queryKey: ['admin-cache-stats'] })
-      setTimeout(() => setMensajeCache(null), 5000)
+      programar(() => setMensajeCache(null), 5000)
     },
     onError: () => {
       setMensajeCache('Error al purgar la memoria de caché.')
-      setTimeout(() => setMensajeCache(null), 5000)
+      programar(() => setMensajeCache(null), 5000)
     },
   })
 
@@ -206,12 +206,11 @@ export const TareasProgramadasSection: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['forecast-attendance'] })
       queryClient.invalidateQueries({ queryKey: ['forecast-presence'] })
       queryClient.invalidateQueries({ queryKey: ['forecast-parking'] })
-      queryClient.invalidateQueries({ queryKey: ['forecast-14days'] })
-      setTimeout(() => setMensajeModelos(null), 8000)
+      programar(() => setMensajeModelos(null), 8000)
     },
     onError: (err: any) => {
       setMensajeModelos(err?.response?.data?.detail || 'Error al solicitar actualización de modelos.')
-      setTimeout(() => setMensajeModelos(null), 6000)
+      programar(() => setMensajeModelos(null), 6000)
     },
     onSettled: () => setActualizandoModelos(false),
   })
@@ -225,12 +224,12 @@ export const TareasProgramadasSection: React.FC = () => {
       if (nombreTarea === 'reentrenar_modelos_ml') {
         queryClient.invalidateQueries({ queryKey: ['admin-modelos-estado'] })
       }
-      setTimeout(() => {
+      programar(() => {
         refrescarDatosDashboard()
       }, 4000)
     } catch (err: any) {
       setMensajeModelos(err?.response?.data?.detail || `Error al ejecutar tarea ${nombreTarea}.`)
-      setTimeout(() => setMensajeModelos(null), 5000)
+      programar(() => setMensajeModelos(null), 5000)
     } finally {
       setTareaEjecutando(null)
     }

@@ -1,7 +1,9 @@
-import { Component, ErrorInfo, ReactNode } from 'react'
+import { Component, type ErrorInfo, type ReactNode } from 'react'
 
 interface Props {
   children?: ReactNode
+  titulo?: string
+  descripcion?: string
 }
 
 interface State {
@@ -27,8 +29,8 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="flex items-center justify-center h-full p-4 bg-red-50 text-red-800 rounded-lg border border-red-200">
           <div className="text-center">
-            <h2 className="text-lg font-bold mb-2">Ocurrió un error en el chat</h2>
-            <p className="text-sm">El componente no pudo ser renderizado correctamente.</p>
+            <h2 className="text-lg font-bold mb-2">{this.props.titulo || 'Ocurrió un error inesperado'}</h2>
+            <p className="text-sm">{this.props.descripcion || 'El componente no pudo ser renderizado correctamente.'}</p>
             <button
               className="mt-4 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors text-xs font-semibold"
               onClick={() => this.setState({ hasError: false })}

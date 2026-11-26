@@ -1,11 +1,12 @@
 import {
-  GraficoNativoPayload,
-  SerieGraficoNativo,
-  SolicitudExportacionExcel,
+  type GraficoNativoPayload,
+  type SerieGraficoNativo,
+  type SolicitudExportacionExcel,
   exportarGraficoExcelNativo,
   exportarConsolidadoExcelNativo,
   descargarPlantillaSalasEstudioExcel,
 } from '../api/client'
+import { descargarBlobSeguro } from './descargaBlob'
 
 export interface GraficoParaExportar {
   id: string
@@ -25,15 +26,9 @@ export interface ResultadoExportacionMultiple {
  * Descarga en el navegador un Blob binario con el nombre de archivo especificado.
  */
 export function descargarBlob(blob: Blob, nombreArchivo: string, extensionPorDefecto = '.xlsx') {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
   const tieneExtension = /\.[a-zA-Z0-9]+$/.test(nombreArchivo)
-  link.download = tieneExtension ? nombreArchivo : `${nombreArchivo}${extensionPorDefecto}`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+  const nombreFinal = tieneExtension ? nombreArchivo : `${nombreArchivo}${extensionPorDefecto}`
+  descargarBlobSeguro(blob, nombreFinal)
 }
 
 /**
@@ -265,7 +260,7 @@ export function extraerPayloadGraficoNativo(
 
         const categorias_x = itemsPares.map((p) => p.cat)
 
-        const series: SerieGraficoNativo[] = traces.map((trace: any, idx: number) => {
+        const series: SerieGraficoNativo[] = traces.map((trace: any) => {
           const nombreSerie = (trace.name || `Demanda / Visitas`).replace(/<[^>]*>/g, '').trim()
           const tY = toArray(trace.y || trace._y)
           const tX = toArray(trace.x || trace._x)
@@ -677,7 +672,7 @@ export async function exportarPlantillaOficialSalasEstudio(
     const blob = await descargarPlantillaSalasEstudioExcel(params)
     const periodoSaneado = (params.periodo_label || 'Periodo')
       .replace(/[^a-zA-Z0-9]/g, '_')
-      .replace(/^_+|_+$/g, '')
+      .replace(/(?:^_+)|(?:_+$)/g, '')
 
     if (onProgreso) onProgreso(95, 'Descargando archivo Excel en equipo local...')
     descargarBlob(blob, `Reporte_Salas_Estudios_${periodoSaneado}.xlsx`)

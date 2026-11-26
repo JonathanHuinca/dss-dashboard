@@ -27,14 +27,15 @@ import {
   X,
 } from 'lucide-react'
 import { useAuth } from '../../../context/AuthContext'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 import {
   actualizarReporteCompartido,
-  AuditoriaReporteResumen,
-  EventoAuditoriaReporte,
+  type AuditoriaReporteResumen,
+  type EventoAuditoriaReporte,
   fetchAuditoriaReportes,
   fetchEventosReporte,
-  RespuestaAuditoriaReportes,
-  RespuestaEventosReporte,
+  type RespuestaAuditoriaReportes,
+  type RespuestaEventosReporte,
 } from '../../../api/reportesCompartidos'
 import { formatearFechaHoraChile } from '../../../utils/fechaChile'
 
@@ -116,10 +117,11 @@ export const ReportesEmitidosSection: React.FC = () => {
   const [avisoMsg, setAvisoMsg] = useState<{ tipo: 'ok' | 'err'; texto: string } | null>(null)
   const [reporteSeleccionado, setReporteSeleccionado] = useState<AuditoriaReporteResumen | null>(null)
   const [filtroAccionTimeline, setFiltroAccionTimeline] = useState<string>('')
+  const { programar } = useTemporizadorSeguro()
 
   const mostrarAviso = (tipo: 'ok' | 'err', texto: string) => {
     setAvisoMsg({ tipo, texto })
-    setTimeout(() => setAvisoMsg(null), 5000)
+    programar(() => setAvisoMsg(null), 5000)
   }
 
   const { data, isLoading, isFetching, refetch } = useQuery<RespuestaAuditoriaReportes>({

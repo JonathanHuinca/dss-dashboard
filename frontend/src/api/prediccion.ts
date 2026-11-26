@@ -53,32 +53,6 @@ export interface AlertsResponse {
   alertas: AlertItem[]
 }
 
-export interface Forecast14DayItem {
-  fecha: string
-  dia_nombre: string
-  hito: string
-  color: string
-  is_exam_period: boolean
-  is_break: boolean
-  is_holiday: boolean
-  demanda_estimada: number
-}
-
-export interface Forecast14DaysResponse {
-  recinto: string
-  espacio_id: number
-  horizon_days: number
-  fecha_inicio: string
-  fecha_fin: string
-  predicciones: Forecast14DayItem[]
-  model_status: {
-    status: string
-    model_type: string
-    r2_score: number
-    trained_date: string
-  }
-}
-
 export interface VisitProfileItem {
   perfil: string
   total: number
@@ -88,8 +62,11 @@ export interface VisitProfileItem {
 
 export interface VisitProfilesResponse {
   espacio_id: number
-  modelo_entrenado: boolean
-  accuracy: number
+  metodo?: string
+  total_visitas_analizadas?: number
+  tasa_rebote_pct?: number
+  modelo_entrenado?: boolean
+  accuracy?: number
   perfiles: VisitProfileItem[]
 }
 
@@ -106,9 +83,6 @@ export interface ModeloEstadoItem {
 }
 
 // ─── Funciones API Predicción y Modelos ML ─────────────────────────────────────
-
-export const fetchForecast14Days = (espacioId: number = 1, signal?: AbortSignal) =>
-  api.get<Forecast14DaysResponse>('/predictions/forecast-14days', { signal, params: { espacio_id: espacioId } }).then(r => r.data)
 
 export const fetchVisitProfiles = (espacioId: number = 1, signal?: AbortSignal) =>
   api.get<VisitProfilesResponse>('/predictions/visit-profiles', { signal, params: { espacio_id: espacioId } }).then(r => r.data)

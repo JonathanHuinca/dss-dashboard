@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
-  Sparkles,
   Search,
   RefreshCw,
   ChevronLeft,

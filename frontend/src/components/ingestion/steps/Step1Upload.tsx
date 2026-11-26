@@ -7,7 +7,6 @@ import {
   GraduationCap,
   Calendar,
   Database,
-  CheckCircle2,
   AlertCircle,
   Loader2,
   X,

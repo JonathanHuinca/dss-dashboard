@@ -1,5 +1,5 @@
-import { LucideIcon } from 'lucide-react'
-import { ReactNode } from 'react'
+import { type LucideIcon } from 'lucide-react'
+import { type ReactNode } from 'react'
 
 interface Props {
   title: string

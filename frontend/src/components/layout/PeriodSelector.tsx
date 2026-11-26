@@ -13,12 +13,18 @@ import {
   Layers,
 } from 'lucide-react'
 import {
-  DateRange,
+  type DateRange,
   calculateDaysDifference,
   formatShortDate,
   buildLatestWeekPreset,
 } from '../../types/dateRange'
-import { fetchDateBounds, fetchHorarios, DateBoundsResponse, HorarioOperacion } from '../../api/client'
+import {
+  fetchDateBounds,
+  fetchHorarios,
+  type DateBoundsResponse,
+  type HorarioOperacion,
+} from '../../api/client'
+import { sumarDiasIso } from '../../utils/fechaChile'
 
 interface Props {
   selectedRange: DateRange
@@ -143,9 +149,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
 
     // 2. Últimos 30 días registrados
     if (maxDate) {
-      const dMax = new Date(maxDate + 'T00:00:00')
-      const d30Ago = new Date(dMax.getTime() - 29 * 24 * 60 * 60 * 1000)
-      const iso30Ago = d30Ago.toISOString().substring(0, 10)
+      const iso30Ago = sumarDiasIso(maxDate, -29)
       const iniClamped = iso30Ago < minDate ? minDate : iso30Ago
       list.push({
         label: `Últimos 30 días (${formatShortDate(iniClamped)} - ${formatShortDate(maxDate)})`,
@@ -156,9 +160,7 @@ export const PeriodSelector: React.FC<Props> = ({ selectedRange, onRangeChange, 
 
     // 3. Inicio del Semestre / Período Académico
     if (minDate) {
-      const dMin = new Date(minDate + 'T00:00:00')
-      const d15Post = new Date(dMin.getTime() + 14 * 24 * 60 * 60 * 1000)
-      const iso15Post = d15Post.toISOString().substring(0, 10)
+      const iso15Post = sumarDiasIso(minDate, 14)
       const finClamped = iso15Post > maxDate ? maxDate : iso15Post
       list.push({
         label: `Inicio del Período Académico (${formatShortDate(minDate)} - ${formatShortDate(finClamped)})`,

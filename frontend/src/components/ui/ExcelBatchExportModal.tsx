@@ -7,13 +7,12 @@ import {
   Download,
   Loader2,
   Layers,
-  Sparkles,
   CheckCircle2,
   AlertCircle,
 } from 'lucide-react'
 import {
   exportarMultiplesGraficosAExcel,
-  GraficoParaExportar,
+  type GraficoParaExportar,
   exportarPlantillaOficialSalasEstudio,
 } from '../../utils/excelExport'
 

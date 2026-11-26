@@ -61,6 +61,7 @@ export const AssistantProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     },
     refetchInterval: 15_000,
     staleTime: 10_000,
+    enabled: isAuthenticated,
   })
 
   const isAiEnabled = statusData ? Boolean(statusData.ia_asistente_activo) : true

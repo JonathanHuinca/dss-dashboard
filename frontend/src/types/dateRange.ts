@@ -1,3 +1,5 @@
+import { diferenciaDiasIso, sumarDiasIso, ultimoDiaMesIso } from '../utils/fechaChile'
+
 export interface DateRange {
   label: string
   inicio?: string
@@ -19,7 +21,7 @@ export function generateMonthPresets(year: number = 2026): DateRange[] {
   return activeMonths.map(mIndex => {
     const monthNum = mIndex + 1
     const mm = String(monthNum).padStart(2, '0')
-    const lastDay = new Date(year, monthNum, 0).getDate()
+    const lastDay = ultimoDiaMesIso(year, monthNum)
     return {
       label: `Mes de ${MONTH_NAMES_ES[mIndex]} ${year}`,
       inicio: `${year}-${mm}-01`,
@@ -31,9 +33,7 @@ export function generateMonthPresets(year: number = 2026): DateRange[] {
 export const MONTH_PRESETS_2026 = generateMonthPresets(2026)
 
 export function buildLatestWeekPreset(maxDateStr: string = '2026-10-14'): DateRange {
-  const dMax = new Date(maxDateStr + 'T00:00:00')
-  const d7Ago = new Date(dMax.getTime() - 6 * 24 * 60 * 60 * 1000)
-  const iso7Ago = d7Ago.toISOString().substring(0, 10)
+  const iso7Ago = sumarDiasIso(maxDateStr, -6)
   return {
     label: `Última semana registrada (${formatShortDate(iso7Ago)} - ${formatShortDate(maxDateStr)})`,
     inicio: iso7Ago,
@@ -95,9 +95,7 @@ export function formatDayMonthSpanish(fechaStr?: string): string {
 
 export function calculateDaysDifference(startStr?: string, endStr?: string): number {
   if (!startStr || !endStr) return 0
-  const d1 = new Date(startStr)
-  const d2 = new Date(endStr)
-  const diffTime = d2.getTime() - d1.getTime()
-  if (isNaN(diffTime) || diffTime < 0) return 0
-  return Math.round(diffTime / (1000 * 60 * 60 * 24)) + 1
+  const diffDias = diferenciaDiasIso(startStr, endStr)
+  if (Number.isNaN(diffDias) || diffDias < 0) return 0
+  return diffDias + 1
 }

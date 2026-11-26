@@ -1,8 +1,14 @@
 import {  useState, useMemo , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { ForecastPoint, obtenerResumenAnualCalendario, DiaCalendarioResumen, fetchHorarios, HorarioOperacion } from '../../api/client'
+import {
+  type ForecastPoint,
+  obtenerResumenAnualCalendario,
+  type DiaCalendarioResumen,
+  fetchHorarios,
+  type HorarioOperacion,
+} from '../../api/client'
 import type { Data, Layout, Shape, Annotations  } from 'plotly.js-dist-min'
-import { Activity, Users, RotateCw, Calendar } from 'lucide-react'
+import { Activity, Users, Calendar } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 
 interface Props {
@@ -61,17 +67,17 @@ function formatearFechaHoraPronosticoEspanol(isoStr: string): string {
 }
 
 function ForecastLineChartComponent({
-  actual,
+  actual: _actual,
   forecast = [],
   historico7d,
   pronostico7d,
   capacidad,
   salaNombre = 'General',
   recinto = 'biblioteca',
-  onRetrain,
-  isRetraining = false,
-  retrainMsg,
-  esAdminSistema = false,
+  onRetrain: _onRetrain,
+  isRetraining: _isRetraining = false,
+  retrainMsg: _retrainMsg,
+  esAdminSistema: _esAdminSistema = false,
 }: Props) {
 
   const [soloAtencion, setSoloAtencion] = useState<boolean>(false)
@@ -842,7 +848,7 @@ function ForecastLineChartComponent({
             <Users className="w-3.5 h-3.5" />
             Máximo Proyectado: <strong className="font-semibold">{stats.maxFut} {recinto === 'vehicular' ? 'veh' : 'p/h'}</strong>
           </span>
-          {capacidad && (
+          {capacidad != null && capacidad > 0 && (
             <>
               <span className="text-gray-300 dark:text-gray-700">|</span>
               <span className="text-slate-500">

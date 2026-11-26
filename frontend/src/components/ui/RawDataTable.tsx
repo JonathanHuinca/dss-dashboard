@@ -1,8 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  Table,
-  Download,
   FileSpreadsheet,
   FileText,
   Search,
@@ -12,29 +10,25 @@ import {
   RefreshCw,
   Database,
   Shield,
-  Layers,
-  ArrowUpDown,
-  AlertTriangle,
-  CheckCircle2,
   Clock,
   Tag,
   X,
   RotateCcw,
-  SlidersHorizontal,
 } from 'lucide-react'
 import {
   fetchRawAttendance,
   fetchRawVehicles,
   recordDownloadAudit,
-  RawAttendanceItem,
-  RawVehicleItem,
-  DataFilters,
+  type RawAttendanceItem,
+  type RawVehicleItem,
+  type DataFilters,
   api,
 } from '../../api/client'
 import { useDownloadProgress } from '../../context/DownloadProgressContext'
 import { descargarBlob } from '../../utils/excelExport'
+import { escapeHtml } from '../../utils/escapeHtml'
 import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
-import { ExcelColumnHeader, SortConfig } from './ExcelColumnHeader'
+import { ExcelColumnHeader, type SortConfig } from './ExcelColumnHeader'
 
 // Helper para formatear puertas y torniquetes
 const getDoorLabel = (doorVal?: string | null): string => {
@@ -245,7 +239,7 @@ export const RawDataTable: React.FC<Props> = ({
   // Extracción de valores únicos y frecuencias para menús Excel
   const getColumnStats = useCallback(
     (
-      key: string,
+      _key: string,
       extractor: (row: any) => string | string[],
       isArray = false
     ): { uniqueValues: string[]; valueCounts: Record<string, number> } => {
@@ -673,16 +667,16 @@ export const RawDataTable: React.FC<Props> = ({
                   .map(
                     (r: RawAttendanceItem) => `
                 <tr>
-                  <td>${r.time ? r.time.slice(0, 10) : ''}</td>
-                  <td>${r.time && r.time.length >= 19 ? r.time.slice(11, 19) : ''}</td>
-                  <td><code>${r.person_id_short}</code></td>
-                  <td>${r.door_entrada}</td>
-                  <td>${r.door_salida}</td>
-                  <td>${r.primera_entrada}${r.entrada_imputada ? ' (Imputada)' : ''}</td>
-                  <td>${r.ultima_salida}${r.salida_imputada ? ' (Imputada)' : ''}</td>
-                  <td>${r.permanencia_min} min</td>
-                  <td>${r.marcajes_totales}</td>
-                  <td><span class="badge-cat">${(r.categorias || []).join(', ')}</span></td>
+                  <td>${escapeHtml(r.time ? r.time.slice(0, 10) : '')}</td>
+                  <td>${escapeHtml(r.time && r.time.length >= 19 ? r.time.slice(11, 19) : '')}</td>
+                  <td><code>${escapeHtml(r.person_id_short)}</code></td>
+                  <td>${escapeHtml(r.door_entrada)}</td>
+                  <td>${escapeHtml(r.door_salida)}</td>
+                  <td>${escapeHtml(r.primera_entrada)}${r.entrada_imputada ? ' (Imputada)' : ''}</td>
+                  <td>${escapeHtml(r.ultima_salida)}${r.salida_imputada ? ' (Imputada)' : ''}</td>
+                  <td>${escapeHtml(r.permanencia_min)} min</td>
+                  <td>${escapeHtml(r.marcajes_totales)}</td>
+                  <td><span class="badge-cat">${escapeHtml((r.categorias || []).join(', '))}</span></td>
                 </tr>`
                   )
                   .join('')
@@ -690,15 +684,15 @@ export const RawDataTable: React.FC<Props> = ({
                   .map(
                     (r: RawVehicleItem) => `
                 <tr>
-                  <td>${r.time ? r.time.slice(0, 10) : ''}</td>
-                  <td>${r.time && r.time.length >= 19 ? r.time.slice(11, 19) : ''}</td>
-                  <td><code>${r.patente_short}</code></td>
-                  <td>${r.camara}</td>
-                  <td>${r.direccion.toUpperCase()}</td>
-                  <td>${r.tipo_vehiculo}</td>
-                  <td>${r.marca}</td>
-                  <td>${r.calidad_lectura}</td>
-                  <td><span class="badge-cat">${(r.categorias || []).join(', ')}</span></td>
+                  <td>${escapeHtml(r.time ? r.time.slice(0, 10) : '')}</td>
+                  <td>${escapeHtml(r.time && r.time.length >= 19 ? r.time.slice(11, 19) : '')}</td>
+                  <td><code>${escapeHtml(r.patente_short)}</code></td>
+                  <td>${escapeHtml(r.camara)}</td>
+                  <td>${escapeHtml((r.direccion || '').toUpperCase())}</td>
+                  <td>${escapeHtml(r.tipo_vehiculo)}</td>
+                  <td>${escapeHtml(r.marca)}</td>
+                  <td>${escapeHtml(r.calidad_lectura)}</td>
+                  <td><span class="badge-cat">${escapeHtml((r.categorias || []).join(', '))}</span></td>
                 </tr>`
                   )
                   .join('')
@@ -708,11 +702,15 @@ export const RawDataTable: React.FC<Props> = ({
               ? `<th>Fecha</th><th>Hora</th><th>Identificador</th><th>Torniquete Ent.</th><th>Torniquete Sal.</th><th>1ª Entrada</th><th>Última Salida</th><th>Estadía</th><th>Marcajes</th><th>Integridad</th>`
               : `<th>Fecha</th><th>Hora</th><th>Patente</th><th>Cámara</th><th>Dirección</th><th>Tipo</th><th>Marca</th><th>Calidad</th><th>Integridad</th>`
 
+          const titleSeguro = escapeHtml(title)
+          const periodoSeguro = escapeHtml(labelPeriodo || `${fechaInicio || ''} a ${fechaFin || ''}`)
+          const filtroCatSeguro = escapeHtml(filtroCategoria || 'Todas las categorías')
+
           printWindow.document.write(`
             <!DOCTYPE html>
             <html>
               <head>
-                <title>${title}</title>
+                <title>${titleSeguro}</title>
                 <style>
                   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 30px; color: #1e293b; }
                   .header { border-bottom: 2px solid #002B49; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
@@ -735,20 +733,20 @@ export const RawDataTable: React.FC<Props> = ({
               <body>
                 <div class="header">
                   <div>
-                    <h1>${title}</h1>
+                    <h1>${titleSeguro}</h1>
                     <div class="subtitle">Universidad Católica de Temuco — Campus San Francisco</div>
                   </div>
-                  <div class="badge">Período: ${labelPeriodo || `${fechaInicio || ''} a ${fechaFin || ''}`}</div>
+                  <div class="badge">Período: ${periodoSeguro}</div>
                 </div>
 
                 <div class="stats">
                   <div class="stat-box">
                     <div class="stat-label">Total Universo Filtrado</div>
-                    <div class="stat-val">${total.toLocaleString('es-CL')}</div>
+                    <div class="stat-val">${escapeHtml(total.toLocaleString('es-CL'))}</div>
                   </div>
                   <div class="stat-box">
                     <div class="stat-label">Categoría Filtro</div>
-                    <div class="stat-val">${filtroCategoria || 'Todas las categorías'}</div>
+                    <div class="stat-val">${filtroCatSeguro}</div>
                   </div>
                   <div class="stat-box">
                     <div class="stat-label">Norma de Protección</div>

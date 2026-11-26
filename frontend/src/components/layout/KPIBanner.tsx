@@ -11,8 +11,8 @@ import {
   Car,
   ParkingCircle,
 } from 'lucide-react'
-import { fetchKpiSummary, KPISummary, DataFilters } from '../../api/client'
-import { DateRange } from '../../types/dateRange'
+import { fetchKpiSummary, type KPISummary, type DataFilters } from '../../api/client'
+import { type DateRange } from '../../types/dateRange'
 
 interface Props {
   espacioId?: number
@@ -52,11 +52,10 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
                   <span className="truncate">{activePeriodLabel}</span>
                 </span>
                 {filters?.alcance && filters.alcance !== 'todos' && (
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-bold border ${
-                    filters.alcance === 'conformes'
-                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                      : 'bg-rose-50 text-rose-800 border-rose-200'
-                  }`}>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-bold border ${filters.alcance === 'conformes'
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border-rose-200'
+                    }`}>
                     {filters.alcance === 'conformes' ? 'Datos Conformes' : 'Anomalías'}
                   </span>
                 )}
@@ -65,8 +64,8 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
                     {filters.sala === 'sala_1' || filters.sala === 'sala1'
                       ? 'Sala 1'
                       : filters.sala === 'sala_2' || filters.sala === 'sala2'
-                      ? 'Sala 2'
-                      : filters.sala}
+                        ? 'Sala 2'
+                        : filters.sala}
                   </span>
                 )}
                 {isEstacionamiento && filters?.sector && filters.sector !== 'todos' && (
@@ -196,7 +195,7 @@ export const KPIBanner: React.FC<Props> = ({ espacioId = 1, selectedRange, filte
                 </div>
               </div>
               <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1 font-medium">
-                {isEstacionamiento ? 'Mayor ocupación simultánea' : 'Mayor ocupación simultánea'}
+                {isEstacionamiento ? 'Mayor ocupación simultánea de plazas' : 'Mayor ocupación simultánea en sala'}
               </p>
             </div>
 

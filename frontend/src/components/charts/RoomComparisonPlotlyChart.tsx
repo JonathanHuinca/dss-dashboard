@@ -1,6 +1,6 @@
-import React, { useState, memo, useMemo } from 'react'
+import { useState, memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { RoomComparisonResponse } from '../../api/client'
+import { type RoomComparisonResponse } from '../../api/client'
 import type { Data } from 'plotly.js-dist-min'
 import { Layers } from 'lucide-react'
 

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Eye, SlidersHorizontal, CheckSquare, Square, X, ChevronDown, Check } from 'lucide-react'
+import { Eye, SlidersHorizontal, X, ChevronDown } from 'lucide-react'
 
 export interface ChartConfigItem {
   id: string

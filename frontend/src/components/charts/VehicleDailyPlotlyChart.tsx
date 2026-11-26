@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { VehicleDailyPoint } from '../../api/client'
+import { type VehicleDailyPoint } from '../../api/client'
 import type { Data } from 'plotly.js-dist-min'
 import { formatDayMonthSpanish } from '../../types/dateRange'
 

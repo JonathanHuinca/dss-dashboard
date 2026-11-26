@@ -1,6 +1,6 @@
 import {  useMemo, useState , memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { HeatmapPoint } from '../../api/client'
+import { type HeatmapPoint } from '../../api/client'
 import type { Data, Layout  } from 'plotly.js-dist-min'
 import { Clock, Moon } from 'lucide-react'
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, FormEvent } from 'react'
+import { useState, useEffect, useMemo, type FormEvent } from 'react'
 import {
   Lock,
   Eye,
@@ -9,10 +9,9 @@ import {
   ShieldCheck,
   ArrowRight,
   Loader2,
-  KeyRound,
   ShieldAlert,
 } from 'lucide-react'
-import { verifyActivationToken, resetPassword, TokenVerifyData } from '../../api/client'
+import { verifyActivationToken, resetPassword, type TokenVerifyData } from '../../api/client'
 
 export function ResetPasswordView() {
   const [token, setToken] = useState<string>('')
@@ -40,13 +39,15 @@ export function ResetPasswordView() {
     }
 
     setToken(tokenParam)
+    const controller = new AbortController()
 
-    verifyActivationToken(tokenParam)
+    verifyActivationToken(tokenParam, controller.signal)
       .then((data) => {
         setTokenData(data)
         setIsLoadingToken(false)
       })
       .catch((err: unknown) => {
+        if ((err as { name?: string })?.name === 'CanceledError' || (err as { name?: string })?.name === 'AbortError') return
         const axiosErr = err as { response?: { data?: { detail?: string } } }
         const message =
           axiosErr.response?.data?.detail ||
@@ -54,6 +55,7 @@ export function ResetPasswordView() {
         setTokenError(message)
         setIsLoadingToken(false)
       })
+    return () => controller.abort()
   }, [])
 
   const passwordChecks = useMemo(() => {

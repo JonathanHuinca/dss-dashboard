@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react'
 
 export type DownloadFileType = 'excel' | 'csv' | 'pdf' | 'imagen'
 export type DownloadState = 'inactivo' | 'procesando' | 'completado' | 'error'
@@ -38,13 +38,31 @@ const DownloadProgressContext = createContext<DownloadProgressContextValue | nul
 export const DownloadProgressProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [descargaActual, setDescargaActual] = useState<DownloadProgressInfo | null>(null)
   const [estaAbierto, setEstaAbierto] = useState(false)
+  const timerCierreRef = useRef<number | null>(null)
+  const timerLimpiezaRef = useRef<number | null>(null)
+
+  const limpiarTimers = useCallback(() => {
+    if (timerCierreRef.current !== null) {
+      window.clearTimeout(timerCierreRef.current)
+      timerCierreRef.current = null
+    }
+    if (timerLimpiezaRef.current !== null) {
+      window.clearTimeout(timerLimpiezaRef.current)
+      timerLimpiezaRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => limpiarTimers()
+  }, [limpiarTimers])
 
   const cerrarModal = useCallback(() => {
+    limpiarTimers()
     setEstaAbierto(false)
-    setTimeout(() => {
+    timerLimpiezaRef.current = window.setTimeout(() => {
       setDescargaActual(null)
     }, 300)
-  }, [])
+  }, [limpiarTimers])
 
   const cancelarDescarga = useCallback(() => {
     cerrarModal()
@@ -95,9 +113,10 @@ export const DownloadProgressProvider: React.FC<{ children: React.ReactNode }> =
         )
 
         // Cierre automático suave después de 2.2 segundos
-        setTimeout(() => {
+        limpiarTimers()
+        timerCierreRef.current = window.setTimeout(() => {
           setEstaAbierto(false)
-          setTimeout(() => setDescargaActual(null), 300)
+          timerLimpiezaRef.current = window.setTimeout(() => setDescargaActual(null), 300)
         }, 2200)
 
         return true
@@ -122,7 +141,7 @@ export const DownloadProgressProvider: React.FC<{ children: React.ReactNode }> =
         return false
       }
     },
-    []
+    [limpiarTimers]
   )
 
   return (

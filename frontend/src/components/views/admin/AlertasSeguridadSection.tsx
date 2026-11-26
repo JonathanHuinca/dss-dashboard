@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Bell, CheckCircle2, ShieldAlert, Trash2, Unlock, UserCheck } from 'lucide-react'
 import {
@@ -6,9 +6,10 @@ import {
   eliminarNotificacionAdmin,
   listarNotificacionesAdmin,
   marcarNotificacionesAdminVistas,
-  NotificacionesAdminResponse,
+  type NotificacionesAdminResponse,
 } from '../../../api/administracion'
 import { formatearFechaHoraChile } from '../../../utils/fechaChile'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 
 const formatearFecha = (iso?: string | null): string =>
   formatearFechaHoraChile(iso, undefined, '—')
@@ -18,6 +19,7 @@ export const AlertasSeguridadSection: React.FC = () => {
   const [idsRecienVistos, setIdsRecienVistos] = useState<number[]>([])
   const [avisoMsg, setAvisoMsg] = useState<string | null>(null)
   const marcandoRef = useRef(false)
+  const { programar } = useTemporizadorSeguro()
 
   const { data, isLoading } = useQuery<NotificacionesAdminResponse>({
     queryKey: ['admin-notificaciones'],
@@ -25,7 +27,7 @@ export const AlertasSeguridadSection: React.FC = () => {
     refetchInterval: 30_000,
   })
 
-  const items = data?.items ?? []
+  const items = useMemo(() => data?.items ?? [], [data?.items])
 
   // Al entrar o recibir alertas nuevas, se marcan como vistas para limpiar el círculo rojo
   useEffect(() => {
@@ -59,7 +61,7 @@ export const AlertasSeguridadSection: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin-notificaciones'] })
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       setAvisoMsg(res.mensaje || 'Cuenta desbloqueada correctamente.')
-      setTimeout(() => setAvisoMsg(null), 5000)
+      programar(() => setAvisoMsg(null), 5000)
     },
   })
 

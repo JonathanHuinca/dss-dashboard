@@ -1,6 +1,6 @@
-import React, {  useState, useMemo, useEffect , memo } from 'react'
+import { useState, useMemo, useEffect, memo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { CurricularDistributionResponse } from '../../api/client'
+import type { CurricularDistributionResponse } from '../../api/client'
 import type { Data  } from 'plotly.js-dist-min'
 import {
   ShieldCheck,
@@ -47,26 +47,18 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
     setRebanadaSeleccionada(null)
   }, [agrupacion, metrica, topN])
 
-  if (!data || !data.carreras || data.carreras.length === 0) {
-    return (
-      <div className="h-64 flex items-center justify-center text-slate-400 text-xs">
-        Sin datos curriculares disponibles para el período o filtros seleccionados.
-      </div>
-    )
-  }
-
   const {
-    carreras = [],
-    facultades = [],
-    cohortes = [],
+    carreras,
+    facultades,
+    cohortes,
     total_estudiantes_catalogados = 0,
     total_eventos_asistencia = 0,
     total_estudiantes_asistentes = 0,
-  } = data
+  } = data ?? {}
 
   // Ordenar carreras completas según la métrica activa
   const carrerasOrdenadasSegunMetrica = useMemo(() => {
-    return [...carreras].sort((a, b) => {
+    return [...(carreras ?? [])].sort((a, b) => {
       const valA = metrica === 'visitas' ? (a.eventos_asistencia ?? 0) : (a.estudiantes_asistentes ?? a.total_estudiantes ?? 0)
       const valB = metrica === 'visitas' ? (b.eventos_asistencia ?? 0) : (b.estudiantes_asistentes ?? b.total_estudiantes ?? 0)
       return valB - valA
@@ -90,7 +82,7 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
         pct_alumnos: c.porcentaje_asistentes ?? c.porcentaje,
       }))
     } else if (agrupacion === 'facultades') {
-      return facultades.map((f) => ({
+      return (facultades ?? []).map((f) => ({
         nombre: f.facultad,
         facultad: f.facultad,
         visitas: f.eventos_asistencia ?? 0,
@@ -99,7 +91,7 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
         pct_alumnos: f.porcentaje_asistentes ?? f.porcentaje,
       }))
     } else {
-      return cohortes
+      return (cohortes ?? [])
         .filter((coh) => coh.cohorte >= 2020)
         .map((coh) => ({
           nombre: coh.etiqueta,
@@ -124,45 +116,6 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
     return [...elementosOrdenados].reverse()
   }, [elementosOrdenados])
 
-  const tituloBarras =
-    agrupacion === 'carreras'
-      ? `${topN === 'todas' ? 'Todas las Carreras' : `Top ${topN} Carreras`} por ${
-          metrica === 'visitas' ? 'Visitas (Afluencia)' : 'Estudiantes Asistentes'
-        }`
-      : agrupacion === 'facultades'
-      ? `Demanda por Facultad (${metrica === 'visitas' ? 'Visitas' : 'Estudiantes Asistentes'})`
-      : `Demanda por Cohorte (${metrica === 'visitas' ? 'Visitas' : 'Estudiantes Asistentes'})`
-
-  const chartBarrasData: Data[] = [
-    {
-      type: 'bar',
-      x: elementosBarras.map((e) => (metrica === 'visitas' ? e.visitas : e.alumnos)),
-      y: elementosBarras.map((e) => e.nombre),
-      orientation: 'h',
-      name: metrica === 'visitas' ? 'Total Visitas (Afluencia)' : 'Estudiantes Asistentes',
-      marker: {
-        color: elementosBarras.map((_, i) =>
-          i === elementosBarras.length - 1
-            ? '#002B49'
-            : i >= elementosBarras.length - 3
-            ? '#0284C7'
-            : '#94A3B8'
-        ),
-      },
-      text: elementosBarras.map(
-        (e) =>
-          `${(metrica === 'visitas' ? e.visitas : e.alumnos).toLocaleString('es-CL')} ${
-            metrica === 'visitas' ? 'visitas' : 'alumnos'
-          }`
-      ),
-      textposition: 'auto',
-      hovertemplate:
-        '<b>%{y}</b><br>' +
-        (metrica === 'visitas' ? 'Visitas en Período: ' : 'Estudiantes Asistentes: ') +
-        '<b>%{x:,}</b><extra></extra>',
-    },
-  ]
-
   const alturaBarras = useMemo(() => {
     if (agrupacion === 'carreras') {
       if (topN === 'todas') {
@@ -174,33 +127,6 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
     }
     return 400
   }, [agrupacion, topN, elementosBarras.length])
-
-  const layoutBarras = {
-    title: {
-      text: tituloBarras,
-      font: { size: 12, color: '#1E293B' },
-      x: 0.02,
-      xanchor: 'left' as const,
-    },
-    xaxis: {
-      title: {
-        text: metrica === 'visitas' ? 'Total Visitas en Período' : 'Total Estudiantes Únicos',
-        font: { size: 10, color: '#64748B' },
-      },
-      automargin: true,
-      tickfont: { size: 9.5, color: '#64748B' },
-      gridcolor: '#F1F5F9',
-    },
-    yaxis: {
-      title: {
-        text: agrupacion === 'carreras' ? 'Carrera / Programa' : agrupacion === 'facultades' ? 'Facultad' : 'Cohorte',
-        font: { size: 10, color: '#64748B' },
-      },
-      automargin: true,
-      tickfont: { size: 9, color: '#334155' },
-    },
-    margin: { t: 35, r: 20, b: 35, l: agrupacion === 'carreras' ? 180 : 160 },
-  }
 
   // 2. Gráfico Donut de Porcentajes (Derecha)
   const chartDonutData: Data[] = useMemo(() => {
@@ -286,6 +212,80 @@ function CurricularDistributionPlotlyChartComponent({ data }: Props) {
     },
     margin: { t: 32, r: 12, b: 15, l: 12 },
   }), [agrupacion, topN])
+
+  if (!data || !data.carreras || data.carreras.length === 0) {
+    return (
+      <div className="h-64 flex items-center justify-center text-slate-400 text-xs">
+        Sin datos curriculares disponibles para el período o filtros seleccionados.
+      </div>
+    )
+  }
+
+  const tituloBarras =
+    agrupacion === 'carreras'
+      ? `${topN === 'todas' ? 'Todas las Carreras' : `Top ${topN} Carreras`} por ${
+          metrica === 'visitas' ? 'Visitas (Afluencia)' : 'Estudiantes Asistentes'
+        }`
+      : agrupacion === 'facultades'
+      ? `Demanda por Facultad (${metrica === 'visitas' ? 'Visitas' : 'Estudiantes Asistentes'})`
+      : `Demanda por Cohorte (${metrica === 'visitas' ? 'Visitas' : 'Estudiantes Asistentes'})`
+
+  const chartBarrasData: Data[] = [
+    {
+      type: 'bar',
+      x: elementosBarras.map((e) => (metrica === 'visitas' ? e.visitas : e.alumnos)),
+      y: elementosBarras.map((e) => e.nombre),
+      orientation: 'h',
+      name: metrica === 'visitas' ? 'Total Visitas (Afluencia)' : 'Estudiantes Asistentes',
+      marker: {
+        color: elementosBarras.map((_, i) =>
+          i === elementosBarras.length - 1
+            ? '#002B49'
+            : i >= elementosBarras.length - 3
+            ? '#0284C7'
+            : '#94A3B8'
+        ),
+      },
+      text: elementosBarras.map(
+        (e) =>
+          `${(metrica === 'visitas' ? e.visitas : e.alumnos).toLocaleString('es-CL')} ${
+            metrica === 'visitas' ? 'visitas' : 'alumnos'
+          }`
+      ),
+      textposition: 'auto',
+      hovertemplate:
+        '<b>%{y}</b><br>' +
+        (metrica === 'visitas' ? 'Visitas en Período: ' : 'Estudiantes Asistentes: ') +
+        '<b>%{x:,}</b><extra></extra>',
+    },
+  ]
+
+  const layoutBarras = {
+    title: {
+      text: tituloBarras,
+      font: { size: 12, color: '#1E293B' },
+      x: 0.02,
+      xanchor: 'left' as const,
+    },
+    xaxis: {
+      title: {
+        text: metrica === 'visitas' ? 'Total Visitas en Período' : 'Total Estudiantes Únicos',
+        font: { size: 10, color: '#64748B' },
+      },
+      automargin: true,
+      tickfont: { size: 9.5, color: '#64748B' },
+      gridcolor: '#F1F5F9',
+    },
+    yaxis: {
+      title: {
+        text: agrupacion === 'carreras' ? 'Carrera / Programa' : agrupacion === 'facultades' ? 'Facultad' : 'Cohorte',
+        font: { size: 10, color: '#64748B' },
+      },
+      automargin: true,
+      tickfont: { size: 9, color: '#334155' },
+    },
+    margin: { t: 35, r: 20, b: 35, l: agrupacion === 'carreras' ? 180 : 160 },
+  }
 
   const handleDonutClick = (event: Readonly<Plotly.PlotMouseEvent>) => {
     if (event.points && event.points.length > 0) {

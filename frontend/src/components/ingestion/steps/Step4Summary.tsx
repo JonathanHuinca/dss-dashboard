@@ -6,23 +6,22 @@ import {
   Hash,
   Calendar,
   Layers,
-  ArrowRight,
   Loader2,
-  RefreshCw,
   Copy,
   Check,
   ShieldAlert,
   GraduationCap,
 } from 'lucide-react'
 import {
-  InspectResponse,
-  ValidationResponse,
-  ProcessResponse,
+  type InspectResponse,
+  type ValidationResponse,
+  type ProcessResponse,
   validateIngestion,
   uploadIngestion,
   fetchJobStatus,
-  JobStatusResponse,
+  type JobStatusResponse,
 } from '../../../api/client'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 
 interface Props {
   file: File
@@ -52,12 +51,17 @@ export const Step4Summary: React.FC<Props> = ({
   const [processError, setProcessError] = useState<string | null>(null)
   const [copiedHash, setCopiedHash] = useState(false)
   const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null)
-  const pollIntervalRef = useRef<any>(null)
+  const pollTimeoutRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
+  const { programar } = useTemporizadorSeguro()
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
+      mountedRef.current = false
+      if (pollTimeoutRef.current !== null) {
+        window.clearTimeout(pollTimeoutRef.current)
+        pollTimeoutRef.current = null
       }
     }
   }, [])
@@ -95,7 +99,7 @@ export const Step4Summary: React.FC<Props> = ({
   const handleCopyHash = (hash: string) => {
     navigator.clipboard.writeText(hash)
     setCopiedHash(true)
-    setTimeout(() => setCopiedHash(false), 2000)
+    programar(() => setCopiedHash(false), 2000)
   }
 
   const handleExecuteIngestion = async () => {
@@ -103,9 +107,9 @@ export const Step4Summary: React.FC<Props> = ({
     setProcessError(null)
     setJobStatus(null)
 
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current)
-      pollIntervalRef.current = null
+    if (pollTimeoutRef.current !== null) {
+      window.clearTimeout(pollTimeoutRef.current)
+      pollTimeoutRef.current = null
     }
 
     try {
@@ -126,17 +130,16 @@ export const Step4Summary: React.FC<Props> = ({
         error_detail: null,
       })
 
-      // Sondeo cada 2 segundos hasta finalizar el trabajo
-      pollIntervalRef.current = setInterval(async () => {
+      // Sondeo recursivo cada 2 segundos hasta finalizar el trabajo
+      const sondearEstado = async () => {
+        if (!mountedRef.current) return
         try {
           const status = await fetchJobStatus(uploadRes.job_id)
+          if (!mountedRef.current) return
           setJobStatus(status)
 
           if (status.estado === 'completed') {
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current)
-              pollIntervalRef.current = null
-            }
+            pollTimeoutRef.current = null
             setIsProcessing(false)
             const completedResult: ProcessResponse = {
               job_id: status.job_id,
@@ -154,21 +157,28 @@ export const Step4Summary: React.FC<Props> = ({
             }
             setProcessResult(completedResult)
             onSuccess(completedResult)
-          } else if (status.estado === 'failed') {
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current)
-              pollIntervalRef.current = null
-            }
+            return
+          }
+          if (status.estado === 'failed') {
+            pollTimeoutRef.current = null
             setIsProcessing(false)
             setProcessError(status.error_detail || 'Error durante la ejecución del pipeline de ingesta.')
+            return
           }
         } catch (pollErr: any) {
           console.error('Error al sondear estado de ingesta:', pollErr)
         }
-      }, 2000)
+        if (mountedRef.current) {
+          pollTimeoutRef.current = window.setTimeout(sondearEstado, 2000)
+        }
+      }
+
+      pollTimeoutRef.current = window.setTimeout(sondearEstado, 2000)
     } catch (err: any) {
-      setIsProcessing(false)
-      setProcessError(err?.response?.data?.detail || err?.message || 'Error al iniciar la transacción de ingesta')
+      if (mountedRef.current) {
+        setIsProcessing(false)
+        setProcessError(err?.response?.data?.detail || err?.message || 'Error al iniciar la transacción de ingesta')
+      }
     }
   }
 

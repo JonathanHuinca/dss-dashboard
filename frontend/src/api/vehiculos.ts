@@ -1,4 +1,4 @@
-import { api, DataFilters, HourlyFlowPoint, parseFilters } from './clienteBase'
+import { api, type DataFilters, type HourlyFlowPoint, parseFilters } from './clienteBase'
 
 export interface VehicleKpis {
   vehiculos_unicos: number
@@ -148,6 +148,7 @@ export interface RawVehicleResponse {
 
 export interface SectorEstacionamiento {
   id: number
+  espacio_id?: number
   codigo: string
   nombre: string
   capacidad_max: number
@@ -294,8 +295,8 @@ export const fetchRawVehicles = (params: {
     },
   }).then(r => r.data)
 
-export const fetchSectoresEstacionamiento = () =>
-  api.get<SectorEstacionamiento[]>('/admin/estacionamientos/sectores').then(r => r.data)
+export const fetchSectoresEstacionamiento = (signal?: AbortSignal) =>
+  api.get<SectorEstacionamiento[]>('/vehicles/sectores', { signal }).then(r => r.data)
 
 export interface VehiclePresenceCurvePoint {
   bucket: string

@@ -3,23 +3,18 @@ import { useQuery } from '@tanstack/react-query'
 import {
   FileSpreadsheet,
   FileText,
-  Calendar,
   Search,
   RefreshCw,
   ChevronLeft,
   ChevronRight,
-  Shield,
   Download,
-  Database,
-  User,
   Clock,
-  Filter,
 } from 'lucide-react'
-import { fetchDownloadAudit, DownloadAuditResponse } from '../../api/client'
+import { fetchDownloadAudit, type DownloadAuditResponse } from '../../api/client'
 
 export const DownloadAuditSection: React.FC = () => {
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(15)
+  const [pageSize] = useState(15)
   const [moduloFilter, setModuloFilter] = useState('')
   const [formatoFilter, setFormatoFilter] = useState('')
   const [search, setSearch] = useState('')

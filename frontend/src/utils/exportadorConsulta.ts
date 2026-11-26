@@ -1,10 +1,12 @@
 import { api } from '../api/clienteBase'
 import {
   exportarGraficoExcelNativo,
-  GraficoNativoPayload,
-  SerieGraficoNativo,
+  type GraficoNativoPayload,
+  type SerieGraficoNativo,
 } from '../api/administracion'
 import { extraerPayloadGraficoNativo, descargarBlob } from './excelExport'
+import { descargarBlobSeguro } from './descargaBlob'
+import { obtenerFechaHoyChileIso } from './fechaChile'
 
 export interface OpcionesExportacionConsulta {
   pregunta: string
@@ -203,14 +205,7 @@ export async function exportarConsultaPdf(opciones: OpcionesExportacionConsulta)
 
   const res = await api.post('/chat/export-pdf', payloadReq, { responseType: 'blob' })
   const blob = new Blob([res.data], { type: 'application/pdf' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `Informe_UCT_${new Date().toISOString().slice(0, 10)}.pdf`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  descargarBlobSeguro(blob, `Informe_UCT_${obtenerFechaHoyChileIso()}.pdf`)
 }
 
 /**
@@ -243,10 +238,10 @@ export async function exportarConsultaExcel(opciones: OpcionesExportacionConsult
       const blob = await exportarGraficoExcelNativo(payloadNativo)
       const nombreSaneado = chartTitle
         .replace(/[^a-zA-Z0-9_-]/g, '_')
-        .replace(/^_+|_+$/g, '')
+        .replace(/(?:^_+)|(?:_+$)/g, '')
         .slice(0, 35) || 'Consulta_Analitica'
 
-      descargarBlob(blob, `Reporte_UCT_${nombreSaneado}_nativo_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      descargarBlob(blob, `Reporte_UCT_${nombreSaneado}_nativo_${obtenerFechaHoyChileIso()}.xlsx`)
       return
     } catch (apiErr) {
       console.warn('Error en servicio de gráfico nativo OpenXML backend, recurriendo a generador alternativo:', apiErr)
@@ -332,5 +327,5 @@ export async function exportarConsultaExcel(opciones: OpcionesExportacionConsult
 
   const buffer = await workbook.xlsx.writeBuffer()
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-  descargarBlob(blob, `Datos_UCT_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  descargarBlob(blob, `Datos_UCT_${obtenerFechaHoyChileIso()}.xlsx`)
 }

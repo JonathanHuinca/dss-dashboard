@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
 import {
   Share2,
   X,
@@ -23,7 +24,6 @@ import {
   KeyRound,
   Link2,
   Search,
-  Building2,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -31,12 +31,12 @@ import {
   SlidersHorizontal,
 } from 'lucide-react'
 import {
-  DataFilters,
-  ReporteCompartidoResumen,
-  DestinatarioReporteInfo,
-  NotaItemReporte,
-  CatalogoItemReporte,
-  UsuarioCandidatoConsultor,
+  type DataFilters,
+  type ReporteCompartidoResumen,
+  type DestinatarioReporteInfo,
+  type NotaItemReporte,
+  type CatalogoItemReporte,
+  type UsuarioCandidatoConsultor,
   fetchReportesCompartidos,
   crearReporteCompartido,
   actualizarReporteCompartido,
@@ -676,7 +676,7 @@ export const CompartirReporteModal: React.FC<CompartirReporteModalProps> = ({
       seccion: nuevaNotaSeccion,
       titulo: nuevaNotaTitulo.trim() || 'Observación Analítica',
       contenido: nuevaNotaContenido.trim(),
-      fecha: new Date().toISOString().slice(0, 10),
+      fecha: obtenerFechaHoyChileIso(),
     }
     setNotasItems((prev) => [...prev, nueva])
     setNuevaNotaTitulo('')

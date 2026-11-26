@@ -12,7 +12,7 @@ import {
   ChevronUp,
   Filter,
 } from 'lucide-react'
-import { fetchIngestionHistory, IngestionHistoryItem } from '../../api/client'
+import { fetchIngestionHistory, type IngestionHistoryItem } from '../../api/client'
 import { formatearFechaHoraChile } from '../../utils/fechaChile'
 
 export const IngestionAuditSection: React.FC = () => {

@@ -2,8 +2,6 @@ import React, { Suspense, lazy, memo, useState, useEffect, useMemo } from 'react
 import {
   Car,
   ParkingCircle,
-  RotateCcw,
-  Wifi,
   BarChart2,
   Flame,
   TrendingUp,
@@ -11,7 +9,6 @@ import {
   ArrowRightLeft,
   ShieldAlert,
   Filter,
-  Check,
   RotateCw,
   Clock,
   Layers,
@@ -29,16 +26,15 @@ import {
   CheckCircle2,
   Eye,
 } from 'lucide-react'
-import { KpiCard } from '../ui/KpiCard'
 import { ChartCard } from '../ui/ChartCard'
 import { LiveBadge } from '../ui/LiveBadge'
-import { BarraLateralSecciones, SeccionModuloItem } from '../layout/BarraLateralSecciones'
+import { BarraLateralSecciones, type SeccionModuloItem } from '../layout/BarraLateralSecciones'
 import { KPIBanner } from '../layout/KPIBanner'
 import { CompartirReporteModal } from '../reports/CompartirReporteModal'
-import { MetricasSeccion, ItemMetricaSeccion } from '../ui/MetricasSeccion'
+import { MetricasSeccion, type ItemMetricaSeccion } from '../ui/MetricasSeccion'
 import { useAuth } from '../../context/AuthContext'
 import { buildUserStorageKey } from '../../utils/userStorage'
-import { DateRange } from '../../types/dateRange'
+import { type DateRange } from '../../types/dateRange'
 import {
   useVehicleKpis,
   useParkingOccupancy,
@@ -104,13 +100,6 @@ function SectionHeader({
     </div>
   )
 }
-
-const SECTORES_VEHICULARES: { codigo: string; nombre: string; capacidad: number; descripcion: string }[] = [
-  { codigo: 'todos', nombre: 'Todos los Sectores', capacidad: 125, descripcion: 'Campus CSF y Simulación (125 plazas totales calibradas)' },
-  { codigo: 'CSF11', nombre: 'CSF11 — Edificio 11', capacidad: 40, descripcion: 'Edificio 11 Campus San Francisco (40 plazas)' },
-  { codigo: 'CSF21', nombre: 'CSF21 — Edificio 21', capacidad: 50, descripcion: 'Edificio 21 Campus San Francisco (50 plazas)' },
-  { codigo: 'CHS01', nombre: 'CHS01 — Hospital Simulación', capacidad: 35, descripcion: 'Hospital de Simulación CHS (35 plazas - Turno clínico)' },
-]
 
 const SECCIONES_MODULO_ESTACIONAMIENTO: SeccionModuloItem[] = [
   { id: 'seccion_1', numero: 1, titulo: '1. Aforo y Pronóstico', subtitulo: 'Concurrencia vs Plazas y Prophet', icono: Layers, cantidadGraficos: 3 },

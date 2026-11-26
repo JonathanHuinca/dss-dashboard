@@ -3,13 +3,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
-  HelpCircle,
   Link,
-  ShieldAlert,
-  ArrowRight,
-  Sparkles,
 } from 'lucide-react'
-import { InspectResponse, SchemaFieldMapping } from '../../../api/client'
+import { type InspectResponse, type SchemaFieldMapping } from '../../../api/client'
 
 interface Props {
   inspectData: InspectResponse

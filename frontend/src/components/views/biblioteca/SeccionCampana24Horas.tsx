@@ -2,11 +2,8 @@ import React, { useState } from 'react'
 import {
   Moon,
   Calendar,
-  TrendingUp,
-  Users,
   Clock,
   Flame,
-  ShieldCheck,
   FileSpreadsheet,
   Layers,
   ArrowRight,
@@ -14,17 +11,15 @@ import {
   AlertCircle,
   GraduationCap,
   Building2,
-  BarChart3,
   Download,
-  Check,
   AlertTriangle,
   SlidersHorizontal,
 } from 'lucide-react'
-import * as XLSX from 'xlsx'
-import { Analisis24hResponse } from '../../../api/asistencia'
-import { DataFilters } from '../../../api/clienteBase'
-import { DateRange } from '../../../types/dateRange'
+import { type Analisis24hResponse } from '../../../api/asistencia'
+import { type DataFilters } from '../../../api/clienteBase'
+import { type DateRange } from '../../../types/dateRange'
 import { HeatmapChart } from '../../charts/HeatmapChart'
+import { descargarBlobSeguro } from '../../../utils/descargaBlob'
 
 interface SeccionCampana24HorasProps {
   data: Analisis24hResponse | null
@@ -179,11 +174,19 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
     })
   }
 
-  const handleExportarExcelDedicado = () => {
+  const handleExportarExcelDedicado = async () => {
     if (!data) return
     setExportando(true)
     try {
-      const wb = XLSX.utils.book_new()
+      const ExcelJS = (await import('exceljs')).default
+      const workbook = new ExcelJS.Workbook()
+      workbook.creator = 'Sistema DSS UCT Campus San Francisco'
+      workbook.created = new Date()
+
+      const agregarHoja = (nombre: string, filas: (string | number)[][]) => {
+        const ws = workbook.addWorksheet(nombre.slice(0, 31))
+        filas.forEach(fila => ws.addRow(fila))
+      }
 
       // Hoja 1: Resumen General y Métricas Clave
       const capSala2Export = campanaActual?.capacidad_asientos || 226
@@ -206,8 +209,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         ['Hora Crítica de Concurrencia Simultánea', pico?.hora_pico || 'N/A'],
         ['Tasa de Ocupación Máxima sobre Asientos', `${pico?.tasa_ocupacion_asientos_pct ?? 0}%`],
       ]
-      const wsResumen = XLSX.utils.aoa_to_sheet(resumenRows)
-      XLSX.utils.book_append_sheet(wb, wsResumen, 'Métricas y Resumen')
+      agregarHoja('Métricas y Resumen', resumenRows)
 
       // Hoja 2: Curva Horaria Nocturna
       const curvaRows = [
@@ -215,8 +217,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         ['Hora', 'Accesos Registrados'],
         ...(data.curva_nocturna || []).map(c => [c.hora, c.ingresos]),
       ]
-      const wsCurva = XLSX.utils.aoa_to_sheet(curvaRows)
-      XLSX.utils.book_append_sheet(wb, wsCurva, 'Curva Horaria Nocturna')
+      agregarHoja('Curva Horaria Nocturna', curvaRows)
 
       // Hoja 3: Fases de la Noche
       const fasesRows = [
@@ -224,8 +225,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         ['Fase Horaria', 'Ingresos', 'Porcentaje'],
         ...data.fases_madrugada.map(f => [f.fase, f.ingresos, `${f.porcentaje}%`]),
       ]
-      const wsFases = XLSX.utils.aoa_to_sheet(fasesRows)
-      XLSX.utils.book_append_sheet(wb, wsFases, 'Fases Madrugada')
+      agregarHoja('Fases Madrugada', fasesRows)
 
       // Hoja 4: Distribución por Días de la Semana
       const diasRows = [
@@ -233,8 +233,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         ['Día', 'Ingresos Nocturnos', 'Estudiantes Únicos', 'Participación %'],
         ...(data.dias_semana_nocturno || []).map(d => [d.dia, d.ingresos, d.estudiantes, `${d.porcentaje}%`]),
       ]
-      const wsDias = XLSX.utils.aoa_to_sheet(diasRows)
-      XLSX.utils.book_append_sheet(wb, wsDias, 'Días de la Semana')
+      agregarHoja('Días de la Semana', diasRows)
 
       // Hoja 5: Top Carreras y Facultades
       const curricularRows = [
@@ -246,8 +245,7 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
         ['Facultad', 'Visitas', 'Estudiantes Únicos', 'Participación %'],
         ...data.top_facultades.map(f => [f.facultad || 'N/A', f.visitas, f.estudiantes, `${f.porcentaje}%`]),
       ]
-      const wsCurricular = XLSX.utils.aoa_to_sheet(curricularRows)
-      XLSX.utils.book_append_sheet(wb, wsCurricular, 'Segmentación Curricular')
+      agregarHoja('Segmentación Curricular', curricularRows)
 
       // Hoja 6: Comparativa entre Campañas
       if (data.comparativa_campanas && data.comparativa_campanas.length > 0) {
@@ -266,12 +264,13 @@ export const SeccionCampana24Horas: React.FC<SeccionCampana24HorasProps> = ({
             `${c.horas_estudio_nocturnas} hrs`,
           ]),
         ]
-        const wsComp = XLSX.utils.aoa_to_sheet(compRows)
-        XLSX.utils.book_append_sheet(wb, wsComp, 'Comparativa de Campañas')
+        agregarHoja('Comparativa de Campañas', compRows)
       }
 
+      const buffer = await workbook.xlsx.writeBuffer()
       const filename = `Reporte_Especial_24Horas_${(campanaActual?.descripcion || 'Sala2').replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`
-      XLSX.writeFile(wb, filename)
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      descargarBlobSeguro(blob, filename)
     } finally {
       setExportando(false)
     }

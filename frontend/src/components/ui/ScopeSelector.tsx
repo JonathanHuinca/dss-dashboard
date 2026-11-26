@@ -11,7 +11,6 @@ import {
   RotateCcw,
   X,
   CheckCircle2,
-  Sparkles,
   Building2,
   GraduationCap,
   School,
@@ -20,9 +19,9 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { DataFilters, fetchHorarios, HorarioOperacion } from '../../api/client'
+import { type DataFilters, fetchHorarios, type HorarioOperacion } from '../../api/client'
 import { useSalasBiblioteca, useAvailableFilters } from '../../hooks/useAttendance'
-import { DateRange } from '../../types/dateRange'
+import { type DateRange } from '../../types/dateRange'
 
 export type DataScope = 'conformes' | 'todos' | 'anomalias'
 

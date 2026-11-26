@@ -11,9 +11,9 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import {
-  InspectResponse,
-  SchemaFieldMapping,
-  ProcessResponse,
+  type InspectResponse,
+  type SchemaFieldMapping,
+  type ProcessResponse,
   inspectFile,
 } from '../../api/client'
 import { Step1Upload } from './steps/Step1Upload'
@@ -171,7 +171,6 @@ export const IngestionWizardModal: React.FC<Props> = ({
         <div className="px-6 py-3.5 bg-slate-50 border-b border-slate-200 shrink-0">
           <div className="flex items-center justify-between max-w-3xl mx-auto">
             {stepsList.map((s, idx) => {
-              const Icon = s.icon
               const isCurrent = currentStep === s.num
               const isCompleted = currentStep > s.num || processResult !== null
               return (

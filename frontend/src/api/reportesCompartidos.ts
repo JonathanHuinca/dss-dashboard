@@ -1,4 +1,4 @@
-import { api, DataFilters } from './clienteBase'
+import { api, type DataFilters } from './clienteBase'
 
 export interface NotaItemReporte {
   id: string
@@ -156,6 +156,7 @@ export interface VincularUsuarioExistentePayload {
 }
 
 export interface RespuestaReportePublico {
+  requiere_login?: boolean
   reporte: ReporteCompartidoResumen
   datos: {
     kpis_base: Record<string, any>
@@ -164,7 +165,7 @@ export interface RespuestaReportePublico {
     graficos_visibles: string[]
     graficos: Record<string, any>
     generado_en: string
-  }
+  } | null
   historial_destinatario: Array<{
     id: string
     codigo_corto: string
@@ -181,12 +182,10 @@ export interface RespuestaReportePublico {
     expirado: boolean
     es_actual: boolean
   }>
-  requiere_crear_password?: boolean
-  token_activacion?: string | null
   destinatario_puede_ia?: boolean
   cuota_ia?: CuotaIAReporte | null
   mensajes_ia?: MensajeIAReporteItem[]
-  catalogos: {
+  catalogos?: {
     graficos: CatalogoItemReporte[]
     indicadores: CatalogoItemReporte[]
   }
@@ -221,11 +220,12 @@ export async function vincularUsuarioExistenteConsultor(
   return data
 }
 
-export async function fetchMisReportesConsultor(): Promise<{
+export async function fetchMisReportesConsultor(signal?: AbortSignal): Promise<{
   destinatario: DestinatarioReporteInfo
   reportes: Array<any>
 }> {
   const { data } = await api.get('/reportes-compartidos/mis-reportes', {
+    signal,
     timeout: 45_000,
   })
   return data
@@ -281,18 +281,20 @@ export async function activarCuentaConsultorDesdeReporte(
   return data
 }
 
-export async function fetchReportePublicoPorToken(tokenAcceso: string): Promise<RespuestaReportePublico> {
+export async function fetchReportePublicoPorToken(tokenAcceso: string, signal?: AbortSignal): Promise<RespuestaReportePublico> {
   const { data } = await api.get<RespuestaReportePublico>(`/reportes-compartidos/publico/${encodeURIComponent(tokenAcceso)}`, {
+    signal,
     timeout: 60_000,
   })
   return data
 }
 
-export async function fetchPortalDestinatarioPorToken(tokenPortal: string): Promise<{
+export async function fetchPortalDestinatarioPorToken(tokenPortal: string, signal?: AbortSignal): Promise<{
   destinatario: DestinatarioReporteInfo
   reportes: Array<any>
 }> {
   const { data } = await api.get(`/reportes-compartidos/portal/${encodeURIComponent(tokenPortal)}`, {
+    signal,
     timeout: 45_000,
   })
   return data

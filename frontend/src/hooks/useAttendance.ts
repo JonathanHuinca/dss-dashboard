@@ -14,7 +14,6 @@ import {
   fetchAcademicMilestones,
   fetchDoorsUsage,
   fetchCheckinsDistribution,
-  fetchForecast14Days,
   fetchVisitProfiles,
   fetchSalasBiblioteca,
   fetchRoomsComparison,
@@ -22,7 +21,7 @@ import {
   fetchCurricularDistribution,
   fetchAvailableFilters,
   fetchVisitProfilesDonut,
-  DataFilters,
+  type DataFilters,
 } from '../api/client'
 import { opcionesConsultaAnalitica } from './opcionesConsulta'
 
@@ -185,15 +184,6 @@ export function useCheckinsDistribution(fechaInicio?: string, fechaFin?: string,
     queryKey: ['checkins-distribution', fechaInicio, fechaFin, filters],
     queryFn: ({ signal }) => fetchCheckinsDistribution(fechaInicio, fechaFin, filters, signal),
     ...opcionesConsultaAnalitica(),
-    ...opts,
-  })
-}
-
-export function useForecast14Days(espacioId: number = 1, opts?: { enabled?: boolean }) {
-  return useQuery({
-    queryKey: ['forecast-14days', espacioId],
-    queryFn: ({ signal }) => fetchForecast14Days(espacioId, signal),
-    ...opcionesConsultaAnalitica(30 * 60_000),
     ...opts,
   })
 }

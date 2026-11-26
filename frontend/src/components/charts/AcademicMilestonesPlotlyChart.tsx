@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { AcademicMilestonePoint } from '../../api/client'
+import { type AcademicMilestonePoint } from '../../api/client'
 import type { Data } from 'plotly.js-dist-min'
 
 interface Props {

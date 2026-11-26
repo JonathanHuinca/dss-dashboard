@@ -1,4 +1,3 @@
-import { Activity } from 'lucide-react'
 
 interface Props { lastUpdated?: string }
 

@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import axios from 'axios'
 import { api } from '../api/client'
 
 interface UserRole {
@@ -208,18 +207,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => clearInterval(interval)
   }, [token])
 
-  useEffect(() => {
-    const interceptor = api.interceptors.request.use((config) => {
-      const currentToken = localStorage.getItem(TOKEN_KEY)
-      if (currentToken && config.headers) {
-        config.headers.Authorization = `Bearer ${currentToken}`
-      }
-      return config
-    })
-    return () => {
-      api.interceptors.request.eject(interceptor)
-    }
-  }, [])
+  // El interceptor de token JWT está centralizado en clienteBase.ts
 
   // Respaldo para sesiones abiertas con tokens previos que no incluían nombre_completo
   useEffect(() => {
@@ -245,7 +233,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = (newToken: string) => {
     localStorage.setItem(TOKEN_KEY, newToken)
     setToken(newToken)
-    processToken(newToken)
   }
 
   const loginWithCredentials = async (email: string, password: string): Promise<boolean> => {

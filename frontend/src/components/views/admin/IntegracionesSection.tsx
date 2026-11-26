@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 import {
   Activity,
   AlertTriangle,
@@ -21,12 +22,12 @@ import {
   activarCredencialIA,
   actualizarConfiguracionSMTP,
   actualizarCredencialIA,
-  ConfiguracionSMTPCreatePayload,
-  ConfiguracionSMTPItem,
+  type ConfiguracionSMTPCreatePayload,
+  type ConfiguracionSMTPItem,
   crearConfiguracionSMTP,
   crearCredencialIA,
-  CredencialIACreatePayload,
-  CredencialIAItem,
+  type CredencialIACreatePayload,
+  type CredencialIAItem,
   eliminarConfiguracionSMTP,
   eliminarCredencialIA,
   listarConfiguracionesSMTP,
@@ -34,7 +35,7 @@ import {
   obtenerCatalogoProveedoresIA,
   probarConfiguracionSMTP,
   probarCredencialIA,
-  ProveedorCatalogoItem,
+  type ProveedorCatalogoItem,
 } from '../../../api/administracion'
 import { api } from '../../../api/client'
 import { formatearFechaHoraChile } from '../../../utils/fechaChile'
@@ -52,17 +53,18 @@ export const IntegracionesSection: React.FC = () => {
   // Estado global de notificaciones en pantalla
   const [avisoOk, setAvisoOk] = useState<string | null>(null)
   const [avisoError, setAvisoError] = useState<string | null>(null)
+  const { programar } = useTemporizadorSeguro()
 
   const mostrarExito = (msg: string) => {
     setAvisoError(null)
     setAvisoOk(msg)
-    setTimeout(() => setAvisoOk(null), 5000)
+    programar(() => setAvisoOk(null), 5000)
   }
 
   const mostrarError = (msg: string) => {
     setAvisoOk(null)
     setAvisoError(msg)
-    setTimeout(() => setAvisoError(null), 6500)
+    programar(() => setAvisoError(null), 6500)
   }
 
   // Consultas de catálogo, credenciales IA y perfiles SMTP

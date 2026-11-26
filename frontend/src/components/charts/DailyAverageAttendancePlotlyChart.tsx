@@ -1,6 +1,6 @@
-import React, { useState, memo, useMemo } from 'react'
+import { useState, memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { DailyAverageResponse } from '../../api/client'
+import { type DailyAverageResponse } from '../../api/client'
 import type { Data, Layout } from 'plotly.js-dist-min'
 import { Calendar, Award, Info } from 'lucide-react'
 

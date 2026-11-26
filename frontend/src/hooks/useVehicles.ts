@@ -11,7 +11,7 @@ import {
   fetchVehicleAcademicMilestones,
   fetchIntercampusMobility,
   fetchBehavioralClusters,
-  DataFilters,
+  type DataFilters,
 } from '../api/client'
 import { opcionesConsultaAnalitica } from './opcionesConsulta'
 

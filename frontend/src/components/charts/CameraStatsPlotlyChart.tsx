@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { CameraStatPoint } from '../../api/client'
+import { type CameraStatPoint } from '../../api/client'
 import type { Data } from 'plotly.js-dist-min'
 
 interface Props {

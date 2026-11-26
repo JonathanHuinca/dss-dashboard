@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, FormEvent } from 'react'
+import { useState, useEffect, useMemo, type FormEvent } from 'react'
 import {
   Lock,
   Eye,
@@ -12,7 +12,7 @@ import {
   KeyRound,
   UserCheck,
 } from 'lucide-react'
-import { verifyActivationToken, activateAccount, TokenVerifyData } from '../../api/client'
+import { verifyActivationToken, activateAccount, type TokenVerifyData } from '../../api/client'
 
 export function ActivateAccountView() {
   const [token, setToken] = useState<string>('')
@@ -40,13 +40,15 @@ export function ActivateAccountView() {
     }
 
     setToken(tokenParam)
+    const controller = new AbortController()
 
-    verifyActivationToken(tokenParam)
+    verifyActivationToken(tokenParam, controller.signal)
       .then((data) => {
         setTokenData(data)
         setIsLoadingToken(false)
       })
       .catch((err: unknown) => {
+        if ((err as { name?: string })?.name === 'CanceledError' || (err as { name?: string })?.name === 'AbortError') return
         const axiosErr = err as { response?: { data?: { detail?: string } } }
         const message =
           axiosErr.response?.data?.detail ||
@@ -54,6 +56,7 @@ export function ActivateAccountView() {
         setTokenError(message)
         setIsLoadingToken(false)
       })
+    return () => controller.abort()
   }, [])
 
   const passwordChecks = useMemo(() => {

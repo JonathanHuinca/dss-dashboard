@@ -1,7 +1,6 @@
 import React, { useState } from 'react'
 import {
   X,
-  FileSpreadsheet,
   TrendingUp,
   Users,
   Clock,
@@ -10,13 +9,11 @@ import {
   GraduationCap,
   Download,
   Moon,
-  Sun,
-  Activity,
   Layers,
   Flame,
 } from 'lucide-react'
-import * as XLSX from 'xlsx'
-import { Analisis24hResponse } from '../../api/asistencia'
+import { type Analisis24hResponse } from '../../api/asistencia'
+import { descargarBlobSeguro } from '../../utils/descargaBlob'
 
 interface ModalReporte24HorasProps {
   isOpen: boolean
@@ -39,11 +36,19 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
 
   if (!isOpen) return null
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     if (!data) return
     setExportando(true)
     try {
-      const wb = XLSX.utils.book_new()
+      const ExcelJS = (await import('exceljs')).default
+      const workbook = new ExcelJS.Workbook()
+      workbook.creator = 'Sistema DSS UCT Campus San Francisco'
+      workbook.created = new Date()
+
+      const agregarHoja = (nombre: string, filas: (string | number)[][]) => {
+        const ws = workbook.addWorksheet(nombre.slice(0, 31))
+        filas.forEach(fila => ws.addRow(fila))
+      }
 
       // Hoja 1: Resumen Ejecutivo
       const resumenRows = [
@@ -70,8 +75,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
         ['Hora Crítica de Concurrencia Nocturna', data.pico_nocturno.hora_pico],
         [`Tasa de Ocupación Máxima sobre Asientos (${data.campana?.capacidad_asientos || 226})`, `${data.pico_nocturno.tasa_ocupacion_asientos_pct}%`],
       ]
-      const wsResumen = XLSX.utils.aoa_to_sheet(resumenRows)
-      XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen Ejecutivo')
+      agregarHoja('Resumen Ejecutivo', resumenRows)
 
       // Hoja 2: Fases Madrugada
       const fasesRows = [
@@ -79,8 +83,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
         ['Fase Horaria', 'Ingresos Registrados', 'Distribución %'],
         ...data.fases_madrugada.map(f => [f.fase, f.ingresos, `${f.porcentaje}%`]),
       ]
-      const wsFases = XLSX.utils.aoa_to_sheet(fasesRows)
-      XLSX.utils.book_append_sheet(wb, wsFases, 'Fases Madrugada')
+      agregarHoja('Fases Madrugada', fasesRows)
 
       // Hoja 3: Segmentación Curricular Carreras
       const carrerasRows = [
@@ -88,8 +91,7 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
         ['Carrera', 'Visitas Nocturnas', 'Estudiantes Únicos', 'Participación %'],
         ...data.top_carreras.map(c => [c.carrera || 'N/A', c.visitas, c.estudiantes, `${c.porcentaje}%`]),
       ]
-      const wsCarreras = XLSX.utils.aoa_to_sheet(carrerasRows)
-      XLSX.utils.book_append_sheet(wb, wsCarreras, 'Top Carreras Nocturnas')
+      agregarHoja('Top Carreras Nocturnas', carrerasRows)
 
       // Hoja 4: Segmentación Curricular Facultades
       const facultadesRows = [
@@ -97,11 +99,12 @@ export const ModalReporte24Horas: React.FC<ModalReporte24HorasProps> = ({
         ['Facultad', 'Visitas Nocturnas', 'Estudiantes Únicos', 'Participación %'],
         ...data.top_facultades.map(f => [f.facultad || 'N/A', f.visitas, f.estudiantes, `${f.porcentaje}%`]),
       ]
-      const wsFacultades = XLSX.utils.aoa_to_sheet(facultadesRows)
-      XLSX.utils.book_append_sheet(wb, wsFacultades, 'Facultades Nocturnas')
+      agregarHoja('Facultades Nocturnas', facultadesRows)
 
+      const buffer = await workbook.xlsx.writeBuffer()
       const filename = `Justificacion_Operativa_24Horas_${(data.campana.descripcion || 'Biblioteca').replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`
-      XLSX.writeFile(wb, filename)
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      descargarBlobSeguro(blob, filename)
     } finally {
       setExportando(false)
     }

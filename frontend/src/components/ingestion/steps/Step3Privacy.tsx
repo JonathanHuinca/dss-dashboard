@@ -1,15 +1,11 @@
 import React from 'react'
 import {
   ShieldCheck,
-  Lock,
   Trash2,
-  FileCheck2,
   CheckCircle2,
-  Info,
   KeyRound,
-  EyeOff,
 } from 'lucide-react'
-import { InspectResponse } from '../../../api/client'
+import { type InspectResponse } from '../../../api/client'
 
 interface Props {
   inspectData: InspectResponse
@@ -19,7 +15,6 @@ export const Step3Privacy: React.FC<Props> = ({ inspectData }) => {
   // Identificar columnas purgadas y seudonimizadas
   const purgedColumns = inspectData.schema_mapping.filter((f) => f.classification === 'purgar')
   const pseudonymizedColumns = inspectData.schema_mapping.filter((f) => f.classification === 'seudonimizar')
-  const analyticalColumns = inspectData.schema_mapping.filter((f) => f.classification === 'analitico')
 
   return (
     <div className="space-y-6">

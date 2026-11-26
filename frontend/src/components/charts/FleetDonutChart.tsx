@@ -1,6 +1,6 @@
 import { useState, memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { FleetItem } from '../../api/client'
+import { type FleetItem } from '../../api/client'
 import type { Data, Layout } from 'plotly.js-dist-min'
 
 interface Props {

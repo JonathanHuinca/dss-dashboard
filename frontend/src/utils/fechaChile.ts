@@ -40,3 +40,31 @@ export function obtenerFechaHoyChileIso(referencia: Date = new Date()): string {
   const d = String(referencia.getDate()).padStart(2, '0')
   return `${y}-${m}-${d}`
 }
+
+function parsearIsoUtc(isoDate: string): number {
+  const parts = isoDate.slice(0, 10).split('-')
+  if (parts.length !== 3) return Number.NaN
+  const y = Number(parts[0])
+  const m = Number(parts[1])
+  const d = Number(parts[2])
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return Number.NaN
+  return Date.UTC(y, m - 1, d)
+}
+
+export function sumarDiasIso(isoDate: string, dias: number): string {
+  const ms = parsearIsoUtc(isoDate)
+  if (Number.isNaN(ms)) return isoDate
+  const dt = new Date(ms + dias * 86400000)
+  return dt.toISOString().slice(0, 10)
+}
+
+export function diferenciaDiasIso(inicioIso: string, finIso: string): number {
+  const msIni = parsearIsoUtc(inicioIso)
+  const msFin = parsearIsoUtc(finIso)
+  if (Number.isNaN(msIni) || Number.isNaN(msFin)) return Number.NaN
+  return Math.round((msFin - msIni) / 86400000)
+}
+
+export function ultimoDiaMesIso(year: number, monthNum: number): number {
+  return new Date(Date.UTC(year, monthNum, 0)).getUTCDate()
+}

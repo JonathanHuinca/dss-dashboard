@@ -1,4 +1,4 @@
-import { api, DataFilters, HourlyFlowPoint, parseFilters } from './clienteBase'
+import { api, type DataFilters, type HourlyFlowPoint, parseFilters } from './clienteBase'
 
 export interface AttendanceKpis {
   total_registros: number

@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { MonthlyVolumePoint } from '../../api/client'
+import { type MonthlyVolumePoint } from '../../api/client'
 import type { Data } from 'plotly.js-dist-min'
 import { formatMonthYearSpanish } from '../../types/dateRange'
 

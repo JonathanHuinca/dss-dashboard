@@ -86,7 +86,7 @@ export const obtenerSectoresEstacionamientoAdmin = () =>
   api.get<SectorEstacionamientoAdmin[]>('/admin/estacionamientos/sectores').then(r => r.data)
 
 export const actualizarCapacidadSectorAdmin = (codigo: string, capacidad_max: number) =>
-  api.put<{ mensaje: string; codigo: string; capacidad_max: number }>(`/admin/estacionamientos/sectores/${codigo}`, { capacidad_max }).then(r => r.data)
+  api.put<SectorEstacionamientoAdmin>(`/admin/estacionamientos/sectores/${codigo}`, { capacidad_max }).then(r => r.data)
 
 // ─── Gestión de Caché de Rendimiento ──────────────────────────────────────────
 
@@ -569,8 +569,9 @@ export interface InviteUserResponse {
   mensaje: string
 }
 
-export const verifyActivationToken = async (token: string): Promise<TokenVerifyData> => {
+export const verifyActivationToken = async (token: string, signal?: AbortSignal): Promise<TokenVerifyData> => {
   const res = await api.get<TokenVerifyData>('/auth/verify-token', {
+    signal,
     params: { token },
   })
   return res.data

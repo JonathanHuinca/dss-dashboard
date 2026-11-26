@@ -11,7 +11,7 @@ import {
   Users,
   Car,
 } from 'lucide-react'
-import { purgarDatosAdmin, SolicitudPurgaDatos, RespuestaPurgaDatos } from '../../api/client'
+import { purgarDatosAdmin, type SolicitudPurgaDatos, type RespuestaPurgaDatos } from '../../api/client'
 
 export const PurgaDatosSection: React.FC = () => {
   const queryClient = useQueryClient()

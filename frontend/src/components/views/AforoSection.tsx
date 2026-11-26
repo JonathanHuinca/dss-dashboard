@@ -8,18 +8,14 @@ import {
   CheckCircle2,
   AlertTriangle,
   RotateCcw,
-  Sparkles,
   Info,
-  ShieldCheck,
   DoorClosed,
-  Layers,
 } from 'lucide-react'
 import {
   fetchEspacios,
   updateEspacioCapacidad,
   updateSalaCapacidad,
-  EspacioInfo,
-  SalaBibliotecaItem,
+  type EspacioInfo,
 } from '../../api/client'
 import { useAuth } from '../../context/AuthContext'
 import { useSalasBiblioteca } from '../../hooks/useAttendance'

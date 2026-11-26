@@ -1,4 +1,4 @@
-import React, { useState, memo, lazy, Suspense } from 'react'
+import { useState, memo, lazy, Suspense } from 'react'
 import { Bot, Table as TableIcon, FileText, FileSpreadsheet } from 'lucide-react'
 import { InteractiveChart } from '../ui/InteractiveChart'
 import { MarkdownRespuestaIA } from '../ui/MarkdownRespuestaIA'
@@ -18,7 +18,6 @@ const WeeklyEvolutionPlotlyChart = lazy(() => import('../charts/WeeklyEvolutionP
 const AcademicMilestonesPlotlyChart = lazy(() => import('../charts/AcademicMilestonesPlotlyChart').then(m => ({ default: m.AcademicMilestonesPlotlyChart })))
 const CurricularDistributionPlotlyChart = lazy(() => import('../charts/CurricularDistributionPlotlyChart').then(m => ({ default: m.CurricularDistributionPlotlyChart })))
 const CheckinDistributionPlotlyChart = lazy(() => import('../charts/CheckinDistributionPlotlyChart').then(m => ({ default: m.CheckinDistributionPlotlyChart })))
-const Forecast14DaysPlotlyChart = lazy(() => import('../charts/Forecast14DaysPlotlyChart').then(m => ({ default: m.Forecast14DaysPlotlyChart })))
 const VisitProfilesPlotlyChart = lazy(() => import('../charts/VisitProfilesPlotlyChart').then(m => ({ default: m.VisitProfilesPlotlyChart })))
 const CameraStatsPlotlyChart = lazy(() => import('../charts/CameraStatsPlotlyChart').then(m => ({ default: m.CameraStatsPlotlyChart })))
 const IntercampusMobilityPlotlyChart = lazy(() => import('../charts/IntercampusMobilityPlotlyChart').then(m => ({ default: m.IntercampusMobilityPlotlyChart })))
@@ -252,19 +251,6 @@ function ChatMessageComponent({ msg, preguntaTexto, espacioId }: ChatMessageProp
             <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-2 mt-2">
               <Suspense fallback={fallbackLoader}>
                 <CurricularDistributionPlotlyChart data={msg.payload} />
-              </Suspense>
-            </div>
-          )
-        }
-        break
-
-      case 'Forecast14DaysPlotlyChart':
-        if (msg.payload) {
-          const preds = Array.isArray(msg.payload) ? msg.payload : (msg.payload.predicciones || [])
-          return (
-            <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-2 mt-2">
-              <Suspense fallback={fallbackLoader}>
-                <Forecast14DaysPlotlyChart data={preds} />
               </Suspense>
             </div>
           )

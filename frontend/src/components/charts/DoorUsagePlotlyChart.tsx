@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { DoorUsagePoint } from '../../api/client'
+import { type DoorUsagePoint } from '../../api/client'
 import type { Data } from 'plotly.js-dist-min'
 import { DoorClosed, ArrowDownRight, ArrowUpRight } from 'lucide-react'
 

@@ -1,7 +1,5 @@
 import React, { Suspense, lazy, memo, useEffect, useState } from 'react'
 import {
-  ShieldCheck,
-  UserCheck,
   Calendar,
   MapPin,
   Clock,
@@ -11,10 +9,8 @@ import {
   MessageSquare,
   History,
   Lock,
-  Layers,
   Users,
   Activity,
-  TrendingUp,
   TrendingDown,
   Car,
   RotateCcw,
@@ -28,11 +24,10 @@ import {
   Moon,
 } from 'lucide-react'
 import {
-  RespuestaReportePublico,
+  type RespuestaReportePublico,
   fetchReportePublicoPorToken,
   fetchPortalDestinatarioPorToken,
   fetchMisReportesConsultor,
-  activarCuentaConsultorDesdeReporte,
 } from '../../api/client'
 import { registrarEventoReportePublico } from '../../api/reportesCompartidos'
 import { AsistenteIAReporteDrawer } from '../reports/AsistenteIAReporteDrawer'
@@ -149,21 +144,25 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
   const [ingresandoLogin, setIngresandoLogin] = useState<boolean>(false)
   const [errorLogin, setErrorLogin] = useState<string | null>(null)
 
-  const [nuevaPassword, setNuevaPassword] = useState<string>('')
-  const [confirmarPassword, setConfirmarPassword] = useState<string>('')
-  const [creandoPassword, setCreandoPassword] = useState<boolean>(false)
-  const [errorPassword, setErrorPassword] = useState<string | null>(null)
-  const [passwordCreadaExito, setPasswordCreadaExito] = useState<boolean>(false)
-
   useEffect(() => {
+    const controller = new AbortController()
     if (modoRuta === 'consultor') {
-      cargarPortalConsultorAutenticado()
+      if (isAuthenticated) {
+        cargarPortalConsultorAutenticado(controller.signal)
+      } else {
+        setCargando(false)
+      }
     } else if (modoRuta === 'portal') {
-      cargarPortalDestinatario(token)
+      if (isAuthenticated) {
+        cargarPortalDestinatario(token, controller.signal)
+      } else {
+        setCargando(false)
+      }
     } else {
-      cargarReportePorToken(token)
+      cargarReportePorToken(token, controller.signal)
     }
-  }, [modoRuta, token])
+    return () => controller.abort()
+  }, [modoRuta, token, isAuthenticated])
 
   useEffect(() => {
     if (!tokenReporteActivo) return
@@ -174,108 +173,89 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
         detail.formato === 'excel'
           ? 'descarga_excel'
           : detail.formato === 'csv'
-          ? 'descarga_csv'
-          : detail.formato === 'imagen'
-          ? 'descarga_imagen'
-          : null
+            ? 'descarga_csv'
+            : detail.formato === 'imagen'
+              ? 'descarga_imagen'
+              : null
       if (!accion) return
       const resumen = [detail.titulo, detail.nombreArchivo].filter(Boolean).join(' — ')
-      registrarEventoReportePublico(tokenReporteActivo, accion, resumen || undefined).catch(() => {})
+      registrarEventoReportePublico(tokenReporteActivo, accion, resumen || undefined).catch(() => { })
     }
     window.addEventListener('uct:chart-exported', manejarDescargaChart)
     return () => window.removeEventListener('uct:chart-exported', manejarDescargaChart)
   }, [tokenReporteActivo])
 
-  const cargarPortalConsultorAutenticado = async () => {
+  const cargarPortalConsultorAutenticado = async (signal?: AbortSignal) => {
     setCargando(true)
     setErrorAcceso(null)
     try {
-      const resp = await fetchMisReportesConsultor()
+      const resp = await fetchMisReportesConsultor(signal)
       setDatosPortal(resp)
       const primerVigente = (resp.reportes || []).find((r: any) => r.vigente)
       if (primerVigente) {
         setTokenReporteActivo(primerVigente.token_acceso)
         try {
-          const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso)
+          const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso, signal)
           setDatosReporte(repData)
         } catch (errRep: any) {
-          console.warn('Error al cargar reporte inicial:', errRep)
+          if (errRep?.name !== 'CanceledError' && errRep?.name !== 'AbortError') {
+            console.warn('Error al cargar reporte inicial:', errRep)
+          }
         }
       }
     } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return
       setErrorAcceso(err?.response?.data?.detail || 'No fue posible cargar su bandeja de reportes ejecutivos.')
     } finally {
-      setCargando(false)
+      if (!signal?.aborted) setCargando(false)
     }
   }
 
-  const cargarPortalDestinatario = async (tokenPortal: string) => {
+  const cargarPortalDestinatario = async (tokenPortal: string, signal?: AbortSignal) => {
     setCargando(true)
     setErrorAcceso(null)
     try {
-      const resp = await fetchPortalDestinatarioPorToken(tokenPortal)
+      const resp = await fetchPortalDestinatarioPorToken(tokenPortal, signal)
       setDatosPortal(resp)
       const primerVigente = (resp.reportes || []).find((r: any) => r.vigente)
       if (primerVigente) {
         setTokenReporteActivo(primerVigente.token_acceso)
         try {
-          const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso)
+          const repData = await fetchReportePublicoPorToken(primerVigente.token_acceso, signal)
           setDatosReporte(repData)
         } catch (errRep: any) {
-          console.warn('Error al cargar reporte inicial:', errRep)
+          if (errRep?.name !== 'CanceledError' && errRep?.name !== 'AbortError') {
+            console.warn('Error al cargar reporte inicial:', errRep)
+          }
         }
       }
     } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return
       setErrorAcceso(
         err?.response?.data?.detail || 'No fue posible acceder a la bandeja histórica de reportes ejecutivos.'
       )
     } finally {
-      setCargando(false)
+      if (!signal?.aborted) setCargando(false)
     }
   }
 
-  const cargarReportePorToken = async (tokenRep: string) => {
+  const cargarReportePorToken = async (tokenRep: string, signal?: AbortSignal) => {
     setCargando(true)
     setErrorAcceso(null)
     try {
-      const resp = await fetchReportePublicoPorToken(tokenRep)
+      const resp = await fetchReportePublicoPorToken(tokenRep, signal)
       setDatosReporte(resp)
       setTokenReporteActivo(tokenRep)
       if (resp.reporte?.destinatario?.email) {
         setEmailIngreso(resp.reporte.destinatario.email)
       }
     } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError') return
       setErrorAcceso(
         err?.response?.data?.detail || 'Este enlace de reporte compartido no está disponible o ha sido deshabilitado.'
       )
     } finally {
-      setCargando(false)
-    }
-  }
-
-  const handleCrearPasswordConsultor = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!datosReporte?.token_activacion) return
-    if (nuevaPassword.length < 8) {
-      setErrorPassword('La contraseña debe tener al menos 8 caracteres.')
-      return
-    }
-    if (nuevaPassword !== confirmarPassword) {
-      setErrorPassword('Las contraseñas ingresadas no coinciden.')
-      return
-    }
-    setCreandoPassword(true)
-    setErrorPassword(null)
-    try {
-      await activarCuentaConsultorDesdeReporte(datosReporte.token_activacion, nuevaPassword, confirmarPassword)
-      setPasswordCreadaExito(true)
-    } catch (err: any) {
-      setErrorPassword(
-        err?.response?.data?.detail ||
-        'No fue posible registrar la contraseña. Debe tener mínimo 8 caracteres, una mayúscula, un número y un carácter especial.'
-      )
-    } finally {
-      setCreandoPassword(false)
+      if (!signal?.aborted) setCargando(false)
     }
   }
 
@@ -318,7 +298,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
     )
   }
 
-  if (errorAcceso || (!datosReporte && !datosPortal)) {
+  if (errorAcceso || (!datosReporte && !datosPortal && isAuthenticated)) {
     return (
       <div className="min-h-screen bg-uct-bg-main text-slate-800 flex flex-col items-center justify-center p-6">
         <div className="max-w-md w-full bg-white border border-slate-200 rounded-2xl p-6 text-center space-y-4 shadow-xl">
@@ -349,92 +329,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
   const historial = datosReporte?.historial_destinatario || datosPortal?.reportes || []
   const destinatario = reporte?.destinatario || datosPortal?.destinatario
 
-  if (datosReporte?.requiere_crear_password && !passwordCreadaExito && datosReporte?.token_activacion) {
-    return (
-      <div className="min-h-screen bg-uct-bg-main text-slate-800 flex flex-col items-center justify-center p-6">
-        <div className="max-w-lg w-full bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
-          <div className="bg-uct-blue-primary px-6 py-5 border-b-4 border-uct-gold flex items-center gap-3">
-            <div className="h-10 px-2.5 py-1 rounded-lg bg-white border border-uct-gold/50 shadow-xs shrink-0 flex items-center justify-center">
-              <img src="/uct_logo.png" alt="UCT" className="h-6 w-auto object-contain" />
-            </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-uct-gold block">
-                Activación de Cuenta Consultor de Reporte
-              </span>
-              <h2 className="text-sm font-bold text-white leading-snug">
-                Universidad Católica de Temuco — DSS Campus San Francisco
-              </h2>
-            </div>
-          </div>
-
-          <form onSubmit={handleCrearPasswordConsultor} className="p-6 space-y-4">
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs text-slate-700 space-y-1">
-              <p className="font-bold text-uct-blue-primary">
-                Bienvenido/a, {destinatario?.nombre_completo || 'Consultor Institucional'}
-              </p>
-              <p className="text-slate-600">
-                Para visualizar el reporte ejecutivo{' '}
-                <strong className="text-slate-800">"{reporte?.titulo_reporte}"</strong> y acceder a su bandeja histórica
-                en <span className="font-mono text-[11px]">{destinatario?.correo}</span>, primero debe definir su
-                contraseña personal de acceso.
-              </p>
-            </div>
-
-            {errorPassword && (
-              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
-                <span>{errorPassword}</span>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Crear Contraseña Institucional *
-              </label>
-              <input
-                type="password"
-                required
-                value={nuevaPassword}
-                onChange={(e) => setNuevaPassword(e.target.value)}
-                placeholder="Mínimo 8 caracteres, 1 mayúscula, 1 número y 1 símbolo"
-                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:border-uct-blue-primary outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Confirmar Contraseña *
-              </label>
-              <input
-                type="password"
-                required
-                value={confirmarPassword}
-                onChange={(e) => setConfirmarPassword(e.target.value)}
-                placeholder="Repita su contraseña"
-                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:border-uct-blue-primary outline-none"
-              />
-            </div>
-
-            <p className="text-[11px] text-slate-500">
-              Requisitos de seguridad: mínimo 8 caracteres, al menos una letra mayúscula, un número y un carácter
-              especial (ej. <span className="font-mono">Uct2026!</span>).
-            </p>
-
-            <button
-              type="submit"
-              disabled={creandoPassword}
-              className="w-full py-2.5 px-4 rounded-xl bg-uct-blue-primary hover:bg-uct-blue-dark disabled:opacity-50 text-white text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
-            >
-              <Lock className="w-4 h-4 text-uct-gold" />
-              {creandoPassword ? 'Guardando contraseña y abriendo reporte...' : 'Crear Contraseña y Ver Reporte Ejecutivo'}
-            </button>
-          </form>
-        </div>
-      </div>
-    )
-  }
-
-  if (!isAuthenticated && !passwordCreadaExito) {
+  if (!isAuthenticated || datosReporte?.requiere_login) {
     return (
       <div className="min-h-screen bg-uct-bg-main text-slate-800 flex flex-col items-center justify-center p-6">
         <div className="max-w-md w-full bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xl">
@@ -458,9 +353,18 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                 Identificación Requerida
               </p>
               <p className="text-slate-600">
-                Para visualizar el reporte ejecutivo{' '}
-                <strong className="text-slate-800">"{reporte?.titulo_reporte}"</strong> ({reporte?.codigo_corto}),
-                ingrese sus credenciales institucionales.
+                {reporte?.titulo_reporte ? (
+                  <>
+                    Para visualizar el reporte ejecutivo{' '}
+                    <strong className="text-slate-800">"{reporte.titulo_reporte}"</strong> ({reporte.codigo_corto}),
+                    ingrese sus credenciales institucionales.
+                  </>
+                ) : (
+                  'Para visualizar sus reportes ejecutivos confidenciales, ingrese sus credenciales institucionales.'
+                )}
+              </p>
+              <p className="text-[11px] text-slate-500 pt-1">
+                Si aún no ha activado su contraseña, utilice el enlace de activación enviado a su correo institucional.
               </p>
             </div>
 
@@ -801,7 +705,7 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                       tokenReporteActivo,
                       'descarga_pdf',
                       `Impresión / PDF — ${reporte.titulo_reporte}`
-                    ).catch(() => {})
+                    ).catch(() => { })
                   }
                   window.print()
                 }}
@@ -985,10 +889,10 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                     <div
                       key={item.id}
                       className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between gap-2.5 ${seleccionado
-                          ? 'bg-blue-50/70 border-uct-blue-primary shadow-xs'
-                          : item.vigente
-                            ? 'bg-slate-50/70 border-slate-200 hover:border-slate-300'
-                            : 'bg-slate-50 border-slate-200 opacity-60'
+                        ? 'bg-blue-50/70 border-uct-blue-primary shadow-xs'
+                        : item.vigente
+                          ? 'bg-slate-50/70 border-slate-200 hover:border-slate-300'
+                          : 'bg-slate-50 border-slate-200 opacity-60'
                         }`}
                     >
                       <div>
@@ -998,8 +902,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                           </span>
                           <span
                             className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${item.vigente
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : 'bg-red-50 text-red-700 border border-red-200'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-red-50 text-red-700 border border-red-200'
                               }`}
                           >
                             {item.vigente ? 'Disponible' : item.expirado ? 'Expirado' : 'Deshabilitado'}
@@ -1015,8 +919,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                           type="button"
                           onClick={() => cargarReportePorToken(item.token_acceso)}
                           className={`w-full py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${seleccionado
-                              ? 'bg-uct-blue-primary text-white'
-                              : 'bg-white hover:bg-slate-100 text-uct-blue-primary border border-slate-300'
+                            ? 'bg-uct-blue-primary text-white'
+                            : 'bg-white hover:bg-slate-100 text-uct-blue-primary border border-slate-300'
                             }`}
                         >
                           {seleccionado ? 'Reporte Activo en Pantalla' : 'Visualizar este Reporte'}
@@ -1110,8 +1014,8 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
               {kpiCardsItems.length > 0 && (
                 <div
                   className={`grid grid-cols-1 sm:grid-cols-2 ${reporte.espacio_id === 2 && kpiCardsItems.length > 4
-                      ? 'lg:grid-cols-3 xl:grid-cols-6'
-                      : 'lg:grid-cols-4'
+                    ? 'lg:grid-cols-3 xl:grid-cols-6'
+                    : 'lg:grid-cols-4'
                     } gap-4`}
                 >
                   {kpiCardsItems.map((catInd) => {
@@ -1155,11 +1059,11 @@ export const ReporteCompartidoView: React.FC<ReporteCompartidoViewProps> = ({ mo
                                 : reporte.filtros_bloqueados?.sala === 'CSF04'
                                   ? Number(indEjecutivos?.capacidad_sala2 || indEjecutivos?.capacidad_asientos || 126)
                                   : Number(
-                                      indEjecutivos?.capacidad_asientos ||
-                                      ((indEjecutivos?.capacidad_sala1 && indEjecutivos?.capacidad_sala2)
-                                        ? Number(indEjecutivos.capacidad_sala1) + Number(indEjecutivos.capacidad_sala2)
-                                        : 276)
-                                    )
+                                    indEjecutivos?.capacidad_asientos ||
+                                    ((indEjecutivos?.capacidad_sala1 && indEjecutivos?.capacidad_sala2)
+                                      ? Number(indEjecutivos.capacidad_sala1) + Number(indEjecutivos.capacidad_sala2)
+                                      : 276)
+                                  )
                             }
                             unit="ocupantes"
                             salaLabel={

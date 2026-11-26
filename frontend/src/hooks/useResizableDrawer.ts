@@ -34,6 +34,18 @@ export function useResizableDrawer({
   )
   const widthRef = useRef(width)
   widthRef.current = width
+  const dragCleanupRef = useRef<(() => void) | null>(null)
+  const maximizeTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.()
+      if (maximizeTimerRef.current !== null) {
+        window.clearTimeout(maximizeTimerRef.current)
+        maximizeTimerRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const onResize = () => {
@@ -77,12 +89,22 @@ export function useResizableDrawer({
         window.removeEventListener('pointermove', onPointerMove)
         window.removeEventListener('pointerup', onPointerUp)
         window.removeEventListener('pointercancel', onPointerUp)
+        dragCleanupRef.current = null
         try {
           localStorage.setItem(storageKey, String(Math.round(widthRef.current)))
         } catch {
           // Ignorar errores de almacenamiento
         }
         triggerChartResize()
+      }
+
+      dragCleanupRef.current = () => {
+        setIsResizing(false)
+        document.body.style.userSelect = prevUserSelect
+        document.body.style.cursor = prevCursor
+        window.removeEventListener('pointermove', onPointerMove)
+        window.removeEventListener('pointerup', onPointerUp)
+        window.removeEventListener('pointercancel', onPointerUp)
       }
 
       window.addEventListener('pointermove', onPointerMove)
@@ -94,7 +116,13 @@ export function useResizableDrawer({
 
   const toggleMaximize = useCallback(() => {
     setIsMaximized((prev) => !prev)
-    setTimeout(triggerChartResize, 60)
+    if (maximizeTimerRef.current !== null) {
+      window.clearTimeout(maximizeTimerRef.current)
+    }
+    maximizeTimerRef.current = window.setTimeout(() => {
+      maximizeTimerRef.current = null
+      triggerChartResize()
+    }, 60)
   }, [triggerChartResize])
 
   const drawerWidth = isMobile || isMaximized ? '100%' : `${Math.min(width, typeof window !== 'undefined' ? window.innerWidth : width)}px`

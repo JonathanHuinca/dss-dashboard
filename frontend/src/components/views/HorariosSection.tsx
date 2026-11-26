@@ -7,16 +7,14 @@ import {
   Edit2,
   Building,
   Car,
-  Calendar,
-  Sparkles,
 } from 'lucide-react'
 import {
   fetchHorarios,
   createHorario,
   updateHorario,
   deleteHorario,
-  HorarioOperacion,
-  HorarioOperacionCreate,
+  type HorarioOperacion,
+  type HorarioOperacionCreate,
 } from '../../api/client'
 import { CalendarioContingenciasSection } from './horarios/CalendarioContingenciasSection'
 import {
@@ -97,7 +95,6 @@ export const HorariosSection: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['vehicle-kpis'] })
     queryClient.invalidateQueries({ queryKey: ['forecast-attendance'] })
     queryClient.invalidateQueries({ queryKey: ['forecast-parking'] })
-    queryClient.invalidateQueries({ queryKey: ['forecast-14days'] })
   }
 
   const createMutation = useMutation({

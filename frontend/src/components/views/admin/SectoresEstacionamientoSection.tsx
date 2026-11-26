@@ -5,16 +5,14 @@ import {
   Save,
   CheckCircle2,
   AlertTriangle,
-  RotateCcw,
-  ShieldCheck,
-  Building,
 } from 'lucide-react'
 import {
   obtenerSectoresEstacionamientoAdmin,
   actualizarCapacidadSectorAdmin,
-  SectorEstacionamientoAdmin,
+  type SectorEstacionamientoAdmin,
 } from '../../../api/client'
 import { useAuth } from '../../../context/AuthContext'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 
 export const SectoresEstacionamientoSection: React.FC = () => {
   const { isSuperAdmin } = useAuth()
@@ -22,6 +20,7 @@ export const SectoresEstacionamientoSection: React.FC = () => {
   const [capacidadesEdit, setCapacidadesEdit] = useState<Record<string, number>>({})
   const [mensajeExito, setMensajeExito] = useState<string | null>(null)
   const [mensajeError, setMensajeError] = useState<string | null>(null)
+  const { programar } = useTemporizadorSeguro()
 
   const {
     data: sectores = [],
@@ -43,12 +42,12 @@ export const SectoresEstacionamientoSection: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin-espacios'] })
       queryClient.invalidateQueries({ queryKey: ['date-bounds'] })
       setMensajeExito(`Capacidad del sector ${res.codigo} actualizada a ${res.capacidad_max} plazas. Aforo total sincronizado.`)
-      setTimeout(() => setMensajeExito(null), 4000)
+      programar(() => setMensajeExito(null), 4000)
       refetch()
     },
     onError: (err: any) => {
       setMensajeError(err?.response?.data?.detail || 'Error al actualizar capacidad del sector.')
-      setTimeout(() => setMensajeError(null), 5000)
+      programar(() => setMensajeError(null), 5000)
     },
   })
 

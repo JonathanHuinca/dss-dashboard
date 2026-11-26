@@ -17,13 +17,12 @@ import {
   Clock,
   MessageSquare,
   ChevronLeft,
-  ChevronRight,
   AlertCircle,
   Maximize2,
   Minimize2,
 } from 'lucide-react'
 import { useResizableDrawer } from '../../hooks/useResizableDrawer'
-import { ChatMessage, ChatMessageData } from './ChatMessage'
+import { ChatMessage, type ChatMessageData } from './ChatMessage'
 import { capturarElementoGrafico } from '../../utils/exportadorConsulta'
 import {
   sendInteractiveChatMessage,
@@ -31,15 +30,14 @@ import {
   exportChatPdf,
   fetchAssistantModels,
   fetchChatConversaciones,
-  createChatConversacion,
   fetchChatConversacionDetalle,
   renameChatConversacion,
   archiveChatConversacion,
   deleteChatConversacion,
   fetchChatCuota,
-  ChatConversacionResumen,
-  CuotaIaInfo,
-  ModelItem,
+  type ChatConversacionResumen,
+  type CuotaIaInfo,
+  type ModelItem,
 } from '../../api/client'
 
 type Message = ChatMessageData
@@ -198,8 +196,16 @@ export function AssistantDrawer({
   })
 
   // Cargar modelos y cuota al inicializar
+  const actualizarCuota = useCallback((signal?: AbortSignal) => {
+    fetchChatCuota(signal)
+      .then(setCuotaIa)
+      .catch(() => {})
+  }, [])
+
+  // Cargar modelos y cuota al inicializar
   useEffect(() => {
-    fetchAssistantModels()
+    const controller = new AbortController()
+    fetchAssistantModels(controller.signal)
       .then(res => {
         if (res.models && res.models.length > 0) {
           setAvailableModels(res.models)
@@ -208,14 +214,9 @@ export function AssistantDrawer({
       })
       .catch(() => {})
 
-    actualizarCuota()
-  }, [])
-
-  const actualizarCuota = useCallback(() => {
-    fetchChatCuota()
-      .then(setCuotaIa)
-      .catch(() => {})
-  }, [])
+    actualizarCuota(controller.signal)
+    return () => controller.abort()
+  }, [actualizarCuota])
 
   // Cargar listado de conversaciones al abrir o cambiar espacio / pestaña archivadas
   const cargarConversaciones = useCallback(async () => {
@@ -254,12 +255,12 @@ export function AssistantDrawer({
         if (m.argumentos_json) {
           try {
             const parsed = JSON.parse(m.argumentos_json)
-            if (m.tipo === 'component' || m.herramienta) {
-              parsedPayload = parsed
-            } else if (m.tipo === 'plotly') {
+            if (m.tipo === 'plotly') {
               parsedFigData = parsed
             } else if (m.tipo === 'df') {
               parsedTableData = Array.isArray(parsed) ? parsed : parsed.data
+            } else if (m.tipo === 'component' || m.herramienta) {
+              parsedPayload = parsed
             }
           } catch {
             // argumento no parseable
@@ -365,11 +366,11 @@ export function AssistantDrawer({
   }
 
   useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-      }, 100)
-    }
+    if (!isOpen) return
+    const timer = window.setTimeout(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }, 100)
+    return () => window.clearTimeout(timer)
   }, [isOpen, messages, loading])
 
   // Envío de mensaje en la conversación activa

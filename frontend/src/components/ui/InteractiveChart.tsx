@@ -1,13 +1,15 @@
-import React, { useEffect, useMemo, useRef, memo } from 'react'
-import Plotly from 'plotly.js-cartesian-dist-min'
-import createPlotlyComponent from 'react-plotly.js/factory'
+import React, { Suspense, lazy, useEffect, useMemo, useRef, memo } from 'react'
+import type PlotlyTypes from 'plotly.js-cartesian-dist-min'
 
-// Blindaje contra errores de desmonte concurrente en Plotly cuando el elemento DOM es nulo
-if (typeof window !== 'undefined' && Plotly) {
+let plotlyModuloPromise: Promise<typeof PlotlyTypes> | null = null
+let plotlyCargado: typeof PlotlyTypes | null = null
+
+function aplicarBlindajePlotly(Plotly: typeof PlotlyTypes) {
+  if (typeof window === 'undefined' || !Plotly) return
   const safeWrap = (obj: any, method: string) => {
-    if (obj && typeof obj[method] === 'function') {
+    if (obj && typeof obj[method] === 'function' && !obj[method].__uctWrapped) {
       const orig = obj[method]
-      obj[method] = function (gd: any, ...args: any[]) {
+      const wrapped = function (this: any, gd: any, ...args: any[]) {
         if (!gd) return Promise.resolve ? Promise.resolve() : undefined
         try {
           return orig.apply(this, [gd, ...args])
@@ -18,6 +20,8 @@ if (typeof window !== 'undefined' && Plotly) {
           throw err
         }
       }
+      ;(wrapped as any).__uctWrapped = true
+      obj[method] = wrapped
     }
   }
 
@@ -28,20 +32,52 @@ if (typeof window !== 'undefined' && Plotly) {
   safeWrap(Plotly, 'react')
 }
 
-const Plot = createPlotlyComponent(Plotly)
+async function cargarPlotly(): Promise<typeof PlotlyTypes> {
+  if (plotlyCargado) return plotlyCargado
+  if (!plotlyModuloPromise) {
+    plotlyModuloPromise = import('plotly.js-cartesian-dist-min').then((mod) => {
+      const inst = (mod.default || mod) as typeof PlotlyTypes
+      aplicarBlindajePlotly(inst)
+      plotlyCargado = inst
+      return inst
+    })
+  }
+  return plotlyModuloPromise
+}
+
+const LazyPlot = lazy(async () => {
+  const [Plotly, factoryMod] = await Promise.all([
+    cargarPlotly(),
+    import('react-plotly.js/factory'),
+  ])
+  const createPlotlyComponent = (factoryMod.default || factoryMod) as (p: any) => React.ComponentType<any>
+  return { default: createPlotlyComponent(Plotly) }
+})
+
+function esIgualSuperficial(a?: Record<string, any>, b?: Record<string, any>): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  const keysA = Object.keys(a)
+  const keysB = Object.keys(b)
+  if (keysA.length !== keysB.length) return false
+  for (const k of keysA) {
+    if (a[k] !== b[k]) return false
+  }
+  return true
+}
 
 const DEBOUNCE_RESIZE_MS = 100
 
 export interface InteractiveChartProps {
-  data: Plotly.Data[]
-  layout?: Partial<Plotly.Layout>
-  config?: Partial<Plotly.Config>
+  data: PlotlyTypes.Data[]
+  layout?: Partial<PlotlyTypes.Layout>
+  config?: Partial<PlotlyTypes.Config>
   filename?: string
   height?: number | string
   className?: string
   style?: React.CSSProperties
-  onClick?: (event: Readonly<Plotly.PlotMouseEvent>) => void
-  onLegendClick?: (event: Readonly<Plotly.LegendClickEvent>) => boolean
+  onClick?: (event: Readonly<PlotlyTypes.PlotMouseEvent>) => void
+  onLegendClick?: (event: Readonly<PlotlyTypes.LegendClickEvent>) => boolean
 }
 
 function InteractiveChartComponent({
@@ -76,9 +112,9 @@ function InteractiveChartComponent({
         if (animationFrameId) window.cancelAnimationFrame(animationFrameId)
         animationFrameId = window.requestAnimationFrame(() => {
           const plotEl = el.querySelector('.js-plotly-plot') as HTMLElement | null
-          if (plotEl && plotEl.isConnected && (plotEl as any)._fullLayout && Plotly.Plots?.resize) {
+          if (plotEl && plotEl.isConnected && (plotEl as any)._fullLayout && plotlyCargado?.Plots?.resize) {
             try {
-              Plotly.Plots.resize(plotEl)
+              plotlyCargado.Plots.resize(plotEl)
             } catch {
               // Silenciar excepciones en desmontajes concurrentes
             }
@@ -89,12 +125,11 @@ function InteractiveChartComponent({
 
     observer.observe(el)
 
-    // Redimensionamiento forzado tras montaje inicial para asegurar cálculo exacto del contenedor
     const mountRaf = window.requestAnimationFrame(() => {
       const plotEl = el.querySelector('.js-plotly-plot') as HTMLElement | null
-      if (plotEl && plotEl.isConnected && (plotEl as any)._fullLayout && Plotly.Plots?.resize) {
+      if (plotEl && plotEl.isConnected && (plotEl as any)._fullLayout && plotlyCargado?.Plots?.resize) {
         try {
-          Plotly.Plots.resize(plotEl)
+          plotlyCargado.Plots.resize(plotEl)
         } catch {
           // Silenciar
         }
@@ -106,14 +141,30 @@ function InteractiveChartComponent({
       if (timeoutId) window.clearTimeout(timeoutId)
       if (animationFrameId) window.cancelAnimationFrame(animationFrameId)
       observer.disconnect()
+      const plotEl = el.querySelector('.js-plotly-plot') as HTMLElement | null
+      if (plotEl && plotlyCargado?.purge) {
+        try {
+          plotlyCargado.purge(plotEl)
+        } catch {
+          // Silenciar en desmontaje
+        }
+      }
     }
   }, [])
 
-  // Huellas estructurales: el layout y config suelen recrearse inline en cada render del padre
-  const claveLayout = JSON.stringify(layout)
-  const claveConfig = JSON.stringify(config)
+  const stableLayoutRef = useRef(layout)
+  if (!esIgualSuperficial(stableLayoutRef.current as Record<string, any>, layout as Record<string, any>)) {
+    stableLayoutRef.current = layout
+  }
+  const layoutEstable = stableLayoutRef.current
 
-  const defaultLayout = useMemo<Partial<Plotly.Layout>>(() => ({
+  const stableConfigRef = useRef(config)
+  if (!esIgualSuperficial(stableConfigRef.current as Record<string, any>, config as Record<string, any>)) {
+    stableConfigRef.current = config
+  }
+  const configEstable = stableConfigRef.current
+
+  const defaultLayout = useMemo<Partial<PlotlyTypes.Layout>>(() => ({
     autosize: true,
     paper_bgcolor: '#ffffff',
     plot_bgcolor: '#ffffff',
@@ -130,30 +181,29 @@ function InteractiveChartComponent({
       x: 0.5,
       font: { size: 10.5, color: '#334155' },
       itemclick: 'toggle',
-      ...(layout.legend || {}),
+      ...(layoutEstable.legend || {}),
     },
     dragmode: 'zoom',
     hovermode: 'closest',
-    ...layout,
+    ...layoutEstable,
     margin: {
       t: 30,
       r: 25,
       b: 55,
       l: 55,
-      ...(layout.margin || {}),
+      ...(layoutEstable.margin || {}),
     },
     xaxis: {
       automargin: true,
-      ...(layout.xaxis || {}),
+      ...(layoutEstable.xaxis || {}),
     },
     yaxis: {
       automargin: true,
-      ...(layout.yaxis || {}),
+      ...(layoutEstable.yaxis || {}),
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [claveLayout])
+  }), [layoutEstable])
 
-  const defaultConfig = useMemo<Partial<Plotly.Config>>(() => ({
+  const defaultConfig = useMemo<Partial<PlotlyTypes.Config>>(() => ({
     responsive: true,
     displayModeBar: true,
     displaylogo: false,
@@ -165,28 +215,20 @@ function InteractiveChartComponent({
       width: 1200,
       scale: 3,
     },
-    ...config,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [claveConfig, filename])
+    ...configEstable,
+  }), [configEstable, filename])
 
-  // Revisión: Plotly.react solo se invoca cuando cambian los datos (por contenido) o el layout/config estructural
+  // Revisión referencial sin serializar trazas masivas con JSON.stringify
   const revisionRef = useRef(0)
   const previoRef = useRef<{
-    data: Plotly.Data[]
-    clave: string
-    layout: Partial<Plotly.Layout>
-    config: Partial<Plotly.Config>
+    data: PlotlyTypes.Data[]
+    layout: Partial<PlotlyTypes.Layout>
+    config: Partial<PlotlyTypes.Config>
   } | null>(null)
   const previo = previoRef.current
-  if (!previo) {
+  if (!previo || previo.data !== data || previo.layout !== defaultLayout || previo.config !== defaultConfig) {
     revisionRef.current += 1
-    previoRef.current = { data, clave: JSON.stringify(data), layout: defaultLayout, config: defaultConfig }
-  } else if (previo.data !== data || previo.layout !== defaultLayout || previo.config !== defaultConfig) {
-    const clave = previo.data === data ? previo.clave : JSON.stringify(data)
-    if (clave !== previo.clave || previo.layout !== defaultLayout || previo.config !== defaultConfig) {
-      revisionRef.current += 1
-    }
-    previoRef.current = { data, clave, layout: defaultLayout, config: defaultConfig }
+    previoRef.current = { data, layout: defaultLayout, config: defaultConfig }
   }
 
   const layoutFinal = useMemo(() => ({ ...defaultLayout, autosize: true }), [defaultLayout])
@@ -196,7 +238,7 @@ function InteractiveChartComponent({
   )
 
   const handlePlotUpdate = () => {
-    if (typeof window !== 'undefined' && (window as any).__uct_transition_start) {
+    if (import.meta.env.DEV && typeof window !== 'undefined' && (window as any).__uct_transition_start) {
       const duracion = window.performance.now() - (window as any).__uct_transition_start
       const registro = {
         tipo: (window as any).__uct_transition_type || 'cambio_periodo',
@@ -204,8 +246,10 @@ function InteractiveChartComponent({
         timestamp: new Date().toISOString(),
       }
       ;(window as any).__uct_last_render_duration = duracion
-      ;(window as any).__uct_transition_history = (window as any).__uct_transition_history || []
-      ;(window as any).__uct_transition_history.push(registro)
+      const historialPrev = Array.isArray((window as any).__uct_transition_history)
+        ? (window as any).__uct_transition_history
+        : []
+      ;(window as any).__uct_transition_history = [...historialPrev, registro].slice(-50)
       console.info(`[DSS UCT Benchmark] Clic -> Render Plotly: ${duracion.toFixed(2)} ms`)
       ;(window as any).__uct_transition_start = null
     }
@@ -222,17 +266,18 @@ function InteractiveChartComponent({
         ...style,
       }}
     >
-      <Plot
-        data={data}
-        layout={layoutFinal}
-        config={defaultConfig}
-        revision={revisionRef.current}
-        useResizeHandler
-        onClick={onClick}
-        onLegendClick={onLegendClick}
-        onUpdate={handlePlotUpdate}
-        style={estiloPlot}
-      />
+      <Suspense fallback={<div className="w-full h-full min-h-[200px] bg-slate-50 rounded-xl animate-pulse" />}>
+        <LazyPlot
+          data={data}
+          layout={layoutFinal}
+          config={defaultConfig}
+          revision={revisionRef.current}
+          onClick={onClick}
+          onLegendClick={onLegendClick}
+          onUpdate={handlePlotUpdate}
+          style={estiloPlot}
+        />
+      </Suspense>
     </div>
   )
 }

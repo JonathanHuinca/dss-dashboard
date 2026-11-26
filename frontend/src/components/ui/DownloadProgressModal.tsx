@@ -8,11 +8,10 @@ import {
   X,
   Loader2,
   Download,
-  ArrowRight,
   Database,
   Sparkles,
 } from 'lucide-react'
-import { useDownloadProgress, DownloadFileType } from '../../context/DownloadProgressContext'
+import { useDownloadProgress, type DownloadFileType } from '../../context/DownloadProgressContext'
 
 export const DownloadProgressModal: React.FC = () => {
   const { descargaActual, estaAbierto, cerrarModal } = useDownloadProgress()

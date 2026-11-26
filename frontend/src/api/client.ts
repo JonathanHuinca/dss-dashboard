@@ -5,7 +5,7 @@
  * - clienteBase.ts: Instancia Axios, interceptores JWT y tipos comunes.
  * - asistencia.ts: Métricas, KPIs, aforo y analítica de asistencia peatonal.
  * - vehiculos.ts: KPIs vehiculares, estacionamientos por sector y clusters ANPR.
- * - prediccion.ts: Modelos Prophet, GBR, perfiles de visita y alertas.
+ * - prediccion.ts: Modelos Prophet, perfiles de visita y alertas.
  * - asistente.ts: Chat analítico interactivo, streaming SSE y cuotas IA.
  * - administracion.ts: Tareas programadas, Smart Campus, calendario, usuarios e ingesta.
  */

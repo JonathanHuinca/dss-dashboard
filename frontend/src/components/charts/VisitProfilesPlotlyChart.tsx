@@ -1,6 +1,6 @@
 import { memo, useState, useMemo } from 'react'
 import { InteractiveChart } from '../ui/InteractiveChart'
-import { VisitProfilesDonutResponse } from '../../api/client'
+import { type VisitProfilesDonutResponse } from '../../api/client'
 import type { Data  } from 'plotly.js-dist-min'
 import { Info, AlertCircle, CheckCircle2, Clock } from 'lucide-react'
 

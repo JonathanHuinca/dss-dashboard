@@ -1,5 +1,5 @@
-import axios from 'axios'
-import { api } from './clienteBase'
+import { api, API_BASE } from './clienteBase'
+import { descargarBlobSeguro } from '../utils/descargaBlob'
 
 export interface AssistantRequest {
   message: string
@@ -109,65 +109,50 @@ export interface CuotaIaInfo {
   usadas: number
   limite: number
   restantes: number
-}
-
-const getAuthHeaders = (): Record<string, string> => {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('uct_auth_token') : null
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  rol?: string
+  limite_diario?: number
+  fecha?: string
 }
 
 // ─── Funciones API Asistente IA y Chat ─────────────────────────────────────────
 
-export const fetchAssistantModels = () =>
-  api.get<ModelsResponse>('/assistant/models').then(r => r.data)
+export const fetchAssistantModels = (signal?: AbortSignal) =>
+  api.get<ModelsResponse>('/assistant/models', { signal }).then(r => r.data)
 
 export const sendAssistantMessage = (payload: AssistantRequest) =>
   api.post<AssistantResponse>('/assistant/chat', payload, { timeout: 45_000 }).then(r => r.data)
 
-export const fetchChatConversaciones = (espacioId?: number, archivada: boolean = false) =>
-  axios.get<ChatConversacionResumen[]>('/api/chat/conversaciones', {
+export const fetchChatConversaciones = (espacioId?: number, archivada: boolean = false, signal?: AbortSignal) =>
+  api.get<ChatConversacionResumen[]>('/chat/conversaciones', {
+    signal,
     params: {
       ...(espacioId ? { espacio_id: espacioId } : {}),
       archivada,
     },
-    headers: getAuthHeaders(),
   }).then(r => r.data)
 
 export const createChatConversacion = (payload: { espacio_id: number; titulo?: string }) =>
-  axios.post<ChatConversacionResumen>('/api/chat/conversaciones', payload, {
-    headers: getAuthHeaders(),
-  }).then(r => r.data)
+  api.post<ChatConversacionResumen>('/chat/conversaciones', payload).then(r => r.data)
 
-export const fetchChatConversacionDetalle = (conversacionId: string) =>
-  axios.get<ChatConversacionDetalle>(`/api/chat/conversaciones/${conversacionId}`, {
-    headers: getAuthHeaders(),
-  }).then(r => r.data)
+export const fetchChatConversacionDetalle = (conversacionId: string, signal?: AbortSignal) =>
+  api.get<ChatConversacionDetalle>(`/chat/conversaciones/${conversacionId}`, { signal }).then(r => r.data)
 
 export const renameChatConversacion = (conversacionId: string, titulo: string) =>
-  axios.patch<ChatConversacionResumen>(`/api/chat/conversaciones/${conversacionId}/renombrar`, { titulo }, {
-    headers: getAuthHeaders(),
-  }).then(r => r.data)
+  api.patch<ChatConversacionResumen>(`/chat/conversaciones/${conversacionId}/renombrar`, { titulo }).then(r => r.data)
 
 export const archiveChatConversacion = (conversacionId: string, archivada: boolean) =>
-  axios.patch<ChatConversacionResumen>(`/api/chat/conversaciones/${conversacionId}/archivar`, { archivada }, {
-    headers: getAuthHeaders(),
-  }).then(r => r.data)
+  api.patch<ChatConversacionResumen>(`/chat/conversaciones/${conversacionId}/archivar`, { archivada }).then(r => r.data)
 
 export const deleteChatConversacion = (conversacionId: string) =>
-  axios.delete(`/api/chat/conversaciones/${conversacionId}`, {
-    headers: getAuthHeaders(),
-  }).then(r => r.data)
+  api.delete(`/chat/conversaciones/${conversacionId}`).then(r => r.data)
 
-export const fetchChatCuota = () =>
-  axios.get<CuotaIaInfo>('/api/chat/cuota', {
-    headers: getAuthHeaders(),
-  }).then(r => r.data)
+export const fetchChatCuota = (signal?: AbortSignal) =>
+  api.get<CuotaIaInfo>('/chat/cuota', { signal }).then(r => r.data)
 
 export const sendInteractiveChatMessage = (payload: InteractiveChatRequest) =>
-  axios.post<InteractiveChatResponse>('/api/chat', payload, {
+  api.post<InteractiveChatResponse>('/chat', payload, {
     timeout: 45_000,
     headers: {
-      ...getAuthHeaders(),
       'x-espacio-id': String(payload.espacio_id || (payload.dataset_tipo === 'estacionamiento' ? 2 : 1)),
     },
   }).then(r => r.data)
@@ -179,7 +164,8 @@ export async function sendInteractiveChatStream(
     onChunk: (chunk: string) => void
     onDone: () => void
     onError: (err: any) => void
-  }
+  },
+  signal?: AbortSignal,
 ) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('uct_auth_token') : null
   const headers: Record<string, string> = {
@@ -189,18 +175,42 @@ export async function sendInteractiveChatStream(
   }
   if (token) headers['Authorization'] = `Bearer ${token}`
 
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let doneCalled = false
+  const finalizar = () => {
+    if (!doneCalled) {
+      doneCalled = true
+      callbacks.onDone()
+    }
+  }
+
   try {
-    const response = await fetch('/api/chat?stream=true', {
+    const response = await fetch(`${API_BASE}/chat?stream=true`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ ...payload, stream: true }),
+      signal,
     })
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    if (response.status === 401 && typeof window !== 'undefined') {
+      localStorage.removeItem('uct_auth_token')
+      window.dispatchEvent(new Event('uct:auth-expired'))
     }
 
-    const reader = response.body?.getReader()
+    if (!response.ok) {
+      let detalle = response.statusText
+      try {
+        const cuerpo = await response.json()
+        if (typeof cuerpo?.detail === 'string' && cuerpo.detail.trim()) {
+          detalle = cuerpo.detail
+        }
+      } catch {
+        // Sin cuerpo JSON legible
+      }
+      throw new Error(`HTTP ${response.status}: ${detalle}`)
+    }
+
+    reader = response.body?.getReader()
     if (!reader) throw new Error('No readable stream')
 
     const decoder = new TextDecoder()
@@ -216,32 +226,48 @@ export async function sendInteractiveChatStream(
 
       for (const line of lines) {
         const trimmed = line.trim()
-        if (trimmed.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(trimmed.slice(6))
-            if (data.type === 'meta') {
-              callbacks.onMeta(data)
-            } else if (data.type === 'text') {
-              callbacks.onChunk(data.chunk)
-            } else if (data.type === 'done') {
-              callbacks.onDone()
-            }
-          } catch (e) {
+        if (!trimmed.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          if (data.type === 'meta') {
+            callbacks.onMeta(data)
+          } else if (data.type === 'text') {
+            callbacks.onChunk(data.chunk)
+          } else if (data.type === 'error') {
+            throw new Error(data.detail || data.message || 'Error en flujo SSE')
+          } else if (data.type === 'done') {
+            finalizar()
+          }
+        } catch (e: any) {
+          if (e instanceof SyntaxError) {
             console.error('Error parseando frame SSE:', e)
+          } else {
+            throw e
           }
         }
       }
     }
-    callbacks.onDone()
-  } catch (err) {
+    finalizar()
+  } catch (err: any) {
+    if (err?.name === 'AbortError') return
     callbacks.onError(err)
+  } finally {
+    if (reader) {
+      try {
+        reader.releaseLock()
+      } catch {
+        // Lock ya liberado
+      }
+    }
   }
 }
 
-export const fetchChatHistory = (sessionId: string) =>
-  axios.get<ChatHistoryResponse>('/api/chat/history', {
-    params: { session_id: sessionId },
-    headers: getAuthHeaders(),
+export const fetchChatHistory = (sessionId: string, espacioId?: number) =>
+  api.get<ChatHistoryResponse>('/chat/history', {
+    params: {
+      session_id: sessionId,
+      ...(espacioId ? { espacio_id: espacioId } : {}),
+    },
   }).then(r => r.data)
 
 export const exportChatPdf = async (
@@ -251,23 +277,15 @@ export const exportChatPdf = async (
   graficosB64?: Record<string, string>,
 ) => {
   const convId = conversacionId || (sessionId.includes('-') && sessionId.length === 36 ? sessionId : undefined)
-  const res = await axios.post('/api/chat/export-pdf', {
+  const res = await api.post('/chat/export-pdf', {
     session_id: sessionId,
     conversacion_id: convId,
     titulo,
     graficos_b64: graficosB64,
   }, {
     responseType: 'blob',
-    headers: getAuthHeaders(),
   })
   const blob = new Blob([res.data], { type: 'application/pdf' })
-  const url = window.URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `informe_ejecutivo_${sessionId.slice(0, 8)}.pdf`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  window.URL.revokeObjectURL(url)
+  descargarBlobSeguro(blob, `informe_ejecutivo_${sessionId.slice(0, 8)}.pdf`)
 }
 

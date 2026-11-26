@@ -12,9 +12,9 @@ import {
   Calendar,
 } from 'lucide-react'
 import {
-  HorarioOperacion,
-  HorarioOperacionCreate,
-  DiaHorario,
+  type HorarioOperacion,
+  type HorarioOperacionCreate,
+  type DiaHorario,
 } from '../../../api/client'
 
 export const DIAS_KEYS = ['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'] as const

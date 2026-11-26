@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ClipboardEdit, X, Save, AlertCircle } from 'lucide-react'
-import { crearContingencia, ContingenciaCrear } from '../../api/client'
+import { crearContingencia, type ContingenciaCrear } from '../../api/client'
 import { obtenerFechaHoyChileIso } from '../../utils/fechaChile'
 
 export interface Props {
@@ -140,7 +140,6 @@ export const ModalRegistrarMotivoOperativo: React.FC<Props> = ({
         'vehicle-kpis',
         'forecast-attendance',
         'forecast-parking',
-        'forecast-14days',
       ]
       claves.forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }))
       onClose()

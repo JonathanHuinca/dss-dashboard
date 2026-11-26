@@ -1,6 +1,6 @@
-import axios, { AxiosInstance } from 'axios'
+import axios, { type AxiosInstance } from 'axios'
 
-const API_BASE = (import.meta as unknown as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL || '/api/v1'
+export const API_BASE = (import.meta as unknown as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL || '/api/v1'
 
 export const api: AxiosInstance = axios.create({
   baseURL: API_BASE,
@@ -31,9 +31,13 @@ api.interceptors.response.use(
 
 export interface DataFilters {
   alcance?: 'conformes' | 'todos' | 'anomalias'
+  calidad?: 'conformes' | 'todos' | 'anomalias'
   regimen_horario?: string
+  rango_horario?: string
   direccion?: string
+  sentido?: string
   dias_semana?: string
+  tipo_dia?: string
   door?: string
   perfil_visita?: string
   marcajes?: string
@@ -115,10 +119,12 @@ export const fetchKpiSummary = (
   espacioId: number = 1,
   fechaInicio?: string,
   fechaFin?: string,
-  filters?: DataFilters | string
+  filters?: DataFilters | string,
+  signal?: AbortSignal,
 ) => {
   const f: Record<string, any> = typeof filters === 'object' && filters !== null ? filters : {}
   return api.get<KPISummary>('/metrics/kpi-summary', {
+    signal,
     params: {
       espacio_id: espacioId,
       fecha_inicio: fechaInicio || undefined,

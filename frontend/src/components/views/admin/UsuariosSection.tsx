@@ -1,7 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Users,
   Bot,
   UserPlus,
   Search,
@@ -12,22 +11,16 @@ import {
   KeyRound,
   Trash2,
   Clock,
-  Cpu,
   Save,
-  Eye,
-  EyeOff,
   Copy,
   X,
-  BookOpen,
-  Car,
   ShieldAlert,
   BotOff,
-  Mail,
-  RefreshCw,
   Pencil,
 } from 'lucide-react'
-import { api, deleteUser, forgotPassword, inviteUser, updateUser } from '../../../api/client'
+import { api, deleteUser, inviteUser, updateUser } from '../../../api/client'
 import { useAuth } from '../../../context/AuthContext'
+import { useTemporizadorSeguro } from '../../../hooks/useTemporizadorSeguro'
 
 interface RoleItem {
   id: number
@@ -105,13 +98,6 @@ export const UsuariosSection: React.FC = () => {
   const [editDatasets, setEditDatasets] = useState<string[]>([])
   const [editError, setEditError] = useState<string | null>(null)
 
-  // Estados para configuración de IA
-  const [providerInput, setProviderInput] = useState('gemini')
-  const [modelInput, setModelInput] = useState('gemini-3.1-flash-lite')
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  const [showApiKey, setShowApiKey] = useState(false)
-  const [configSuccessMsg, setConfigSuccessMsg] = useState<string | null>(null)
-  const [configErrorMsg, setConfigErrorMsg] = useState<string | null>(null)
   const [userActionMsg, setUserActionMsg] = useState<string | null>(null)
   const [invitationSuccess, setInvitationSuccess] = useState<{
     email: string
@@ -130,7 +116,7 @@ export const UsuariosSection: React.FC = () => {
     enabled: isSuperAdmin,
   })
 
-  const { data: usersList = [], isLoading: isUsersLoading, refetch: refetchUsers } = useQuery<UserItem[]>({
+  const { data: usersList = [], isLoading: isUsersLoading } = useQuery<UserItem[]>({
     queryKey: ['admin-users'],
     queryFn: async () => {
       const res = await api.get('/auth/users')
@@ -200,6 +186,7 @@ export const UsuariosSection: React.FC = () => {
   // Estados para cuotas y tiempos por rol
   const [roleDrafts, setRoleDrafts] = useState<Record<number, { quota: string; cooldown: number }>>({})
   const [roleActionMsg, setRoleActionMsg] = useState<{ id: number; text: string; error?: boolean } | null>(null)
+  const { programar } = useTemporizadorSeguro()
 
   const updateRoleQuotaMutation = useMutation({
     mutationFn: async ({ roleId, rate_limit_quota, cooldown_segundos }: { roleId: number; rate_limit_quota: string; cooldown_segundos: number }) => {
@@ -226,11 +213,11 @@ export const UsuariosSection: React.FC = () => {
         }
       }))
       setRoleActionMsg({ id: data.id, text: 'Actualizado de inmediato' })
-      setTimeout(() => setRoleActionMsg(null), 3500)
+      programar(() => setRoleActionMsg(null), 3500)
     },
     onError: (err: any, vars) => {
       setRoleActionMsg({ id: vars.roleId, text: err?.response?.data?.detail || 'Error al guardar política', error: true })
-      setTimeout(() => setRoleActionMsg(null), 4000)
+      programar(() => setRoleActionMsg(null), 4000)
     },
   })
 
@@ -249,35 +236,11 @@ export const UsuariosSection: React.FC = () => {
           ? 'Asistente de IA habilitado exitosamente en toda la plataforma.'
           : 'Asistente de IA deshabilitado globalmente. Se han ocultado todos los accesos en el sistema.'
       )
-      setTimeout(() => setUserActionMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
     onError: (err: any) => {
       setUserActionMsg(err?.response?.data?.detail || 'Error al alternar el estado del Asistente de IA.')
-      setTimeout(() => setUserActionMsg(null), 5000)
-    },
-  })
-
-  const saveConfigMutation = useMutation({
-    mutationFn: async () => {
-      const payload: any = {
-        active_provider: providerInput,
-        default_model: modelInput,
-      }
-      if (apiKeyInput.trim()) {
-        payload.api_key = apiKeyInput.trim()
-      }
-      const res = await api.put('/admin/config', payload)
-      return res.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['global-config'] })
-      setConfigSuccessMsg('Configuración de IA guardada con éxito.')
-      setApiKeyInput('')
-      setTimeout(() => setConfigSuccessMsg(null), 4000)
-    },
-    onError: (err: any) => {
-      setConfigErrorMsg(err?.response?.data?.detail || 'Error al guardar la configuración.')
-      setTimeout(() => setConfigErrorMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
   })
 
@@ -319,11 +282,11 @@ export const UsuariosSection: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       setUserToDelete(null)
       setUserActionMsg('Usuario eliminado exitosamente.')
-      setTimeout(() => setUserActionMsg(null), 4000)
+      programar(() => setUserActionMsg(null), 4000)
     },
     onError: (err: any) => {
       setUserActionMsg(err?.response?.data?.detail || 'Error al eliminar usuario.')
-      setTimeout(() => setUserActionMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
   })
 
@@ -335,7 +298,7 @@ export const UsuariosSection: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       setUserActionMsg('Cuenta desbloqueada con éxito.')
-      setTimeout(() => setUserActionMsg(null), 4000)
+      programar(() => setUserActionMsg(null), 4000)
     },
   })
 
@@ -347,11 +310,11 @@ export const UsuariosSection: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       setUserActionMsg('Estado de activación de usuario actualizado.')
-      setTimeout(() => setUserActionMsg(null), 4000)
+      programar(() => setUserActionMsg(null), 4000)
     },
     onError: (err: any) => {
       setUserActionMsg(err?.response?.data?.detail || 'Error al actualizar estado del usuario.')
-      setTimeout(() => setUserActionMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
   })
 
@@ -363,11 +326,11 @@ export const UsuariosSection: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       setUserActionMsg('Permiso de Asistente IA de usuario actualizado.')
-      setTimeout(() => setUserActionMsg(null), 4000)
+      programar(() => setUserActionMsg(null), 4000)
     },
     onError: (err: any) => {
       setUserActionMsg(err?.response?.data?.detail || 'Error al actualizar permiso de IA.')
-      setTimeout(() => setUserActionMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
   })
 
@@ -380,11 +343,11 @@ export const UsuariosSection: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['admin-users'] })
       setInvitationSuccess(null)
       setUserActionMsg(`Correo institucional de restablecimiento de contraseña enviado exitosamente a ${data.usuario.email}.`)
-      setTimeout(() => setUserActionMsg(null), 6000)
+      programar(() => setUserActionMsg(null), 6000)
     },
     onError: (err: any) => {
       setUserActionMsg(err?.response?.data?.detail || 'Error al generar enlace de restablecimiento / invitación.')
-      setTimeout(() => setUserActionMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
   })
 
@@ -425,7 +388,7 @@ export const UsuariosSection: React.FC = () => {
       setEditingUser(null)
       setEditError(null)
       setUserActionMsg(`Usuario ${updated?.email || ''} actualizado exitosamente.`)
-      setTimeout(() => setUserActionMsg(null), 5000)
+      programar(() => setUserActionMsg(null), 5000)
     },
     onError: (err: any) => {
       setEditError(err?.response?.data?.detail || 'No fue posible actualizar los permisos del usuario.')
@@ -676,7 +639,7 @@ export const UsuariosSection: React.FC = () => {
             </button>
           </div>
           <p className="text-emerald-800 text-[11px]">
-            Enlace de activación generado (expira en 48 horas):
+            Enlace de activación generado (expira en 1 hora):
           </p>
           <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-emerald-200">
             <span className="font-mono text-[10px] text-slate-700 truncate flex-1">
