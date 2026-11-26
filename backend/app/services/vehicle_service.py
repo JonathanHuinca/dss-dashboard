@@ -3,8 +3,10 @@ VehicleService — Consultas sobre Continuous Aggregates y tablas de estacionami
 """
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+import re
 from typing import Dict, Optional
 
+from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +14,63 @@ from app.core.cache import TTLCache
 
 CAPACIDAD_ESTACIONAMIENTO = 125
 UMBRAL_ALERTA_90 = 0.90
+SECTORES_VEHICULARES_BASE = frozenset({"CSF11", "CSF21", "CHS01"})
+_PATRON_SECTOR_VEHICULAR = re.compile(r"^[A-Z0-9_-]{2,20}$")
+
+
+def _validar_sectores_vehiculares(
+    sector: Optional[str],
+    sectores_validos: Optional[set[str]] = None,
+) -> list[str]:
+    """Valida códigos de sector contra lista blanca estricta para prevenir SQLi."""
+    if not sector or sector.strip().lower() == "todos":
+        return []
+    permitidos = {
+        s.strip().upper()
+        for s in ((sectores_validos or set()) | SECTORES_VEHICULARES_BASE)
+        if s and s.strip().lower() != "todos"
+    }
+    validados: list[str] = []
+    for raw in sector.split(","):
+        cod = raw.strip().upper()
+        if not cod or cod == "TODOS":
+            continue
+        if not _PATRON_SECTOR_VEHICULAR.match(cod) or cod not in permitidos:
+            raise HTTPException(
+                status_code=400,
+                detail="Código de sector vehicular no válido.",
+            )
+        if cod not in validados:
+            validados.append(cod)
+    return validados
+
+
+def _construir_filtro_camara_sectores(
+    sec_keys: list[str],
+    params: dict,
+    prefijo: str = "sec",
+) -> str:
+    if not sec_keys:
+        return ""
+    clausulas = []
+    for i, cod in enumerate(sec_keys):
+        pname = f"{prefijo}_{i}"
+        clausulas.append(f"camara LIKE :{pname}")
+        params[pname] = f"%{cod}%"
+    return " AND (" + " OR ".join(clausulas) + ")"
+
+
+def _construir_filtro_codigo_sectores(
+    sec_keys: list[str],
+    params: dict,
+    prefijo: str = "sec_cod",
+) -> str:
+    clausulas = []
+    for i, cod in enumerate(sec_keys):
+        pname = f"{prefijo}_{i}"
+        clausulas.append(f"codigo = :{pname}")
+        params[pname] = cod
+    return " OR ".join(clausulas)
 
 # Caché en memoria para reutilizar horarios de operación y calendario vehiculares
 cache_horarios_espacio: TTLCache = TTLCache(maxsize=64, ttl=300)
@@ -65,7 +124,11 @@ async def obtener_calendario_vehicular_cacheado(session: AsyncSession) -> dict:
 def invalidar_cache_horarios(espacio_id: Optional[int] = None) -> None:
     if espacio_id is not None:
         cache_horarios_espacio.pop(f"horarios_24h:{espacio_id}", None)
+        cache_horarios_espacio.pop(f"caps_vehiculares_detalle:{espacio_id}", None)
         cache_horarios_espacio.pop("cal_vehicular", None)
+        for k in list(cache_horarios_espacio.keys()):
+            if str(k).startswith("horario_id:"):
+                cache_horarios_espacio.pop(k, None)
     else:
         cache_horarios_espacio.clear()
 
@@ -130,8 +193,8 @@ def _construir_expr_cierre_vehicular_sql(cond_h24_sql: str) -> str:
     return f"""
         CASE
             WHEN ({cond_h24_sql}) THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 23, 59, 59, 0, 0)
-            WHEN DATEPART(WEEKDAY, e.fecha) = 7 THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 14, 0, 0, 0, 0)
-            WHEN DATEPART(WEEKDAY, e.fecha) BETWEEN 2 AND 6 THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 22, 0, 0, 0, 0)
+            WHEN ((DATEPART(WEEKDAY, e.fecha) + @@DATEFIRST - 2) % 7 + 1) = 6 THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 14, 0, 0, 0, 0)
+            WHEN ((DATEPART(WEEKDAY, e.fecha) + @@DATEFIRST - 2) % 7 + 1) BETWEEN 1 AND 5 THEN DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 22, 0, 0, 0, 0)
             ELSE DATETIME2FROMPARTS(YEAR(e.fecha), MONTH(e.fecha), DAY(e.fecha), 23, 59, 59, 0, 0)
         END
     """
@@ -373,16 +436,16 @@ class VehicleService:
         )
 
         regular_open_sql = """(
-            (DATEPART(WEEKDAY, time) BETWEEN 2 AND 6 AND CAST(time AS TIME) >= '07:00:00' AND CAST(time AS TIME) <= '22:00:00')
-            OR (DATEPART(WEEKDAY, time) = 7 AND CAST(time AS TIME) >= '08:00:00' AND CAST(time AS TIME) <= '14:00:00')
+            (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) BETWEEN 1 AND 5 AND CAST(time AS TIME) >= '07:00:00' AND CAST(time AS TIME) <= '22:00:00')
+            OR (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) = 6 AND CAST(time AS TIME) >= '08:00:00' AND CAST(time AS TIME) <= '14:00:00')
         )"""
 
         f_oficial_sql = f"({regular_open_sql} AND NOT ({closure_sql}))" if feriados_rango else regular_open_sql
 
         regular_closed_sql = """(
-            DATEPART(WEEKDAY, time) = 1
-            OR (DATEPART(WEEKDAY, time) BETWEEN 2 AND 6 AND (CAST(time AS TIME) < '07:00:00' OR CAST(time AS TIME) > '22:00:00'))
-            OR (DATEPART(WEEKDAY, time) = 7 AND (CAST(time AS TIME) < '08:00:00' OR CAST(time AS TIME) > '14:00:00'))
+            ((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) = 7
+            OR (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) BETWEEN 1 AND 5 AND (CAST(time AS TIME) < '07:00:00' OR CAST(time AS TIME) > '22:00:00'))
+            OR (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) = 6 AND (CAST(time AS TIME) < '08:00:00' OR CAST(time AS TIME) > '14:00:00'))
         )"""
 
         # 1. Alcance / Calidad
@@ -463,23 +526,23 @@ class VehicleService:
             if dir_clauses:
                 conditions.append(f"({' OR '.join(dir_clauses)})")
 
-        # 4. Días de la semana
+        # 4. Días de la semana (ISO 1=Lunes .. 7=Domingo, independiente de @@DATEFIRST)
         if dias_semana:
             dias_map = {
-                "domingo": 1,
-                "lunes": 2,
-                "martes": 3,
-                "miercoles": 4,
-                "miércoles": 4,
-                "jueves": 5,
-                "viernes": 6,
-                "sabado": 7,
-                "sábado": 7,
+                "lunes": 1,
+                "martes": 2,
+                "miercoles": 3,
+                "miércoles": 3,
+                "jueves": 4,
+                "viernes": 5,
+                "sabado": 6,
+                "sábado": 6,
+                "domingo": 7,
             }
             dias_solicitados = [d.strip().lower() for d in dias_semana.split(",") if d.strip().lower() in dias_map]
             if dias_solicitados:
                 weekday_ints = [str(dias_map[d]) for d in dias_solicitados]
-                conditions.append(f"DATEPART(WEEKDAY, time) IN ({','.join(weekday_ints)})")
+                conditions.append(f"((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) IN ({','.join(weekday_ints)})")
 
         # 5. Puerta / Barrera / Cámara
         if door and door != "todos":
@@ -494,7 +557,8 @@ class VehicleService:
 
         # 6. Sector Vehicular Institucional (CSF11, CSF21, CHS01)
         if sector and sector != "todos":
-            sectores_list = [s.strip().upper() for s in sector.split(",") if s.strip()]
+            caps_validos = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
+            sectores_list = _validar_sectores_vehiculares(sector, set(caps_validos.keys()))
             if sectores_list:
                 sec_clauses = []
                 for i, sec_code in enumerate(sectores_list):
@@ -751,23 +815,22 @@ class VehicleService:
         sector: Optional[str] = None,
     ) -> dict:
         sql_date = text("""
-            SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+            SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
             FROM aforo_horario_estacionamiento WITH (NOEXPAND)
             WHERE espacio_id = :espacio_id
         """)
         target_date = (await session.execute(sql_date, {"espacio_id": espacio_id})).scalar() or date.today()
 
         caps_dict = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
-        where_cam = ""
-        if sector and sector != "todos":
-            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-            where_cam = " AND (" + " OR ".join([f"camara LIKE '%{s}%'" for s in sec_keys]) + ")"
+        vivo_params: dict = {"espacio_id": espacio_id, "target_date": target_date}
+        sec_keys = _validar_sectores_vehiculares(sector, set(caps_dict.keys()))
+        where_cam = _construir_filtro_camara_sectores(sec_keys, vivo_params, prefijo="vivo_sec")
+        if sec_keys:
             capacidad_max = sum(caps_dict.get(s, 0) for s in sec_keys) or caps_dict.get("todos", 125)
         else:
             capacidad_max = caps_dict.get("todos", 125)
 
         h24_rows = await obtener_horarios_operacion_cacheados(session, espacio_id)
-        vivo_params: dict = {"espacio_id": espacio_id, "target_date": target_date}
         h24_conds = []
         for i, r_24 in enumerate(h24_rows):
             f_ini = getattr(r_24, "fecha_inicio", None)
@@ -925,7 +988,7 @@ class VehicleService:
     ) -> list[dict]:
         if fecha_inicio is None or fecha_fin is None:
             sql_max = text("""
-                SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+                SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
                 FROM aforo_horario_estacionamiento WITH (NOEXPAND)
                 WHERE espacio_id = :espacio_id
             """)
@@ -951,15 +1014,18 @@ class VehicleService:
 
         capacidad_sector = 125
         if sector and sector != "todos":
-            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-            sec_conds = " OR ".join([f"codigo = '{c}'" for c in sec_keys])
-            try:
-                sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
-                cap_sec = (await session.execute(sql_sec_cap)).scalar()
-                if cap_sec and cap_sec > 0:
-                    capacidad_sector = int(cap_sec)
-            except Exception:
-                pass
+            caps_validos = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
+            sec_keys = _validar_sectores_vehiculares(sector, set(caps_validos.keys()))
+            if sec_keys:
+                cap_params: dict = {}
+                sec_conds = _construir_filtro_codigo_sectores(sec_keys, cap_params, prefijo="hf_sec")
+                try:
+                    sql_sec_cap = text(f"SELECT COALESCE(SUM(capacidad_max), 0) FROM sectores_estacionamiento WHERE ({sec_conds}) AND activo = 1")
+                    cap_sec = (await session.execute(sql_sec_cap, cap_params)).scalar()
+                    if cap_sec and cap_sec > 0:
+                        capacidad_sector = int(cap_sec)
+                except Exception:
+                    pass
 
         sql = text(f"""
             WITH ev_base AS (
@@ -1093,7 +1159,7 @@ class VehicleService:
     ) -> list[dict]:
         if fecha_inicio is None or fecha_fin is None:
             sql_max = text("""
-                SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+                SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
                 FROM aforo_horario_estacionamiento WITH (NOEXPAND)
                 WHERE espacio_id = :espacio_id
             """)
@@ -1253,10 +1319,23 @@ class VehicleService:
         sector: Optional[str] = None,
     ) -> dict:
         fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
+        params: dict = {"espacio_id": espacio_id, "inicio": fecha_inicio, "fin": fin_exclusive}
         where_sec = ""
         if sector and sector != "todos":
-            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-            where_sec = " AND (" + " OR ".join([f"camara LIKE '%{s}%'" for s in sec_keys]) + ")"
+            caps_validos = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
+            sec_keys = _validar_sectores_vehiculares(sector, set(caps_validos.keys()))
+            where_sec = _construir_filtro_camara_sectores(sec_keys, params, prefijo="flota_sec")
+
+        where_clauses = [
+            "espacio_id = :espacio_id",
+            "direccion = 'entrada'",
+            "calidad_lectura = 'ok'",
+        ]
+        if params.get("inicio") is not None:
+            where_clauses.append("time >= :inicio")
+        if params.get("fin") is not None:
+            where_clauses.append("time < :fin")
+        where_flota = " AND ".join(where_clauses)
 
         sql_tipo = text(f"""
             SELECT
@@ -1264,11 +1343,7 @@ class VehicleService:
                 COUNT(*)                                AS total,
                 ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS pct
             FROM eventos_vehiculares
-            WHERE espacio_id   = :espacio_id
-              AND direccion     = 'entrada'
-              AND calidad_lectura = 'ok'
-              AND (:inicio IS NULL OR time >= :inicio)
-              AND (:fin IS NULL OR time < :fin)
+            WHERE {where_flota}
               {where_sec}
             GROUP BY tipo_vehiculo
             ORDER BY total DESC
@@ -1279,16 +1354,11 @@ class VehicleService:
                 COUNT(*)                        AS total,
                 ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS pct
             FROM eventos_vehiculares
-            WHERE espacio_id    = :espacio_id
-              AND direccion      = 'entrada'
-              AND calidad_lectura = 'ok'
-              AND (:inicio IS NULL OR time >= :inicio)
-              AND (:fin IS NULL OR time < :fin)
+            WHERE {where_flota}
               {where_sec}
             GROUP BY marca
             ORDER BY total DESC
         """)
-        params = {"espacio_id": espacio_id, "inicio": fecha_inicio, "fin": fin_exclusive}
         rows_tipo  = (await session.execute(sql_tipo,  params)).fetchall()
         rows_marca = (await session.execute(sql_marca, params)).fetchall()
 
@@ -1305,12 +1375,21 @@ class VehicleService:
         fecha_fin: Optional[date] = None,
         sector: Optional[str] = None,
     ) -> list[dict]:
-        fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
+        where_clauses = ["espacio_id = :espacio_id"]
+        params: dict = {"espacio_id": espacio_id}
+        if fecha_inicio:
+            where_clauses.append("fecha_dia >= :inicio")
+            params["inicio"] = fecha_inicio
+        if fecha_fin:
+            where_clauses.append("fecha_dia < :fin")
+            params["fin"] = fecha_fin + timedelta(days=1)
         where_sec = ""
         if sector and sector != "todos":
-            sec_keys = [s.strip().upper() for s in sector.split(",") if s.strip()]
-            where_sec = " AND (" + " OR ".join([f"camara LIKE '%{s}%'" for s in sec_keys]) + ")"
+            caps_validos = await _obtener_capacidades_sectores_vehiculares(session, espacio_id)
+            sec_keys = _validar_sectores_vehiculares(sector, set(caps_validos.keys()))
+            where_sec = _construir_filtro_camara_sectores(sec_keys, params, prefijo="evol_sec")
 
+        where_evol = " AND ".join(where_clauses)
         sql = text(f"""
             SELECT 
                 CAST(fecha_dia AS DATE) AS fecha,
@@ -1318,18 +1397,12 @@ class VehicleService:
                 SUM(CASE WHEN direccion = 'salida' THEN total_eventos ELSE 0 END) AS salidas,
                 SUM(total_eventos) AS vehiculos_unicos
             FROM dbo.vehiculos_diario_estacionamiento WITH (NOEXPAND)
-            WHERE espacio_id = :espacio_id
-              AND (:inicio IS NULL OR fecha_dia >= :inicio)
-              AND (:fin IS NULL OR fecha_dia < :fin)
+            WHERE {where_evol}
               {where_sec}
             GROUP BY CAST(fecha_dia AS DATE)
             ORDER BY fecha ASC
         """)
-        rows = (await session.execute(sql, {
-            "espacio_id": espacio_id,
-            "inicio": fecha_inicio,
-            "fin": fin_exclusive,
-        })).fetchall()
+        rows = (await session.execute(sql, params)).fetchall()
         return [
             {
                 "fecha": r.fecha.isoformat(),
@@ -1403,36 +1476,59 @@ class VehicleService:
         ]
 
     @staticmethod
-    async def get_intercampus_mobility(session: AsyncSession) -> dict:
+    async def get_intercampus_mobility(
+        session: AsyncSession,
+        espacio_id: int = 2,
+        fecha_inicio: Optional[date] = None,
+        fecha_fin: Optional[date] = None,
+    ) -> dict:
+        if fecha_inicio is None or fecha_fin is None:
+            sql_max = text("""
+                SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
+                FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+                WHERE espacio_id = :espacio_id
+            """)
+            max_date = (await session.execute(sql_max, {"espacio_id": espacio_id})).scalar() or date.today()
+            if fecha_fin is None:
+                fecha_fin = max_date
+            if fecha_inicio is None:
+                fecha_inicio = max_date - timedelta(days=365)
+
+        inicio_dt = datetime.combine(fecha_inicio, datetime.min.time())
+        fin_excl_dt = datetime.combine(fecha_fin + timedelta(days=1), datetime.min.time())
+
         sql_events = text("""
             WITH eventos_campus AS (
-                SELECT 
+                SELECT
                     patente_hash,
-                    CAST(time AS DATE) as fecha,
+                    CAST(time AS DATE) AS fecha,
                     time,
-                    CASE WHEN camara LIKE 'CHS%' THEN 'CHS' ELSE 'CSF' END as campus
+                    CASE WHEN camara LIKE 'CHS%' THEN 'CHS' ELSE 'CSF' END AS campus,
+                    LEAD(time) OVER (PARTITION BY patente_hash ORDER BY time) AS next_time,
+                    LEAD(CASE WHEN camara LIKE 'CHS%' THEN 'CHS' ELSE 'CSF' END) OVER (PARTITION BY patente_hash ORDER BY time) AS next_campus
                 FROM eventos_vehiculares
-                WHERE patente_hash != 'unknown'
+                WHERE espacio_id = :espacio_id
+                  AND patente_hash <> 'unknown'
+                  AND (camara LIKE 'CSF%' OR camara LIKE 'CHS%')
+                  AND time >= :inicio_dt
+                  AND time < :fin_excl_dt
             ),
             traslados AS (
-                SELECT 
-                    c1.fecha,
-                    c1.patente_hash,
-                    c1.campus as origen,
-                    c2.campus as destino,
-                    c1.time as salida_origen,
-                    c2.time as llegada_destino,
-                    DATEDIFF(minute, c1.time, c2.time) as minutos_traslado,
-                    DATEPART(hour, c1.time) as hora_salida
-                FROM eventos_campus c1
-                JOIN eventos_campus c2
-                  ON c1.patente_hash = c2.patente_hash
-                 AND c1.fecha = c2.fecha
-                 AND c1.campus != c2.campus
-                 AND c2.time > c1.time
-                 AND c2.time <= DATEADD(hour, 6, c1.time)
+                SELECT
+                    fecha,
+                    campus AS origen,
+                    next_campus AS destino,
+                    time AS salida_origen,
+                    DATEDIFF(minute, time, next_time) AS minutos_traslado,
+                    DATEPART(hour, time) AS hora_salida
+                FROM eventos_campus
+                WHERE next_campus IS NOT NULL
+                  AND campus <> next_campus
+                  AND CAST(next_time AS DATE) = fecha
+                  AND next_time > time
+                  AND next_time <= DATEADD(hour, 6, time)
             )
-            SELECT 
+            SELECT
                 fecha,
                 origen,
                 destino,
@@ -1441,7 +1537,12 @@ class VehicleService:
             FROM traslados
             ORDER BY fecha ASC, salida_origen ASC
         """)
-        rows = (await session.execute(sql_events)).fetchall()
+        rows = (
+            await session.execute(
+                sql_events,
+                {"espacio_id": espacio_id, "inicio_dt": inicio_dt, "fin_excl_dt": fin_excl_dt},
+            )
+        ).fetchall()
 
         total_traslados = len(rows)
         if total_traslados == 0:
@@ -1559,35 +1660,73 @@ class VehicleService:
         return pd.DataFrame([dict(r._mapping) for r in rows])
 
     @staticmethod
-    async def get_stay_distribution(session: AsyncSession, espacio_id: int = 2) -> list[dict]:
+    async def get_stay_distribution(
+        session: AsyncSession,
+        espacio_id: int = 2,
+        fecha_inicio: Optional[date] = None,
+        fecha_fin: Optional[date] = None,
+    ) -> list[dict]:
+        if fecha_inicio is None or fecha_fin is None:
+            sql_max = text("""
+                SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
+                FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+                WHERE espacio_id = :espacio_id
+            """)
+            max_date = (await session.execute(sql_max, {"espacio_id": espacio_id})).scalar() or date.today()
+            if fecha_fin is None:
+                fecha_fin = max_date
+            if fecha_inicio is None:
+                fecha_inicio = max_date - timedelta(days=365)
+
+        inicio_dt = datetime.combine(fecha_inicio, datetime.min.time())
+        fin_excl_dt = datetime.combine(fecha_fin + timedelta(days=1), datetime.min.time())
+
         sql = text("""
+            WITH seq AS (
+                SELECT
+                    patente_hash,
+                    time AS t_actual,
+                    direccion AS dir_actual,
+                    LEAD(time) OVER (PARTITION BY patente_hash ORDER BY time) AS t_sig,
+                    LEAD(direccion) OVER (PARTITION BY patente_hash ORDER BY time) AS dir_sig
+                FROM eventos_vehiculares
+                WHERE espacio_id = :espacio_id
+                  AND patente_hash <> 'unknown'
+                  AND time >= :inicio_dt
+                  AND time < :fin_excl_dt
+            ),
+            estadias AS (
+                SELECT DATEDIFF(minute, t_actual, t_sig) AS mins
+                FROM seq
+                WHERE dir_actual = 'entrada'
+                  AND dir_sig = 'salida'
+                  AND t_sig > t_actual
+                  AND t_sig < DATEADD(hour, 24, t_actual)
+            )
             SELECT
                 CASE
-                    WHEN DATEDIFF(minute, ent.time, sal.time) < 15  THEN 'drop_off'
-                    WHEN DATEDIFF(minute, ent.time, sal.time) < 180 THEN '0-3h'
-                    WHEN DATEDIFF(minute, ent.time, sal.time) < 360 THEN '3-6h'
+                    WHEN mins < 15  THEN 'drop_off'
+                    WHEN mins < 180 THEN '0-3h'
+                    WHEN mins < 360 THEN '3-6h'
                     ELSE 'jornada_completa'
                 END AS rango,
                 COUNT(*) AS total
-            FROM eventos_vehiculares ent
-            JOIN eventos_vehiculares sal
-              ON ent.patente_hash = sal.patente_hash
-             AND ent.espacio_id   = sal.espacio_id
-             AND sal.time > ent.time
-             AND sal.time < DATEADD(hour, 24, ent.time)
-             AND ent.direccion = 'entrada'
-             AND sal.direccion = 'salida'
-            WHERE ent.espacio_id = :espacio_id
-            GROUP BY 
+            FROM estadias
+            GROUP BY
                 CASE
-                    WHEN DATEDIFF(minute, ent.time, sal.time) < 15  THEN 'drop_off'
-                    WHEN DATEDIFF(minute, ent.time, sal.time) < 180 THEN '0-3h'
-                    WHEN DATEDIFF(minute, ent.time, sal.time) < 360 THEN '3-6h'
+                    WHEN mins < 15  THEN 'drop_off'
+                    WHEN mins < 180 THEN '0-3h'
+                    WHEN mins < 360 THEN '3-6h'
                     ELSE 'jornada_completa'
                 END
             ORDER BY total DESC
         """)
-        rows = (await session.execute(sql, {"espacio_id": espacio_id})).fetchall()
+        rows = (
+            await session.execute(
+                sql,
+                {"espacio_id": espacio_id, "inicio_dt": inicio_dt, "fin_excl_dt": fin_excl_dt},
+            )
+        ).fetchall()
         return [{"rango": r.rango, "total": int(r.total)} for r in rows]
 
     @staticmethod
@@ -1711,16 +1850,16 @@ class VehicleService:
                 conditions.append("calidad_lectura = 'unknown'")
             elif cat_lower == "fuera_de_horario":
                 conditions.append("""(
-                    DATEPART(WEEKDAY, time) = 1
-                    OR (DATEPART(WEEKDAY, time) BETWEEN 2 AND 6 AND (CAST(time AS TIME) < '07:00:00' OR CAST(time AS TIME) > '22:00:00'))
-                    OR (DATEPART(WEEKDAY, time) = 7 AND (CAST(time AS TIME) < '08:00:00' OR CAST(time AS TIME) > '14:00:00'))
+                    ((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) = 7
+                    OR (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) BETWEEN 1 AND 5 AND (CAST(time AS TIME) < '07:00:00' OR CAST(time AS TIME) > '22:00:00'))
+                    OR (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) = 6 AND (CAST(time AS TIME) < '08:00:00' OR CAST(time AS TIME) > '14:00:00'))
                 )""")
             elif cat_lower == "conforme":
                 conditions.append("""(
                     calidad_lectura != 'unknown'
                     AND (
-                        (DATEPART(WEEKDAY, time) BETWEEN 2 AND 6 AND CAST(time AS TIME) >= '07:00:00' AND CAST(time AS TIME) <= '22:00:00')
-                        OR (DATEPART(WEEKDAY, time) = 7 AND CAST(time AS TIME) >= '08:00:00' AND CAST(time AS TIME) <= '14:00:00')
+                        (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) BETWEEN 1 AND 5 AND CAST(time AS TIME) >= '07:00:00' AND CAST(time AS TIME) <= '22:00:00')
+                        OR (((DATEPART(WEEKDAY, time) + @@DATEFIRST - 2) % 7 + 1) = 6 AND CAST(time AS TIME) >= '08:00:00' AND CAST(time AS TIME) <= '14:00:00')
                     )
                 )""")
 
@@ -1849,52 +1988,161 @@ class VehicleService:
         rows = (await session.execute(data_sql, params)).fetchall()
         horarios = await get_horarios_operacion(session, espacio_id=espacio_id)
 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "Fecha",
-            "Hora",
-            "Patente_Seudonimizada",
-            "Camara_ANPR",
-            "Direccion",
-            "Tipo_Vehiculo",
-            "Marca",
-            "Color",
-            "Calidad_Lectura",
-            "Categorias_Calidad",
-            "Nivel_Integridad",
-        ])
-
-        for r in rows:
-            categorias_row = []
-            if r.time and not es_horario_conforme(r.time, horarios):
-                categorias_row.append("Fuera de Horario")
-            if r.calidad_lectura == "unknown":
-                categorias_row.append("Lectura Ilegible")
-
-            if not categorias_row:
-                categorias_row = ["Conforme"]
-                nivel = "Conforme"
-            elif len(categorias_row) >= 2:
-                nivel = "Critico"
-            else:
-                nivel = "Observado"
-
+        with io.StringIO() as output:
+            writer = csv.writer(output)
             writer.writerow([
-                r.time.strftime("%Y-%m-%d") if r.time else "",
-                r.time.strftime("%H:%M:%S") if r.time else "",
-                "DESCONOCIDO" if r.patente_hash == "unknown" else f"PAT-{r.patente_hash[:8]}",
-                r.camara or "",
-                r.direccion or "",
-                r.tipo_vehiculo or "Desconocido",
-                r.marca or "Desconocida",
-                r.color or "—",
-                r.calidad_lectura or "",
-                " | ".join(categorias_row),
-                nivel,
+                "Fecha",
+                "Hora",
+                "Patente_Seudonimizada",
+                "Camara_ANPR",
+                "Direccion",
+                "Tipo_Vehiculo",
+                "Marca",
+                "Color",
+                "Calidad_Lectura",
+                "Categorias_Calidad",
+                "Nivel_Integridad",
             ])
 
-        return output.getvalue(), len(rows)
+            for r in rows:
+                categorias_row = []
+                if r.time and not es_horario_conforme(r.time, horarios):
+                    categorias_row.append("Fuera de Horario")
+                if r.calidad_lectura == "unknown":
+                    categorias_row.append("Lectura Ilegible")
+
+                if not categorias_row:
+                    categorias_row = ["Conforme"]
+                    nivel = "Conforme"
+                elif len(categorias_row) >= 2:
+                    nivel = "Critico"
+                else:
+                    nivel = "Observado"
+
+                from app.services.csv_utils import sanitizar_celda_csv
+
+                writer.writerow([
+                    r.time.strftime("%Y-%m-%d") if r.time else "",
+                    r.time.strftime("%H:%M:%S") if r.time else "",
+                    sanitizar_celda_csv("DESCONOCIDO" if r.patente_hash == "unknown" else f"PAT-{r.patente_hash[:8]}"),
+                    sanitizar_celda_csv(r.camara or ""),
+                    sanitizar_celda_csv(r.direccion or ""),
+                    sanitizar_celda_csv(r.tipo_vehiculo or "Desconocido"),
+                    sanitizar_celda_csv(r.marca or "Desconocida"),
+                    sanitizar_celda_csv(r.color or "—"),
+                    sanitizar_celda_csv(r.calidad_lectura or ""),
+                    sanitizar_celda_csv(" | ".join(categorias_row)),
+                    nivel,
+                ])
+
+            return output.getvalue(), len(rows)
+
+    @staticmethod
+    async def stream_raw_csv(
+        espacio_id: int = 2,
+        fecha_inicio: Optional[date] = None,
+        fecha_fin: Optional[date] = None,
+        camara: Optional[str] = None,
+        direccion: Optional[str] = None,
+        tipo_vehiculo: Optional[str] = None,
+        search_hash: Optional[str] = None,
+        categoria: Optional[str] = None,
+        alcance: Optional[str] = "todos",
+        regimen_horario: Optional[str] = "todos",
+        dias_semana: Optional[str] = None,
+        door: Optional[str] = None,
+        limit: int = 100000,
+        conteo_ref: Optional[list[int]] = None,
+    ):
+        """Genera el CSV vehicular por lotes para StreamingResponse sin acumular 100k filas en RAM."""
+        import csv
+        import io
+        from app.core.database import AsyncSessionLocal
+        from app.services.config_service import get_horarios_operacion, es_horario_conforme
+
+        async with AsyncSessionLocal() as s_stream:
+            where_sql, params = await VehicleService._build_vehicle_filters(
+                session=s_stream,
+                espacio_id=espacio_id,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion or "todos",
+                dias_semana=dias_semana,
+                door=camara or door,
+            )
+            params["limit"] = limit
+
+            conditions = [where_sql]
+            if tipo_vehiculo:
+                conditions.append("tipo_vehiculo LIKE :tipo_vehiculo")
+                params["tipo_vehiculo"] = f"%{tipo_vehiculo}%"
+            if search_hash:
+                conditions.append("patente_hash LIKE :search_hash")
+                params["search_hash"] = f"%{search_hash}%"
+
+            where_clause = " AND ".join(conditions)
+            data_sql = text(f"""
+                SELECT TOP (:limit)
+                    time, patente_hash, camara, direccion,
+                    tipo_vehiculo, marca, color, calidad_lectura
+                FROM eventos_vehiculares
+                WHERE {where_clause}
+                ORDER BY time DESC
+            """)
+            horarios = await get_horarios_operacion(s_stream, espacio_id=espacio_id)
+
+            with io.StringIO() as buf:
+                writer = csv.writer(buf)
+                writer.writerow([
+                    "Fecha", "Hora", "Patente_Seudonimizada", "Camara_ANPR", "Direccion",
+                    "Tipo_Vehiculo", "Marca", "Color", "Calidad_Lectura", "Categorias_Calidad", "Nivel_Integridad",
+                ])
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate(0)
+
+                total_emitidas = 0
+                stream_res = await s_stream.stream(data_sql, params)
+                async for partition in stream_res.partitions(2000):
+                    for r in partition:
+                        total_emitidas += 1
+                        categorias_row = []
+                        if r.time and not es_horario_conforme(r.time, horarios):
+                            categorias_row.append("Fuera de Horario")
+                        if r.calidad_lectura == "unknown":
+                            categorias_row.append("Lectura Ilegible")
+
+                        if not categorias_row:
+                            categorias_row = ["Conforme"]
+                            nivel = "Conforme"
+                        elif len(categorias_row) >= 2:
+                            nivel = "Critico"
+                        else:
+                            nivel = "Observado"
+
+                        from app.services.csv_utils import sanitizar_celda_csv
+
+                        writer.writerow([
+                            r.time.strftime("%Y-%m-%d") if r.time else "",
+                            r.time.strftime("%H:%M:%S") if r.time else "",
+                            sanitizar_celda_csv("DESCONOCIDO" if r.patente_hash == "unknown" else f"PAT-{r.patente_hash[:8]}"),
+                            sanitizar_celda_csv(r.camara or ""),
+                            sanitizar_celda_csv(r.direccion or ""),
+                            sanitizar_celda_csv(r.tipo_vehiculo or "Desconocido"),
+                            sanitizar_celda_csv(r.marca or "Desconocida"),
+                            sanitizar_celda_csv(r.color or "—"),
+                            sanitizar_celda_csv(r.calidad_lectura or ""),
+                            sanitizar_celda_csv(" | ".join(categorias_row)),
+                            nivel,
+                        ])
+                    if total_emitidas:
+                        yield buf.getvalue()
+                        buf.seek(0)
+                        buf.truncate(0)
+                if conteo_ref is not None:
+                    conteo_ref[0] = total_emitidas
 
     @staticmethod
     async def bulk_insert_events(
@@ -1934,9 +2182,14 @@ class VehicleService:
         existing_keys = set()
         if modo_solapamiento == "merge":
             min_ts = fecha_min or min(d.time for d in dtos)
-            max_ts = fecha_max or max(d.time for d in dtos)
+            max_ts = (fecha_max or max(d.time for d in dtos)) + timedelta(seconds=60)
             stmt_keys = (
-                select(EventoVehicular.time, EventoVehicular.espacio_id, EventoVehicular.patente_hash)
+                select(
+                    EventoVehicular.time,
+                    EventoVehicular.espacio_id,
+                    EventoVehicular.patente_hash,
+                    EventoVehicular.camara,
+                )
                 .where(
                     EventoVehicular.espacio_id == target_espacio_id,
                     EventoVehicular.time >= min_ts,
@@ -1944,23 +2197,23 @@ class VehicleService:
                 )
             )
             res_keys = await db.execute(stmt_keys)
-            existing_keys = {(r[0], r[1], r[2]) for r in res_keys.fetchall()}
+            existing_keys = {(r[0], r[1], r[2], r[3]) for r in res_keys.fetchall()}
 
         seen_keys = set()
         a_insertar = []
         for dto in dtos:
-            key = (dto.time, dto.espacio_id, dto.patente_hash)
+            key = (dto.time, dto.espacio_id, dto.patente_hash, dto.camara)
             if modo_solapamiento == "merge" and key in existing_keys:
                 continue
 
             if key in seen_keys:
                 offset = 1
                 cand_time = dto.time + timedelta(seconds=offset)
-                cand_key = (cand_time, dto.espacio_id, dto.patente_hash)
+                cand_key = (cand_time, dto.espacio_id, dto.patente_hash, dto.camara)
                 while (cand_key in seen_keys or (modo_solapamiento == "merge" and cand_key in existing_keys)) and offset < 59:
                     offset += 1
                     cand_time = dto.time + timedelta(seconds=offset)
-                    cand_key = (cand_time, dto.espacio_id, dto.patente_hash)
+                    cand_key = (cand_time, dto.espacio_id, dto.patente_hash, dto.camara)
 
                 if cand_key not in seen_keys and (modo_solapamiento != "merge" or cand_key not in existing_keys):
                     dto.time = cand_time
@@ -2011,7 +2264,7 @@ class VehicleService:
     async def get_latest_year(session: AsyncSession, espacio_id: int = 2) -> int:
         """Obtiene el año más reciente registrado en aforo_horario_estacionamiento."""
         try:
-            sql = text("SELECT YEAR(MAX(bucket)) FROM aforo_horario_estacionamiento WHERE espacio_id = :espacio_id")
+            sql = text("SELECT YEAR(MAX(bucket)) FROM aforo_horario_estacionamiento WITH (NOEXPAND) WHERE espacio_id = :espacio_id")
             res = await session.execute(sql, {"espacio_id": espacio_id})
             anio = res.scalar()
             if anio:
@@ -2034,15 +2287,15 @@ class VehicleService:
             where_conds.append("bucket >= :inicio")
             params["inicio"] = fecha_inicio
         if fecha_fin:
-            where_conds.append("bucket < DATEADD(day, 1, CAST(:fin AS DATETIME))")
-            params["fin"] = fecha_fin
+            where_conds.append("bucket < :fin_exclusivo")
+            params["fin_exclusivo"] = fecha_fin + timedelta(days=1)
         where_clause = " AND ".join(where_conds)
         sql = text(f"""
             SELECT CAST(bucket AS DATE) as fecha,
                    DATENAME(weekday, CAST(bucket AS DATE)) as dia_semana,
                    SUM(entradas) as ingresos,
                    SUM(salidas) as salidas
-            FROM aforo_horario_estacionamiento
+            FROM aforo_horario_estacionamiento WITH (NOEXPAND)
             WHERE {where_clause}
             GROUP BY CAST(bucket AS DATE), DATENAME(weekday, CAST(bucket AS DATE))
             ORDER BY fecha ASC

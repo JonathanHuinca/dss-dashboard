@@ -141,19 +141,40 @@ async def sincronizar_calendario_anual(
         resultado_scraping = await scrape_and_sync_uct_calendar(session)
         logger.info(f"[calendario_anual] Resultado scraping: {resultado_scraping}")
 
-        # 2. Contar eventos correspondientes al año objetivo en la base de datos
+        # 2. Contar eventos correspondientes al año objetivo en la base de datos (rango SARGable)
+        inicio_anio = date(anio, 1, 1)
+        fin_anio_excl = date(anio + 1, 1, 1)
         sql_conteo = text("""
             SELECT COUNT(*) AS total
             FROM calendario_academico
-            WHERE YEAR(fecha) = :anio
+            WHERE fecha >= :inicio_anio AND fecha < :fin_anio_excl
               AND (is_holiday = 1 OR is_break = 1 OR is_exam_period = 1 OR is_class_milestone = 1 OR suspension_actividades = 1)
         """)
-        res_conteo = await session.execute(sql_conteo, {"anio": anio})
+        res_conteo = await session.execute(
+            sql_conteo,
+            {"inicio_anio": inicio_anio, "fin_anio_excl": fin_anio_excl},
+        )
         eventos_anio = res_conteo.scalar() or 0
 
     except Exception as exc:
         error_capturado = str(exc)
         logger.error(f"[calendario_anual] Error durante el scraping de calendario: {exc}", exc_info=True)
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        registro = await obtener_estado_calendario_anual(session, anio)
+        if not registro:
+            registro = EstadoCalendarioAnual(
+                anio_objetivo=anio,
+                estado="pendiente",
+                intentos=0,
+                eventos_encontrados=0,
+                ultimo_intento_en=ahora_utc,
+            )
+            session.add(registro)
+        else:
+            registro.ultimo_intento_en = ahora_utc
 
     minimo_requerido = settings.MINIMO_EVENTOS_CALENDARIO
 
@@ -223,7 +244,11 @@ async def sincronizar_calendario_anual(
                 f"- Próximo reintento programado: {proximo_reintento.strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
                 f"Por favor verifique la disponibilidad de la página institucional de la UCT o cargue las fechas manualmente.\n"
             )
-            asyncio.create_task(enviar_alerta_correo_administrador(asunto_alerta, cuerpo_alerta))
+            from app.core.recursos_http import crear_tarea_fondo
+            crear_tarea_fondo(
+                enviar_alerta_correo_administrador(asunto_alerta, cuerpo_alerta),
+                nombre=f"alerta_calendario_{anio}",
+            )
 
         # Programar reintento en APScheduler si está disponible
         from app.core.planificador import obtener_planificador, ejecutar_tarea

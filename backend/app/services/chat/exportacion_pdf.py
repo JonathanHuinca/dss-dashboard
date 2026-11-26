@@ -1,9 +1,12 @@
+import asyncio
 import base64
 import io
 import logging
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Optional
+from xml.sax.saxutils import escape as escapar_xml
 from fastapi import Response
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
@@ -36,16 +39,63 @@ async def generar_pdf_conversacion(
         except Exception:
             pass
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=36,
-        leftMargin=36,
-        topMargin=36,
-        bottomMargin=36,
+    mensajes_planos = [
+        SimpleNamespace(
+            id=getattr(m, "id", None),
+            rol=getattr(m, "rol", None),
+            contenido=getattr(m, "contenido", None),
+            tipo=getattr(m, "tipo", None),
+            herramienta=getattr(m, "herramienta", None),
+            modelo=getattr(m, "modelo", None),
+        )
+        for m in mensajes
+    ]
+    pdf_bytes = await asyncio.to_thread(_renderizar_pdf_sync, req, titulo_conversacion, mensajes_planos)
+    id_sesion_txt = str(req.conversacion_id or req.session_id or "consulta")
+    sufijo_archivo = "".join(c for c in id_sesion_txt[:8] if c.isalnum() or c in ("-", "_")) or "consulta"
+    filename = f"informe_ejecutivo_{sufijo_archivo}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+
+def _renderizar_pdf_sync(
+    req: ExportPdfRequest,
+    titulo_conversacion: str,
+    mensajes: list,
+) -> bytes:
+    """Construye el documento ReportLab en hilo trabajador sin bloquear el event loop."""
+    buffer = io.BytesIO()
+    img_buffers: list[io.BytesIO] = []
+    try:
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=36,
+            leftMargin=36,
+            topMargin=36,
+            bottomMargin=36,
+        )
+        story = _construir_story_pdf_sync(req, titulo_conversacion, mensajes, img_buffers)
+        doc.build(story)
+        return buffer.getvalue()
+    finally:
+        for ib in img_buffers:
+            try:
+                ib.close()
+            except Exception:
+                pass
+        buffer.close()
+
+
+def _construir_story_pdf_sync(
+    req: ExportPdfRequest,
+    titulo_conversacion: str,
+    mensajes: list,
+    img_buffers: list[io.BytesIO],
+) -> list:
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'DocTitle',
@@ -101,14 +151,15 @@ async def generar_pdf_conversacion(
     story.append(Paragraph("UNIVERSIDAD CATÓLICA DE TEMUCO", title_style))
     story.append(Paragraph("Sistema de Soporte a Decisiones (DSS) · Campus San Francisco", subtitle_style))
     story.append(Spacer(1, 6))
-    story.append(Paragraph(titulo_conversacion, h2_style))
+    story.append(Paragraph(escapar_xml(str(titulo_conversacion)), h2_style))
     story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#C59B27'), spaceAfter=8))
 
     recinto_nombre = "Estacionamiento CSF" if req.espacio_id == 2 else "Biblioteca CSF"
+    id_sesion_txt = str(req.conversacion_id or req.session_id or "consulta")
     meta_data = [
         [Paragraph(f"<b>Fecha de Emisión:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}", meta_style),
-         Paragraph(f"<b>Módulo Institucional:</b> {recinto_nombre}", meta_style)],
-        [Paragraph(f"<b>ID Sesión / Conversación:</b> {req.conversacion_id or req.session_id}", meta_style),
+         Paragraph(f"<b>Módulo Institucional:</b> {escapar_xml(recinto_nombre)}", meta_style)],
+        [Paragraph(f"<b>ID Sesión / Conversación:</b> {escapar_xml(id_sesion_txt)}", meta_style),
          Paragraph("<b>Privacidad:</b> Anonimización Irreversible SHA-256 (Ley N° 21.719)", meta_style)]
     ]
     meta_table = Table(meta_data, colWidths=[270, 270])
@@ -126,9 +177,11 @@ async def generar_pdf_conversacion(
         story.append(Paragraph("Detalle de la Consulta Analítica", h2_style))
         story.append(Spacer(1, 4))
 
+        consulta_segura = escapar_xml(str(req.consulta_texto))
+        respuesta_segura = escapar_xml(str(req.respuesta_texto)).replace(chr(10), '<br/>')
         q_box = [
-            [Paragraph(f"<b>Pregunta / Instrucción:</b> {req.consulta_texto}", q_style)],
-            [Paragraph(f"<b>Respuesta e Interpretación Oficial:</b><br/>{req.respuesta_texto.replace(chr(10), '<br/>')}", ans_style)],
+            [Paragraph(f"<b>Pregunta / Instrucción:</b> {consulta_segura}", q_style)],
+            [Paragraph(f"<b>Respuesta e Interpretación Oficial:</b><br/>{respuesta_segura}", ans_style)],
             [Paragraph("Fuente: Base de Datos Institucional UCT · Verificado por Asistente DSS", meta_style)]
         ]
         t = Table(q_box, colWidths=[540])
@@ -164,9 +217,9 @@ async def generar_pdf_conversacion(
             story.append(Paragraph(f"<b>Registro Tabular Detallado ({len(req.datos_tabla)} filas):</b>", h2_style))
             story.append(Spacer(1, 4))
             headers = list(req.datos_tabla[0].keys())
-            table_rows = [[Paragraph(f"<b>{h.replace('_', ' ').title()}</b>", meta_style) for h in headers]]
+            table_rows = [[Paragraph(f"<b>{escapar_xml(str(h).replace('_', ' ').title())}</b>", meta_style) for h in headers]]
             for r in req.datos_tabla[:30]:
-                table_rows.append([Paragraph(str(r.get(h, '')), ans_style) for h in headers])
+                table_rows.append([Paragraph(escapar_xml(str(r.get(h, ''))), ans_style) for h in headers])
             col_w = 540 / max(1, len(headers))
             dt_table = Table(table_rows, colWidths=[col_w] * len(headers))
             dt_table.setStyle(TableStyle([
@@ -191,10 +244,15 @@ async def generar_pdf_conversacion(
             if m.rol == "user":
                 pregunta_actual = m.contenido
             elif m.rol == "assistant":
+                preg_segura = escapar_xml(str(pregunta_actual or 'Consulta sin registro'))
+                resp_segura = escapar_xml(str(m.contenido or '')).replace(chr(10), '<br/>')
+                tipo_seguro = escapar_xml(str(m.tipo or '').upper())
+                herr_segura = escapar_xml(str(m.herramienta or 'Directa'))
+                mod_seguro = escapar_xml(str(m.modelo or 'Gemini DSS'))
                 q_box = [
-                    [Paragraph(f"<b>Consulta #{indice_q}:</b> {pregunta_actual or 'Consulta sin registro'}", q_style)],
-                    [Paragraph(f"<b>Respuesta Analítica:</b><br/>{m.contenido.replace(chr(10), '<br/>')}", ans_style)],
-                    [Paragraph(f"Tipo: {m.tipo.upper()} | Herramienta: {m.herramienta or 'Directa'} | Modelo: {m.modelo or 'Gemini DSS'}", meta_style)]
+                    [Paragraph(f"<b>Consulta #{indice_q}:</b> {preg_segura}", q_style)],
+                    [Paragraph(f"<b>Respuesta Analítica:</b><br/>{resp_segura}", ans_style)],
+                    [Paragraph(f"Tipo: {tipo_seguro} | Herramienta: {herr_segura} | Modelo: {mod_seguro}", meta_style)]
                 ]
                 t = Table(q_box, colWidths=[540])
                 t.setStyle(TableStyle([
@@ -221,6 +279,7 @@ async def generar_pdf_conversacion(
                             raw_b64 = b64_str.split(",")[-1]
                             img_bytes = base64.b64decode(raw_b64)
                             img_buf = io.BytesIO(img_bytes)
+                            img_buffers.append(img_buf)
                             story.append(RLImage(img_buf, width=540, height=250))
                             story.append(Spacer(1, 8))
                         except Exception as img_err:
@@ -237,14 +296,4 @@ async def generar_pdf_conversacion(
         "Los cálculos cumplen con las directivas de seguridad de la información institucional (Ley N° 21.719).",
         meta_style
     ))
-
-    doc.build(story)
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
-
-    filename = f"informe_ejecutivo_{(req.conversacion_id or req.session_id)[:8]}.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    return story

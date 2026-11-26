@@ -18,6 +18,7 @@ Características:
 """
 import json
 import logging
+import os
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,7 +31,12 @@ from prophet import Prophet
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ml.gestor_modelos import cargar_modelo_en_memoria, ejecutar_inferencia_en_hilo
+from app.core.tiempo import ahora_chile_naive
+from app.ml.gestor_modelos import (
+    cargar_modelo_en_memoria,
+    ejecutar_inferencia_en_hilo,
+    invalidar_cache_modelo,
+)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -87,9 +93,14 @@ def _versioned_path(modelo_key: str) -> Path:
 
 def _save_model(model: Prophet, modelo_key: str) -> Path:
     versioned = _versioned_path(modelo_key)
-    joblib.dump(model, versioned)
+    tmp_ver = versioned.with_name(f".{versioned.name}.tmp.{os.getpid()}")
+    joblib.dump(model, tmp_ver)
+    os.replace(tmp_ver, versioned)
     active = _active_path(modelo_key)
-    shutil.copy2(versioned, active)
+    tmp_act = active.with_name(f".{active.name}.tmp.{os.getpid()}")
+    shutil.copy2(versioned, tmp_act)
+    os.replace(tmp_act, active)
+    invalidar_cache_modelo(active)
     logger.info(f"[Prophet] Modelo {modelo_key} guardado: {versioned.name}")
     _prune_old_models(modelo_key, keep=3)
     return versioned
@@ -327,6 +338,7 @@ async def _fetch_hourly_data(session: AsyncSession, recinto: str, sala: str = "t
                 COUNT(DISTINCT person_id_hash) as y
             FROM eventos_asistencia
             WHERE espacio_id = 1 
+              AND time <= GETDATE()
               AND alerta_coherencia_fechas = 0
               AND person_id_hash NOT LIKE 'TEST_HASH%'
               AND (marcajes_totales < 5 OR (permanencia_min IS NOT NULL AND permanencia_min > 0))
@@ -765,19 +777,20 @@ async def predict_continuous(
     else:
         cap_sala = capacidades.get(sala, capacidades.get("todas", 276))
 
-    # Determinar fecha de anclaje (máximo tiempo real en la base de datos)
+    # Determinar fecha de anclaje (máximo tiempo real no futuro en la base de datos)
     if recinto == "vehicular":
-        res_t = await session.execute(text("SELECT MAX(time) FROM eventos_vehiculares WHERE espacio_id = 2"))
+        res_t = await session.execute(text("SELECT MAX(time) FROM eventos_vehiculares WHERE espacio_id = 2 AND time <= GETDATE()"))
     else:
         res_t = await session.execute(text("""
             SELECT MAX(time) 
             FROM eventos_asistencia 
             WHERE espacio_id = 1 
+              AND time <= GETDATE()
               AND alerta_coherencia_fechas = 0 
               AND person_id_hash NOT LIKE 'TEST_HASH%'
         """))
     max_time_val = res_t.scalar()
-    anchor_dt = (max_time_val or datetime.utcnow()).replace(minute=0, second=0, microsecond=0)
+    anchor_dt = (max_time_val or ahora_chile_naive()).replace(minute=0, second=0, microsecond=0)
 
     # 1. Extraer los últimos 7 días de datos reales (168 horas completas hasta anchor_dt inclusive)
     h_start = anchor_dt - timedelta(hours=167)
@@ -831,6 +844,7 @@ async def predict_continuous(
                 COUNT(DISTINCT person_id_hash) as actual
             FROM eventos_asistencia
             WHERE espacio_id = 1 
+              AND time <= GETDATE()
               AND alerta_coherencia_fechas = 0
               AND person_id_hash NOT LIKE 'TEST_HASH%'
               AND (marcajes_totales < 5 OR (permanencia_min IS NOT NULL AND permanencia_min > 0))
@@ -903,19 +917,6 @@ async def predict_continuous(
         df_fut_s2 = df_fut
 
     modelo_veh_key = MODELOS_VEHICULAR.get(sector_veh, MODELOS_VEHICULAR["todos"]) if recinto == "vehicular" else None
-    if recinto == "vehicular":
-        keys_a_asegurar = (
-            [(sec_cod, MODELOS_VEHICULAR[sec_cod]) for sec_cod in SECTORES_VEHICULARES]
-            if sector_veh == "todos"
-            else [(sector_veh, modelo_veh_key or MODELOS_VEHICULAR["todos"])]
-        )
-        for sec_target, m_k in keys_a_asegurar:
-            if load_active_model(m_k) is None:
-                try:
-                    await train_sala_model(session, modelo_key=m_k, recinto="vehicular", sala=sec_target)
-                except Exception as e_train:
-                    logger.warning(f"[Prophet Vehicular] No se pudo auto-entrenar {m_k}: {e_train}")
-
     usa_bottom_up_veh = False
 
     # Cargar modelos según selección jerárquica
@@ -1031,7 +1032,7 @@ async def predict_continuous(
     else:
         model_date = active_model_date(active_key)
         model_type_str = "Prophet Jerárquico por Sala"
-    status_str = "ok" if model_date else "fallback"
+    status_str = "ok" if model_date else "unavailable"
 
     respuesta: Dict[str, Any] = {
         "recinto": recinto,
@@ -1047,6 +1048,7 @@ async def predict_continuous(
             "status": status_str,
             "model_type": model_type_str,
             "model_date": model_date or "Sin calibración",
+            **({"message": "Modelo Prophet aún no entrenado. Ejecute reentrenamiento desde Administración."} if status_str == "unavailable" else {}),
         },
     }
     if recinto == "vehicular":
@@ -1080,6 +1082,7 @@ async def train_presence_model(session: AsyncSession, modelo_key: str, sala: str
         SELECT MIN(time), MAX(time) 
         FROM eventos_asistencia 
         WHERE espacio_id = 1 
+          AND time <= GETDATE()
           AND alerta_coherencia_fechas = 0 
           AND person_id_hash NOT LIKE 'TEST_HASH%'
     """))
@@ -1196,11 +1199,12 @@ async def predict_presence_continuous(
         SELECT MAX(time) 
         FROM eventos_asistencia 
         WHERE espacio_id = 1 
+          AND time <= GETDATE()
           AND alerta_coherencia_fechas = 0 
           AND person_id_hash NOT LIKE 'TEST_HASH%'
     """))
     max_time_val = res_t.scalar()
-    anchor_dt = (max_time_val or datetime.utcnow()).replace(minute=0, second=0, microsecond=0)
+    anchor_dt = (max_time_val or ahora_chile_naive()).replace(minute=0, second=0, microsecond=0)
 
     # 1. 7 días históricos reales de presencia física (168 horas hasta anchor_dt)
     h_start = anchor_dt - timedelta(hours=167)
@@ -1292,37 +1296,30 @@ async def predict_presence_continuous(
             (df_fut_s1["es_horario_abierto"].values == 1) | (df_fut_s2["es_horario_abierto"].values == 1)
         ).astype(int)
 
-        m_s1 = load_active_model(MODELOS_PRESENCIA["sala1"])
-        if not m_s1:
-            try:
-                await train_presence_model(session, modelo_key=MODELOS_PRESENCIA["sala1"], sala="sala1")
-                m_s1 = load_active_model(MODELOS_PRESENCIA["sala1"])
-            except Exception as e:
-                logger.error(f"[Prophet Presencia] Error auto-entrenando {MODELOS_PRESENCIA['sala1']}: {e}", exc_info=True)
-
-        m_s2 = load_active_model(MODELOS_PRESENCIA["sala2"])
-        if not m_s2:
-            try:
-                await train_presence_model(session, modelo_key=MODELOS_PRESENCIA["sala2"], sala="sala2")
-                m_s2 = load_active_model(MODELOS_PRESENCIA["sala2"])
-            except Exception as e:
-                logger.error(f"[Prophet Presencia] Error auto-entrenando {MODELOS_PRESENCIA['sala2']}: {e}", exc_info=True)
-
-        if m_s1 or m_s2:
-            usa_bottom_up = True
-            yhat_s1, low_s1, up_s1 = _inferir_presencia_frame(m_s1, df_fut_s1, cap_s1)
-            yhat_s2, low_s2, up_s2 = _inferir_presencia_frame(m_s2, df_fut_s2, cap_s2)
-            yhat = np.clip(yhat_s1 + yhat_s2, 0, cap_sala)
-            lower = np.clip(low_s1 + low_s2, 0, cap_sala)
-            upper = np.clip(up_s1 + up_s2, 0, cap_sala)
-        else:
-            df_fut = _enrich_features(
+        def _inferir_presencia_todas_sync() -> Tuple[bool, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+            m_s1 = load_active_model(MODELOS_PRESENCIA["sala1"])
+            m_s2 = load_active_model(MODELOS_PRESENCIA["sala2"])
+            if m_s1 or m_s2:
+                y1, l1, u1 = _inferir_presencia_frame(m_s1, df_fut_s1, cap_s1)
+                y2, l2, u2 = _inferir_presencia_frame(m_s2, df_fut_s2, cap_s2)
+                return (
+                    True,
+                    np.clip(y1 + y2, 0, cap_sala),
+                    np.clip(l1 + l2, 0, cap_sala),
+                    np.clip(u1 + u2, 0, cap_sala),
+                    y1,
+                    y2,
+                )
+            df_glob = _enrich_features(
                 df_fut_base, cal, sala=sala, horarios=horarios_cfg, contingencias=contingencias_cfg, espacio_id=1
             )
-            df_fut["cap"] = float(cap_sala)
-            df_fut["floor"] = 0.0
-            m = load_active_model(modelo_key)
-            yhat, lower, upper = _inferir_presencia_frame(m, df_fut, cap_sala)
+            df_glob["cap"] = float(cap_sala)
+            df_glob["floor"] = 0.0
+            m_glob = load_active_model(modelo_key)
+            yg, lg, ug = _inferir_presencia_frame(m_glob, df_glob, cap_sala)
+            return False, yg, lg, ug, None, None
+
+        usa_bottom_up, yhat, lower, upper, yhat_s1, yhat_s2 = await ejecutar_inferencia_en_hilo(_inferir_presencia_todas_sync)
     else:
         df_fut = _enrich_features(
             df_fut_base,
@@ -1335,15 +1332,11 @@ async def predict_presence_continuous(
         df_fut["cap"] = float(cap_sala)
         df_fut["floor"] = 0.0
 
-        m = load_active_model(modelo_key)
-        if not m:
-            try:
-                await train_presence_model(session, modelo_key=modelo_key, sala=sala)
-                m = load_active_model(modelo_key)
-            except Exception as e:
-                logger.error(f"[Prophet Presencia] Error auto-entrenando {modelo_key}: {e}", exc_info=True)
+        def _inferir_presencia_sala_sync() -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+            m_loc = load_active_model(modelo_key)
+            return _inferir_presencia_frame(m_loc, df_fut, cap_sala)
 
-        yhat, lower, upper = _inferir_presencia_frame(m, df_fut, cap_sala)
+        yhat, lower, upper = await ejecutar_inferencia_en_hilo(_inferir_presencia_sala_sync)
 
     puntos_pronostico = []
     for idx, row in df_fut.iterrows():
@@ -1374,7 +1367,7 @@ async def predict_presence_continuous(
     else:
         model_date = active_model_date(modelo_key)
         model_type_str = "Prophet Horario Condicional (Presencia Física en Sala)"
-    status_str = "ok" if model_date else "fallback"
+    status_str = "ok" if model_date else "unavailable"
 
     respuesta: Dict[str, Any] = {
         "recinto": "biblioteca",
@@ -1390,6 +1383,7 @@ async def predict_presence_continuous(
             "status": status_str,
             "model_type": model_type_str,
             "model_date": model_date or "Sin calibración",
+            **({"message": "Modelo Prophet de presencia aún no entrenado. Ejecute reentrenamiento desde Administración."} if status_str == "unavailable" else {}),
         },
     }
     if usa_bottom_up:

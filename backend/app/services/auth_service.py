@@ -6,16 +6,18 @@ passlib.handlers.bcrypt._BcryptBackend._finalize_backend_mixin = classmethod(
     lambda cls, name, dryrun=False: True
 )
 
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 import secrets
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import jwt
 from fastapi import HTTPException, status
 from passlib.context import CryptContext
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,8 +29,83 @@ from app.domain.reportes_compartidos_models import DestinatarioReporte
 from app.schemas.auth_schemas import UsuarioCreate, UsuarioInviteRequest, UsuarioUpdateRequest
 from app.services.email_service import enviar_correo_bloqueo_login
 
-# Caché en memoria de sesiones de usuario para evitar consultas repetitivas por petición
+# Caché en memoria de sesiones (solo DTOs inmutables, nunca entidades ORM adjuntas)
 cache_usuarios_sesion: TTLCache = TTLCache(maxsize=256, ttl=60)
+
+
+@dataclass(frozen=True)
+class RolSesionDTO:
+    """Representación inmutable de rol para caché de sesión."""
+
+    id: int
+    nombre: str
+    descripcion: Optional[str] = None
+    rate_limit_quota: Optional[str] = None
+    cooldown_segundos: int = 10
+
+
+@dataclass(frozen=True)
+class UsuarioSesionDTO:
+    """Representación inmutable de usuario autenticado para caché de sesión."""
+
+    id: int
+    email: str
+    nombre_completo: Optional[str]
+    is_active: bool
+    allowed_datasets: Tuple[str, ...]
+    can_use_ai: bool
+    can_export: bool
+    can_ingest: bool
+    espacio_id: Optional[int]
+    created_by_user_id: Optional[int]
+    intentos_fallidos_login: int
+    bloqueado_hasta: Optional[datetime]
+    created_at: Optional[datetime]
+    roles: Tuple[RolSesionDTO, ...]
+
+    @property
+    def primary_role(self) -> str:
+        jerarquia = [
+            "Admin_Sistema",
+            "Director_Recinto",
+            "Analista_Consulta",
+            "Consultor_Reporte",
+            "Guardia_Seguridad",
+        ]
+        nombres = [r.nombre for r in self.roles]
+        for r_top in jerarquia:
+            if r_top in nombres:
+                return r_top
+        return nombres[0] if nombres else "Analista_Consulta"
+
+
+def _usuario_a_dto(usuario: Usuario) -> UsuarioSesionDTO:
+    roles_dto = tuple(
+        RolSesionDTO(
+            id=int(r.id),
+            nombre=str(r.nombre),
+            descripcion=getattr(r, "descripcion", None),
+            rate_limit_quota=getattr(r, "rate_limit_quota", None),
+            cooldown_segundos=int(getattr(r, "cooldown_segundos", 10) or 0),
+        )
+        for r in (getattr(usuario, "roles", None) or [])
+    )
+    return UsuarioSesionDTO(
+        id=int(usuario.id),
+        email=str(usuario.email),
+        nombre_completo=getattr(usuario, "nombre_completo", None),
+        is_active=bool(usuario.is_active),
+        allowed_datasets=tuple(getattr(usuario, "allowed_datasets", None) or ()),
+        can_use_ai=bool(getattr(usuario, "can_use_ai", False)),
+        can_export=bool(getattr(usuario, "can_export", False)),
+        can_ingest=bool(getattr(usuario, "can_ingest", False)),
+        espacio_id=getattr(usuario, "espacio_id", None),
+        created_by_user_id=getattr(usuario, "created_by_user_id", None),
+        intentos_fallidos_login=int(getattr(usuario, "intentos_fallidos_login", 0) or 0),
+        bloqueado_hasta=getattr(usuario, "bloqueado_hasta", None),
+        created_at=getattr(usuario, "created_at", None),
+        roles=roles_dto,
+    )
 
 
 def limpiar_cache_usuario(usuario_id: Optional[int] = None) -> None:
@@ -90,6 +167,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             return pwd_context.verify(plain_password, hashed_password)
         except Exception:
             return False
+
+
+async def hash_password_async(password: str) -> str:
+    """Calcula el hash bcrypt fuera del event loop."""
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Verifica el hash bcrypt fuera del event loop."""
+    return await asyncio.to_thread(verify_password, plain_password, hashed_password)
 
 
 def validar_complejidad_password(password: str) -> None:
@@ -228,9 +315,23 @@ async def seed_default_roles(db: AsyncSession) -> List[Rol]:
     return created_roles
 
 
-async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[Usuario]:
-    if user_id in cache_usuarios_sesion:
-        return cache_usuarios_sesion[user_id]
+async def _get_user_orm_by_id(db: AsyncSession, user_id: int) -> Optional[Usuario]:
+    """Obtiene la entidad ORM directa para operaciones de escritura sin usar caché."""
+    if not hasattr(db, "execute"):
+        return await get_user_by_id(db, user_id)
+    stmt = (
+        select(Usuario)
+        .where(Usuario.id == user_id)
+        .options(selectinload(Usuario.roles), selectinload(Usuario.usuario_roles))
+    )
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[UsuarioSesionDTO]:
+    cached = cache_usuarios_sesion.get(user_id)
+    if cached is not None:
+        return cached
     stmt = (
         select(Usuario)
         .where(Usuario.id == user_id)
@@ -238,16 +339,18 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[Usuario]:
     )
     result = await db.execute(stmt)
     usuario = result.scalar_one_or_none()
-    if usuario is not None:
-        cache_usuarios_sesion[user_id] = usuario
-    return usuario
+    if usuario is None:
+        return None
+    dto = _usuario_a_dto(usuario)
+    cache_usuarios_sesion[user_id] = dto
+    return dto
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> Optional[Usuario]:
     email_limpio = (email or "").strip().lower()
     stmt = (
         select(Usuario)
-        .where(func.lower(func.trim(Usuario.email)) == email_limpio)
+        .where(Usuario.email == email_limpio)
         .options(selectinload(Usuario.roles), selectinload(Usuario.usuario_roles))
     )
     result = await db.execute(stmt)
@@ -281,9 +384,16 @@ async def authenticate_user(
             )
         else:
             # Si el tiempo de bloqueo ya expiró, restablecer preventivamente el contador
+            if hasattr(db, "execute"):
+                await db.execute(
+                    update(Usuario)
+                    .where(Usuario.id == user.id)
+                    .values(intentos_fallidos_login=0, bloqueado_hasta=None)
+                )
             user.bloqueado_hasta = None
             user.intentos_fallidos_login = 0
             await db.commit()
+            limpiar_cache_usuario(user.id)
 
     # No permitir autenticación si la cuenta está pendiente de activación
     if user.hashed_password == "PENDIENTE_ACTIVACION" or not user.hashed_password.startswith("$2"):
@@ -292,13 +402,30 @@ async def authenticate_user(
             detail="Su cuenta se encuentra inactiva o pendiente de activación. Use el enlace de activación enviado a su correo institucional.",
         )
 
-    # Validar contraseña
-    es_valida = verify_password(password, user.hashed_password)
+    # Validar contraseña fuera del event loop
+    es_valida = await verify_password_async(password, user.hashed_password)
 
     if not es_valida:
-        user.intentos_fallidos_login = (user.intentos_fallidos_login or 0) + 1
-        if user.intentos_fallidos_login >= 5:
-            user.bloqueado_hasta = ahora + timedelta(minutes=15)
+        if hasattr(db, "execute"):
+            res_inc = await db.execute(
+                update(Usuario)
+                .where(Usuario.id == user.id)
+                .values(intentos_fallidos_login=func.coalesce(Usuario.intentos_fallidos_login, 0) + 1)
+                .returning(Usuario.intentos_fallidos_login)
+            )
+            nuevos_intentos = int(res_inc.scalar_one())
+            user.intentos_fallidos_login = nuevos_intentos
+        else:
+            nuevos_intentos = int(user.intentos_fallidos_login or 0) + 1
+            user.intentos_fallidos_login = nuevos_intentos
+
+        if nuevos_intentos >= 5:
+            bloqueo_dt = ahora + timedelta(minutes=15)
+            if hasattr(db, "execute"):
+                await db.execute(
+                    update(Usuario).where(Usuario.id == user.id).values(bloqueado_hasta=bloqueo_dt)
+                )
+            user.bloqueado_hasta = bloqueo_dt
             # Registra alerta para SuperAdmin y emite enlace directo de recuperación al usuario
             notificacion = NotificacionAdmin(
                 tipo="bloqueo_login",
@@ -310,7 +437,7 @@ async def authenticate_user(
                 usuario_afectado_id=user.id,
                 usuario_afectado_email=user.email,
                 usuario_afectado_nombre=user.nombre_completo,
-                intentos_fallidos=int(user.intentos_fallidos_login),
+                intentos_fallidos=int(nuevos_intentos),
                 ip_origen=ip_origen,
                 leida=False,
             )
@@ -327,6 +454,7 @@ async def authenticate_user(
             )
             db.add(token_obj)
             await db.commit()
+            limpiar_cache_usuario(user.id)
 
             if background_tasks is not None:
                 enlace = f"{obtener_url_frontend()}/recuperar-password?token={token_plano}"
@@ -335,7 +463,7 @@ async def authenticate_user(
                     user.email,
                     user.nombre_completo or "",
                     enlace,
-                    int(user.intentos_fallidos_login),
+                    int(nuevos_intentos),
                 )
 
             raise HTTPException(
@@ -347,7 +475,8 @@ async def authenticate_user(
             )
         else:
             await db.commit()
-            intentos_restantes = 5 - user.intentos_fallidos_login
+            limpiar_cache_usuario(user.id)
+            intentos_restantes = max(0, 5 - nuevos_intentos)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Correo electrónico o contraseña incorrectos. Le quedan {intentos_restantes} intento(s) antes del bloqueo de seguridad.",
@@ -355,6 +484,12 @@ async def authenticate_user(
 
     # Autenticación exitosa: resetear contadores de fallo
     if (user.intentos_fallidos_login or 0) > 0 or user.bloqueado_hasta is not None:
+        if hasattr(db, "execute"):
+            await db.execute(
+                update(Usuario)
+                .where(Usuario.id == user.id)
+                .values(intentos_fallidos_login=0, bloqueado_hasta=None)
+            )
         user.intentos_fallidos_login = 0
         user.bloqueado_hasta = None
         await db.commit()
@@ -438,7 +573,7 @@ async def _asegurar_destinatario_consultor(db: AsyncSession, usuario: Usuario) -
     email_norm = (usuario.email or "").strip().lower()
     if not email_norm:
         return
-    stmt_dest = select(DestinatarioReporte).where(func.lower(DestinatarioReporte.email) == email_norm)
+    stmt_dest = select(DestinatarioReporte).where(DestinatarioReporte.email == email_norm)
     dest = (await db.execute(stmt_dest)).scalar_one_or_none()
     if not dest:
         ahora = ahora_chile_naive()
@@ -501,7 +636,7 @@ async def create_user(
     can_ingest = user_in.can_ingest
 
     if _es_solo_consultor(assigned_roles):
-        can_use_ai = bool(invite_in.can_use_ai) if "can_use_ai" in invite_in.model_fields_set else True
+        can_use_ai = bool(user_in.can_use_ai) if "can_use_ai" in user_in.model_fields_set else True
         can_export = True
         can_ingest = False
     elif "Admin_Sistema" in assigned_roles or "Director_Recinto" in assigned_roles:
@@ -512,7 +647,7 @@ async def create_user(
         can_use_ai = True
         can_export = True
 
-    hashed_pwd = hash_password(user_in.password)
+    hashed_pwd = await hash_password_async(user_in.password)
     user = Usuario(
         email=user_in.email,
         hashed_password=hashed_pwd,
@@ -542,8 +677,8 @@ async def create_user(
         await _asegurar_destinatario_consultor(db, user)
 
     await db.commit()
-    await db.refresh(user)
-    return user
+    usuario_cargado = await get_user_by_id(db, user.id)
+    return usuario_cargado or user
 
 
 async def update_user_status(
@@ -554,7 +689,7 @@ async def update_user_status(
     current_user: Optional[Usuario] = None,
 ) -> Optional[Usuario]:
     limpiar_cache_usuario(user_id)
-    user = await get_user_by_id(db, user_id)
+    user = await _get_user_orm_by_id(db, user_id)
     if not user:
         return None
 
@@ -578,7 +713,7 @@ async def update_user_status(
     if can_use_ai is not None:
         user.can_use_ai = can_use_ai
     await db.commit()
-    await db.refresh(user)
+    await db.refresh(user, attribute_names=["is_active", "can_use_ai"])
     limpiar_cache_usuario(user_id)
     return user
 
@@ -743,7 +878,7 @@ async def actualizar_usuario_admin(
 ) -> Usuario:
     """Actualiza rol, módulos autorizados y flags de un usuario existente respetando gobernanza Opción A."""
     limpiar_cache_usuario(user_id)
-    user = await get_user_by_id(db, user_id)
+    user = await _get_user_orm_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuario no encontrado.")
 
@@ -843,7 +978,7 @@ async def reenviar_invitacion_usuario(
     user_id: int,
     creator: Optional[Usuario] = None,
 ) -> tuple[Usuario, str, TokenActivacion]:
-    user = await get_user_by_id(db, user_id)
+    user = await _get_user_orm_by_id(db, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -866,7 +1001,7 @@ async def reenviar_invitacion_usuario(
 
     tipo_token = "ACTIVACION_INICIAL" if not user.is_active else "RECUPERACION_PASSWORD"
     token_plano, token_hash = generar_token_activacion()
-    expira_en = datetime.now(timezone.utc) + timedelta(hours=48)
+    expira_en = datetime.now(timezone.utc) + timedelta(hours=1)
 
     token_obj = TokenActivacion(
         usuario_id=user.id,
@@ -877,6 +1012,7 @@ async def reenviar_invitacion_usuario(
     )
     db.add(token_obj)
     await db.commit()
+    limpiar_cache_usuario(user_id)
     return user, token_plano, token_obj
 
 
@@ -952,17 +1088,36 @@ async def activar_cuenta_usuario(
     validar_complejidad_password(nueva_password)
 
     token_obj, usuario = await verificar_token_activacion(db, token)
+    ahora_canje = datetime.now(timezone.utc)
 
-    usuario.hashed_password = hash_password(nueva_password)
+    if hasattr(db, "execute"):
+        res_claim = await db.execute(
+            update(TokenActivacion)
+            .where(TokenActivacion.id == token_obj.id, TokenActivacion.utilizado == False)
+            .values(
+                utilizado=True,
+                fecha_utilizacion=ahora_canje,
+                ip_solicitante=ip_solicitante or token_obj.ip_solicitante,
+            )
+        )
+        if (res_claim.rowcount or 0) != 1:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Este enlace de activación ya fue utilizado o expiró.",
+            )
+    else:
+        token_obj.utilizado = True
+        token_obj.fecha_utilizacion = ahora_canje
+        if ip_solicitante:
+            token_obj.ip_solicitante = ip_solicitante
+
+    usuario.hashed_password = await hash_password_async(nueva_password)
     usuario.is_active = True
-
-    token_obj.utilizado = True
-    token_obj.fecha_utilizacion = datetime.now(timezone.utc)
-    if ip_solicitante:
-        token_obj.ip_solicitante = ip_solicitante
 
     await db.commit()
     await db.refresh(usuario)
+    limpiar_cache_usuario(usuario.id)
     return usuario
 
 
@@ -1029,16 +1184,34 @@ async def restablecer_password_con_token(
             detail="El tipo de token suministrado no es válido para restablecer la contraseña.",
         )
 
+    ahora_canje = datetime.now(timezone.utc)
+    if hasattr(db, "execute"):
+        res_claim = await db.execute(
+            update(TokenActivacion)
+            .where(TokenActivacion.id == token_obj.id, TokenActivacion.utilizado == False)
+            .values(
+                utilizado=True,
+                fecha_utilizacion=ahora_canje,
+                ip_solicitante=ip_solicitante or token_obj.ip_solicitante,
+            )
+        )
+        if (res_claim.rowcount or 0) != 1:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Este enlace ya fue utilizado o expiró.",
+            )
+    else:
+        token_obj.utilizado = True
+        token_obj.fecha_utilizacion = ahora_canje
+        if ip_solicitante:
+            token_obj.ip_solicitante = ip_solicitante
+
     # Actualizar credencial y desbloquear cuenta
-    usuario.hashed_password = hash_password(nueva_password)
+    usuario.hashed_password = await hash_password_async(nueva_password)
     usuario.is_active = True
     usuario.intentos_fallidos_login = 0
     usuario.bloqueado_hasta = None
-
-    token_obj.utilizado = True
-    token_obj.fecha_utilizacion = datetime.now(timezone.utc)
-    if ip_solicitante:
-        token_obj.ip_solicitante = ip_solicitante
 
     await db.commit()
     await db.refresh(usuario)
@@ -1055,7 +1228,7 @@ async def desbloquear_cuenta_admin(
     Desbloqueo administrativo de cuentas con control RBAC delegado (RF22, RF27).
     """
     limpiar_cache_usuario(user_id)
-    usuario = await get_user_by_id(db, user_id)
+    usuario = await _get_user_orm_by_id(db, user_id)
     if not usuario:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1114,8 +1287,9 @@ async def eliminar_usuario_cuenta(
             detail="El usuario a eliminar no existe en el sistema.",
         )
 
-    from sqlalchemy import delete, func
+    from sqlalchemy import delete, update
     from app.domain.auth_models import UsuarioRol, TokenActivacion
+    from app.domain.models import IngestionJob
     from app.domain.reportes_compartidos_models import (
         AuditoriaAccesoReporte,
         DestinatarioReporte,
@@ -1124,7 +1298,7 @@ async def eliminar_usuario_cuenta(
 
     email_usr = (usuario.email or "").strip().lower()
     if email_usr:
-        stmt_dest = select(DestinatarioReporte.id).where(func.lower(DestinatarioReporte.email) == email_usr)
+        stmt_dest = select(DestinatarioReporte.id).where(DestinatarioReporte.email == email_usr)
         dest_ids = list((await db.execute(stmt_dest)).scalars().all())
         if dest_ids:
             stmt_reps = select(ReporteCompartido.id).where(ReporteCompartido.destinatario_id.in_(dest_ids))
@@ -1138,6 +1312,13 @@ async def eliminar_usuario_cuenta(
                 )
             await db.execute(delete(DestinatarioReporte).where(DestinatarioReporte.id.in_(dest_ids)))
 
+    # Desvincular FKs NO ACTION antes de borrar Usuario para evitar Error 547 en SQL Server
+    await db.execute(
+        update(Usuario).where(Usuario.created_by_user_id == usuario_id).values(created_by_user_id=None)
+    )
+    await db.execute(
+        update(IngestionJob).where(IngestionJob.creado_por == usuario_id).values(creado_por=None)
+    )
     await db.execute(delete(TokenActivacion).where(TokenActivacion.usuario_id == usuario_id))
     await db.execute(delete(UsuarioRol).where(UsuarioRol.usuario_id == usuario_id))
     await db.execute(delete(Usuario).where(Usuario.id == usuario_id))

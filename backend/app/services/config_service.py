@@ -199,7 +199,21 @@ def _normalizar_subespacio(subespacio: Optional[str]) -> str:
     return subespacio.strip()
 
 
-def _evaluar_regla_individual(dt: datetime, regla: Any) -> bool:
+def _a_fecha(val: Any) -> Optional[date]:
+    """Normaliza date, datetime o ISO str a objeto date para comparación de vigencia por día."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    try:
+        return date.fromisoformat(str(val)[:10])
+    except Exception:
+        return None
+
+
+def _evaluar_regla_individual(dt: datetime, regla: Any, solo_madrugada_ayer: bool = False) -> bool:
     cfg_dias = _obtener_valor_campo(regla, "configuracion_dias")
     if cfg_dias:
         if isinstance(cfg_dias, str) and cfg_dias.strip():
@@ -221,14 +235,20 @@ def _evaluar_regla_individual(dt: datetime, regla: Any) -> bool:
         # 1. Turno de ayer que cruzó la medianoche y sigue abierto durante la madrugada de hoy
         if dia_anterior in cfg_dias:
             ayer_info = cfg_dias[dia_anterior]
-            if ayer_info.get("abierto", True) and ayer_info.get("cierre_dia_siguiente", False):
+            if ayer_info.get("abierto", True):
+                ayer_ap = ayer_info.get("apertura", hora_ap_def) or hora_ap_def
                 ayer_ci = ayer_info.get("cierre", hora_ci_def) or hora_ci_def
                 try:
+                    ha_p, ma_p = map(int, str(ayer_ap).split(":")[:2])
                     h_ci, m_ci = map(int, str(ayer_ci).split(":")[:2])
-                    if t <= time(h_ci, m_ci):
+                    cruza = bool(ayer_info.get("cierre_dia_siguiente", False)) or (time(h_ci, m_ci) < time(ha_p, ma_p))
+                    if cruza and t <= time(h_ci, m_ci):
                         return True
                 except Exception:
                     pass
+
+        if solo_madrugada_ayer:
+            return False
 
         # 2. Turno programado para el día de hoy
         if dia_actual in cfg_dias:
@@ -237,12 +257,12 @@ def _evaluar_regla_individual(dt: datetime, regla: Any) -> bool:
                 return False
             hora_ap = hoy_info.get("apertura", hora_ap_def) or hora_ap_def
             hora_ci = hoy_info.get("cierre", hora_ci_def) or hora_ci_def
-            overnight = bool(hoy_info.get("cierre_dia_siguiente", overnight_def))
             try:
                 h_ap, m_ap = map(int, str(hora_ap).split(":")[:2])
                 h_ci, m_ci = map(int, str(hora_ci).split(":")[:2])
                 t_ap = time(h_ap, m_ap)
                 t_ci = time(h_ci, m_ci)
+                overnight = bool(hoy_info.get("cierre_dia_siguiente", overnight_def)) or (t_ci < t_ap)
                 if overnight:
                     return bool(t >= t_ap)
                 return bool(t_ap <= t <= t_ci)
@@ -251,18 +271,21 @@ def _evaluar_regla_individual(dt: datetime, regla: Any) -> bool:
         return False
 
     if _obtener_valor_campo(regla, "es_continuo_24h", False):
-        return True
+        return False if solo_madrugada_ayer else True
 
     try:
         h_ap, m_ap = map(int, str(hora_ap_def).split(":")[:2])
         h_ci, m_ci = map(int, str(hora_ci_def).split(":")[:2])
         t_apertura = time(h_ap, m_ap)
         t_cierre = time(h_ci, m_ci)
-        if overnight_def:
+        overnight_eff = overnight_def or (t_cierre < t_apertura)
+        if solo_madrugada_ayer:
+            return bool(overnight_eff and t <= t_cierre)
+        if overnight_eff:
             return bool(t >= t_apertura or t <= t_cierre)
         return bool(t_apertura <= t <= t_cierre)
     except Exception:
-        return True
+        return False if solo_madrugada_ayer else True
 
 
 def evaluar_horario_abierto_subespacio(
@@ -344,7 +367,12 @@ def evaluar_horario_abierto_subespacio(
                 try:
                     hi_h, hi_m = map(int, str(h_ini_str).split(":")[:2])
                     hf_h, hf_m = map(int, str(h_fin_str).split(":")[:2])
-                    if time(hi_h, hi_m) <= hora_dt <= time(hf_h, hf_m):
+                    t_c_ini = time(hi_h, hi_m)
+                    t_c_fin = time(hf_h, hf_m)
+                    if t_c_fin < t_c_ini:
+                        if hora_dt >= t_c_ini or hora_dt <= t_c_fin:
+                            return 0
+                    elif t_c_ini <= hora_dt <= t_c_fin:
                         return 0
                 except Exception:
                     return 0
@@ -369,12 +397,12 @@ def evaluar_horario_abierto_subespacio(
         reglas_24h = []
         for h in reglas_activas:
             h_sub = _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos"))
-            f_ini = _obtener_valor_campo(h, "fecha_inicio")
-            f_fin = _obtener_valor_campo(h, "fecha_fin")
+            f_ini = _a_fecha(_obtener_valor_campo(h, "fecha_inicio"))
+            f_fin = _a_fecha(_obtener_valor_campo(h, "fecha_fin"))
             if (
                 h_sub in ("todos", sub_norm)
                 and _obtener_valor_campo(h, "es_continuo_24h", False)
-                and f_ini and f_fin and (f_ini <= dt <= f_fin)
+                and f_ini and f_fin and (f_ini <= fecha_dt <= f_fin)
             ):
                 reglas_24h.append(h)
         if reglas_24h:
@@ -383,21 +411,27 @@ def evaluar_horario_abierto_subespacio(
             return 1
         return 0
 
-    # 3. Reglas temporales por rango (ej. cambio horario mensual en Sala 2 o campaña exámenes)
+    # 3. Reglas temporales por rango (incluye madrugada del día posterior al cierre si cruza medianoche)
     reglas_rango_especificas = []
     reglas_rango_generales = []
+    reglas_madrugada_post_fin = []
     for h in reglas_activas:
         tipo_h = str(_obtener_valor_campo(h, "tipo_horario", "regular") or "regular")
         if tipo_h in ("regular", "historico_regular"):
             continue
-        f_ini = _obtener_valor_campo(h, "fecha_inicio")
-        f_fin = _obtener_valor_campo(h, "fecha_fin")
-        if f_ini and f_fin and (f_ini <= dt <= f_fin):
-            h_sub = _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos"))
+        f_ini = _a_fecha(_obtener_valor_campo(h, "fecha_inicio"))
+        f_fin = _a_fecha(_obtener_valor_campo(h, "fecha_fin"))
+        h_sub = _normalizar_subespacio(_obtener_valor_campo(h, "subespacio", "todos"))
+        if f_ini and f_fin and (f_ini <= fecha_dt <= f_fin):
             if h_sub == sub_norm:
                 reglas_rango_especificas.append(h)
             elif h_sub == "todos":
                 reglas_rango_generales.append(h)
+        elif f_fin and fecha_dt == f_fin + timedelta(days=1) and h_sub in (sub_norm, "todos"):
+            reglas_madrugada_post_fin.append(h)
+
+    if any(_evaluar_regla_individual(dt, r, solo_madrugada_ayer=True) for r in reglas_madrugada_post_fin):
+        return 1
 
     reglas_rango = reglas_rango_especificas if reglas_rango_especificas else reglas_rango_generales
     if reglas_rango:
@@ -413,17 +447,17 @@ def evaluar_horario_abierto_subespacio(
         tipo_h = str(_obtener_valor_campo(h, "tipo_horario", "regular") or "regular")
         if tipo_h not in ("regular", "historico_regular"):
             continue
-        f_ini = _obtener_valor_campo(h, "fecha_inicio")
-        f_fin = _obtener_valor_campo(h, "fecha_fin")
+        f_ini = _a_fecha(_obtener_valor_campo(h, "fecha_inicio"))
+        f_fin = _a_fecha(_obtener_valor_campo(h, "fecha_fin"))
         anio_h = _obtener_valor_campo(h, "anio", dt.year)
 
         vigente = False
         if f_ini and f_fin:
-            vigente = bool(f_ini <= dt <= f_fin)
+            vigente = bool(f_ini <= fecha_dt <= f_fin)
         elif f_ini and not f_fin:
-            vigente = bool(dt >= f_ini and int(anio_h) == dt.year)
+            vigente = bool(fecha_dt >= f_ini and int(anio_h) == dt.year)
         elif not f_ini and f_fin:
-            vigente = bool(dt <= f_fin and int(anio_h) == dt.year)
+            vigente = bool(fecha_dt <= f_fin and int(anio_h) == dt.year)
         else:
             vigente = bool(int(anio_h) == dt.year)
 
@@ -438,11 +472,15 @@ def evaluar_horario_abierto_subespacio(
     if reglas_base:
         return 1 if any(_evaluar_regla_individual(dt, r) for r in reglas_base) else 0
 
-    # 5. Fallback determinista institucional si no existen reglas configuradas para ese año
+    # 5. Fallback determinista institucional diferenciado por recinto
     dow = dt.weekday()
     if dow == 6:
         return 0
     hr = dt.hour
+    if int(espacio_id) == 2:
+        if dow == 5:
+            return 1 if (8 <= hr <= 14) else 0
+        return 1 if (7 <= hr <= 22) else 0
     if dow == 5:
         return 1 if (10 <= hr <= 13) else 0
     if dow == 4:
@@ -498,26 +536,30 @@ def es_horario_conforme(
             if filtradas_sub:
                 activas = filtradas_sub
 
-    # 1. Reglas especiales por rango vigentes en dt (ej. campañas 24h)
-    reglas_rango = [
-        h for h in activas
-        if (_obtener_valor_campo(h, "tipo_horario", "regular") or "regular") not in ("regular", "historico_regular")
-        and _obtener_valor_campo(h, "fecha_inicio")
-        and _obtener_valor_campo(h, "fecha_fin")
-        and (_obtener_valor_campo(h, "fecha_inicio") <= dt <= _obtener_valor_campo(h, "fecha_fin"))
-    ]
+    fecha_dt = dt.date()
 
-    # 2. Reglas habituales vigentes o históricas aplicables a dt
+    # 1. Reglas especiales por rango vigentes en fecha_dt (ej. campañas 24h)
+    reglas_rango = []
+    for h in activas:
+        tipo_r = _obtener_valor_campo(h, "tipo_horario", "regular") or "regular"
+        if tipo_r in ("regular", "historico_regular"):
+            continue
+        f_ini = _a_fecha(_obtener_valor_campo(h, "fecha_inicio"))
+        f_fin = _a_fecha(_obtener_valor_campo(h, "fecha_fin"))
+        if f_ini and f_fin and (f_ini <= fecha_dt <= f_fin):
+            reglas_rango.append(h)
+
+    # 2. Reglas habituales vigentes o históricas aplicables a fecha_dt
     reglas_vigentes = []
     for h in activas:
         tipo_h = _obtener_valor_campo(h, "tipo_horario", "regular") or "regular"
         if tipo_h not in ("regular", "historico_regular"):
             continue
-        f_ini = _obtener_valor_campo(h, "fecha_inicio")
-        f_fin = _obtener_valor_campo(h, "fecha_fin")
-        if f_ini and dt < f_ini:
+        f_ini = _a_fecha(_obtener_valor_campo(h, "fecha_inicio"))
+        f_fin = _a_fecha(_obtener_valor_campo(h, "fecha_fin"))
+        if f_ini and fecha_dt < f_ini:
             continue
-        if f_fin and dt > f_fin:
+        if f_fin and fecha_dt > f_fin:
             continue
         if not (f_ini and f_fin) and _obtener_valor_campo(h, "anio") != dt.year:
             continue
@@ -540,6 +582,7 @@ def es_horario_conforme(
     t = dt.time()
     dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
     dia_actual = dias_map[dt.weekday()]
+    dia_anterior = dias_map[(dt.weekday() - 1) % 7]
     tolerancia_eff = tolerancia_salida_min if (es_salida and tolerancia_salida_min > 0) else 0
 
     # Si alguna regla aplicable valida el marcaje, se considera conforme
@@ -562,35 +605,55 @@ def es_horario_conforme(
         h_ci_def = _obtener_valor_campo(regla, "hora_cierre", "20:30") or "20:30"
         ovn_def = bool(_obtener_valor_campo(regla, "cierre_dia_siguiente", False))
 
-        if cfg_dias and isinstance(cfg_dias, dict) and dia_actual in cfg_dias:
-            dia_info = cfg_dias[dia_actual]
-            if not dia_info.get("abierto", True):
-                continue
+        if cfg_dias and isinstance(cfg_dias, dict):
+            # Verificar turno de ayer que cruzó medianoche hacia esta madrugada
+            if dia_anterior in cfg_dias:
+                ayer_info = cfg_dias[dia_anterior]
+                if ayer_info.get("abierto", True):
+                    try:
+                        ap_a = ayer_info.get("apertura", h_ap_def) or h_ap_def
+                        ci_a = ayer_info.get("cierre", h_ci_def) or h_ci_def
+                        hap_a, map_a = map(int, str(ap_a).split(":")[:2])
+                        hci_a, mci_a = map(int, str(ci_a).split(":")[:2])
+                        t_ci_ayer = _sumar_minutos_time(time(hci_a, mci_a), tolerancia_eff)
+                        cruza_ayer = bool(ayer_info.get("cierre_dia_siguiente", False)) or (time(hci_a, mci_a) < time(hap_a, map_a))
+                        if cruza_ayer and t <= t_ci_ayer:
+                            return True
+                    except Exception:
+                        pass
 
-            try:
-                hora_ap = dia_info.get("apertura", h_ap_def) or h_ap_def
-                hora_ci = dia_info.get("cierre", h_ci_def) or h_ci_def
-                h_ap, m_ap = map(int, str(hora_ap).split(":")[:2])
-                h_ci, m_ci = map(int, str(hora_ci).split(":")[:2])
-                t_apertura = time(h_ap, m_ap)
-                t_cierre = _sumar_minutos_time(time(h_ci, m_ci), tolerancia_eff)
-                overnight = bool(dia_info.get("cierre_dia_siguiente", ovn_def))
+            if dia_actual in cfg_dias:
+                dia_info = cfg_dias[dia_actual]
+                if not dia_info.get("abierto", True):
+                    continue
 
-                if overnight:
-                    if t >= t_apertura or t <= t_cierre:
+                try:
+                    hora_ap = dia_info.get("apertura", h_ap_def) or h_ap_def
+                    hora_ci = dia_info.get("cierre", h_ci_def) or h_ci_def
+                    h_ap, m_ap = map(int, str(hora_ap).split(":")[:2])
+                    h_ci, m_ci = map(int, str(hora_ci).split(":")[:2])
+                    t_apertura = time(h_ap, m_ap)
+                    t_cierre_base = time(h_ci, m_ci)
+                    t_cierre = _sumar_minutos_time(t_cierre_base, tolerancia_eff)
+                    overnight = bool(dia_info.get("cierre_dia_siguiente", ovn_def)) or (t_cierre_base < t_apertura)
+
+                    if overnight:
+                        if t >= t_apertura:
+                            return True
+                    elif t_apertura <= t <= t_cierre:
                         return True
-                elif t_apertura <= t <= t_cierre:
+                except Exception:
                     return True
-            except Exception:
-                return True
         else:
             try:
                 h_ap, m_ap = map(int, str(h_ap_def).split(":")[:2])
                 h_ci, m_ci = map(int, str(h_ci_def).split(":")[:2])
                 t_apertura = time(h_ap, m_ap)
-                t_cierre = _sumar_minutos_time(time(h_ci, m_ci), tolerancia_eff)
+                t_cierre_base = time(h_ci, m_ci)
+                t_cierre = _sumar_minutos_time(t_cierre_base, tolerancia_eff)
+                ovn_eff = ovn_def or (t_cierre_base < t_apertura)
 
-                if ovn_def:
+                if ovn_eff:
                     if t >= t_apertura or t <= t_cierre:
                         return True
                 elif t_apertura <= t <= t_cierre:
@@ -786,25 +849,46 @@ async def activar_credencial_ia(db: AsyncSession, cred: CredencialProveedorIA) -
 
 
 async def probar_credencial_ia_guardada(db: AsyncSession, cred: CredencialProveedorIA) -> dict:
+    from app.core.database import AsyncSessionLocal
     from app.services.llm_client import CATALOGO_PROVEEDORES_IA, probar_cliente_llm
 
-    meta = CATALOGO_PROVEEDORES_IA.get(cred.provider_id, {})
+    cred_id = getattr(cred, "id", None)
+    provider_id = cred.provider_id
+    modelo = cred.modelo
+    base_url = cred.base_url
+    meta = CATALOGO_PROVEEDORES_IA.get(provider_id, {})
     plain_key = decrypt_api_key(cred.encrypted_api_key) if cred.encrypted_api_key else ""
+
+    es_sesion_real = isinstance(db, AsyncSession)
+    if es_sesion_real:
+        await db.close()
+
     if meta.get("requires_api_key", True) and not plain_key:
         res = {
             "ok": False,
             "latencia_ms": 0.0,
             "mensaje": "La credencial no tiene una API Key válida almacenada.",
-            "provider_id": cred.provider_id,
-            "modelo": cred.modelo,
+            "provider_id": provider_id,
+            "modelo": modelo,
         }
     else:
-        res = await probar_cliente_llm(cred.provider_id, plain_key, cred.modelo, cred.base_url)
+        res = await probar_cliente_llm(provider_id, plain_key, modelo, base_url)
 
-    cred.ultimo_test_ok = bool(res["ok"])
-    cred.ultimo_test_en = datetime.utcnow()
-    await db.commit()
-    await db.refresh(cred)
+    ahora_test = datetime.utcnow()
+    if es_sesion_real and cred_id is not None:
+        async with AsyncSessionLocal() as s_upd:
+            await s_upd.execute(
+                sql_update(CredencialProveedorIA)
+                .where(CredencialProveedorIA.id == cred_id)
+                .values(ultimo_test_ok=bool(res["ok"]), ultimo_test_en=ahora_test)
+            )
+            await s_upd.commit()
+    else:
+        cred.ultimo_test_ok = bool(res["ok"])
+        cred.ultimo_test_en = ahora_test
+        await db.commit()
+        if hasattr(db, "refresh"):
+            await db.refresh(cred)
     return res
 
 
@@ -954,8 +1038,10 @@ async def activar_configuracion_smtp(db: AsyncSession, cfg: ConfiguracionSMTP) -
 async def probar_configuracion_smtp_guardada(
     db: AsyncSession, cfg: ConfiguracionSMTP, destinatario: str
 ) -> tuple[bool, str]:
+    from app.core.database import AsyncSessionLocal
     from app.services.email_service import probar_envio_smtp
 
+    cfg_id = getattr(cfg, "id", None)
     pwd = decrypt_api_key(cfg.encrypted_password)
     datos = {
         "nombre": cfg.nombre,
@@ -968,11 +1054,26 @@ async def probar_configuracion_smtp_guardada(
         "from_email": cfg.from_email,
         "from_name": cfg.from_name,
     }
+    es_sesion_real = isinstance(db, AsyncSession)
+    if es_sesion_real:
+        await db.close()
+
     ok, msg = await probar_envio_smtp(datos, destinatario)
-    cfg.ultimo_test_ok = bool(ok)
-    cfg.ultimo_test_en = datetime.utcnow()
-    await db.commit()
-    await db.refresh(cfg)
+    ahora_test = datetime.utcnow()
+    if es_sesion_real and cfg_id is not None:
+        async with AsyncSessionLocal() as s_upd:
+            await s_upd.execute(
+                sql_update(ConfiguracionSMTP)
+                .where(ConfiguracionSMTP.id == cfg_id)
+                .values(ultimo_test_ok=bool(ok), ultimo_test_en=ahora_test)
+            )
+            await s_upd.commit()
+    else:
+        cfg.ultimo_test_ok = bool(ok)
+        cfg.ultimo_test_en = ahora_test
+        await db.commit()
+        if hasattr(db, "refresh"):
+            await db.refresh(cfg)
     return ok, msg
 
 

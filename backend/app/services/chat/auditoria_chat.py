@@ -1,7 +1,10 @@
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from app.core.database import AsyncSessionLocal
 from app.domain.chat_audit_models import ChatAuditLog
+
+logger = logging.getLogger(__name__)
 
 
 async def registrar_auditoria_chat(
@@ -36,8 +39,8 @@ async def registrar_auditoria_chat(
             )
             session.add(audit)
             await session.commit()
-    except Exception:
-        pass
+    except Exception as exc_audit:
+        logger.error(f"Error registrando auditoría de chat: {exc_audit}", exc_info=True)
 
 
 record_chat_audit = registrar_auditoria_chat

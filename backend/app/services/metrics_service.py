@@ -45,8 +45,9 @@ class MetricsService:
                 sector=sector,
                 tipo_vehiculo=tipo_vehiculo,
             )
-            solo_salidas = (direccion or "todos").strip().lower() in ("out", "solo_salida")
-            filtro_dir_metrica = "" if solo_salidas else "AND direccion = 'entrada'"
+            solo_salidas = (direccion or "todos").strip().lower() in ("out", "solo_salida", "salida")
+            dir_rec = "salida" if solo_salidas else "entrada"
+            filtro_dir_metrica = "AND direccion = 'salida'" if solo_salidas else "AND direccion = 'entrada'"
 
             sql = text(f"""
             WITH kpis AS (
@@ -55,8 +56,8 @@ class MetricsService:
                     0.0 AS horas_estudiante,
                     COALESCE(
                         ROUND(
-                            CAST(NULLIF(SUM(CASE WHEN direccion = 'entrada' THEN 1 ELSE 0 END), 0) AS FLOAT)
-                            / NULLIF(COUNT(DISTINCT CASE WHEN direccion = 'entrada' THEN patente_hash END), 0),
+                            CAST(NULLIF(SUM(CASE WHEN direccion = '{dir_rec}' THEN 1 ELSE 0 END), 0) AS FLOAT)
+                            / NULLIF(COUNT(DISTINCT CASE WHEN direccion = '{dir_rec}' THEN patente_hash END), 0),
                         1),
                         ROUND(CAST(COUNT(*) AS FLOAT) / NULLIF(COUNT(DISTINCT patente_hash), 0), 1),
                         0.0

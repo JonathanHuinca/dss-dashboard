@@ -3,14 +3,16 @@
 Protegido con autenticación JWT, RBAC por roles/permisos y Ley N° 21.719.
 """
 from datetime import date
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, BackgroundTasks, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_permission, validar_acceso_espacio
+from app.core.security import get_current_user, require_permission, require_role, validar_acceso_espacio
 from app.domain.auth_models import Usuario
 from app.services.attendance_service import AttendanceService
 from app.core.cache import (
@@ -22,6 +24,7 @@ from app.core.cache import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DESC_FECHA_YYYY_MM_DD = "YYYY-MM-DD"
 DESC_PAUSAS_BANO = "Incluir pausas de baño (3-15 min) en conformes"
@@ -519,7 +522,7 @@ async def get_salas(
 @router.post("/salas", summary="Registrar nueva sala dinámicamente")
 async def create_sala(
     payload: SalaBibliotecaCreate,
-    current_user: Usuario = Depends(get_current_user),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
     db: AsyncSession = Depends(get_db),
 ):
     validar_acceso_espacio(payload.espacio_id, current_user)
@@ -536,7 +539,7 @@ class SalaCapacidadUpdate(BaseModel):
 async def update_sala_capacidad(
     sala_id: int,
     payload: SalaCapacidadUpdate,
-    current_user: Usuario = Depends(get_current_user),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
     db: AsyncSession = Depends(get_db),
 ):
     validar_acceso_espacio(1, current_user)
@@ -861,7 +864,6 @@ async def get_raw_attendance_events(
 
 @router.get("/export-raw-csv", summary="Exportar microdatos de asistencia a CSV con registro de auditoría")
 async def export_raw_attendance_csv(
-    background_tasks:    BackgroundTasks,
     request:             Request,
     fecha_inicio:        Optional[date] = Query(None, description=DESC_FECHA_YYYY_MM_DD),
     fecha_fin:           Optional[date] = Query(None, description=DESC_FECHA_YYYY_MM_DD),
@@ -884,53 +886,58 @@ async def export_raw_attendance_csv(
     incluir_funcionarios: bool          = Query(True, description=DESC_INCLUIR_FUNCIONARIOS),
     incluir_sin_identificar: bool       = Query(True, description=DESC_INCLUIR_SIN_IDENTIFICAR),
     current_user:        Usuario        = Depends(require_permission("can_export")),
-    db:                  AsyncSession   = Depends(get_db),
 ):
     validar_acceso_espacio(espacio_id, current_user)
-    csv_content, total_count = await AttendanceService.export_raw_csv(
-        session=db,
-        espacio_id=espacio_id,
-        fecha_inicio=fecha_inicio,
-        fecha_fin=fecha_fin,
-        door=door,
-        search_hash=search_hash,
-        categoria=categoria,
-        alcance=alcance or "todos",
-        regimen_horario=regimen_horario or "todos",
-        direccion=direccion or "todos",
-        dias_semana=dias_semana,
-        perfil_visita=perfil_visita or "todos",
-        marcajes=marcajes or "todos",
-        sala=sala,
-        carrera=carrera,
-        facultad=facultad,
-        cohorte=cohorte,
-        incluir_pausas_bano=incluir_pausas_bano,
-        desduplicar_rafagas=desduplicar_rafagas,
-        incluir_funcionarios=incluir_funcionarios,
-        incluir_sin_identificar=incluir_sin_identificar,
-    )
-
     client_ip = request.client.host if request.client else "127.0.0.1"
     detalle = f"Filtros: puerta={door or 'todas'}, categoria={categoria or 'todas'}, alcance={alcance or 'todos'}, horario={regimen_horario or 'todos'}, direccion={direccion or 'todos'}"
-
-    from app.services.audit_service import record_download_audit
-    background_tasks.add_task(
-        record_download_audit,
-        usuario_id=current_user.id,
-        modulo="biblioteca",
-        formato="csv",
-        filtro_fecha_inicio=str(fecha_inicio) if fecha_inicio else None,
-        filtro_fecha_fin=str(fecha_fin) if fecha_fin else None,
-        filtro_detalle=detalle,
-        total_registros=total_count,
-        ip_origen=client_ip,
-    )
-
     filename = f"microdatos_asistencia_biblioteca_{fecha_inicio or 'inicio'}_{fecha_fin or 'fin'}.csv"
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
+
+    async def _generar_csv_con_auditoria():
+        conteo_ref = [0]
+        try:
+            async for chunk in AttendanceService.stream_raw_csv(
+                espacio_id=espacio_id,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                door=door,
+                search_hash=search_hash,
+                categoria=categoria,
+                alcance=alcance or "todos",
+                regimen_horario=regimen_horario or "todos",
+                direccion=direccion or "todos",
+                dias_semana=dias_semana,
+                perfil_visita=perfil_visita or "todos",
+                marcajes=marcajes or "todos",
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+                cohorte=cohorte,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
+                conteo_ref=conteo_ref,
+            ):
+                yield chunk
+        finally:
+            try:
+                from app.services.audit_service import record_download_audit
+                await record_download_audit(
+                    usuario_id=current_user.id,
+                    modulo="biblioteca",
+                    formato="csv",
+                    filtro_fecha_inicio=str(fecha_inicio) if fecha_inicio else None,
+                    filtro_fecha_fin=str(fecha_fin) if fecha_fin else None,
+                    filtro_detalle=detalle,
+                    total_registros=conteo_ref[0],
+                    ip_origen=client_ip,
+                )
+            except Exception as exc_aud:
+                logger.warning("Error registrando auditoría CSV asistencia: %s", exc_aud)
+
+    return StreamingResponse(
+        _generar_csv_con_auditoria(),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

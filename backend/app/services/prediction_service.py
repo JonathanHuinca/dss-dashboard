@@ -1,10 +1,11 @@
+from datetime import datetime
 import logging
 from typing import Dict, Any
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.tiempo import ahora_chile_naive
 from app.services.config_service import get_espacios_activos_capacidades
 from app.ml.prophet_service import predict_continuous, predict_next_7_days, predict_presence_continuous, _fetch_capacidades
-from app.ml.train_gbr_demand import predict_next_14_days
 from app.services.attendance_service import AttendanceService
 
 logger = logging.getLogger(__name__)
@@ -51,20 +52,6 @@ async def get_prophet_presence_forecast(db: AsyncSession, sala: str = "todas") -
             detail="Error interno al procesar el modelo predictivo de presencia"
         )
 
-async def get_gbr_forecast_14days(db: AsyncSession, espacio_id: int) -> Dict[str, Any]:
-    try:
-        result = await predict_next_14_days(db, espacio_id=espacio_id)
-        return result
-    except HTTPException as e:
-        logger.error(f"HTTPException en get_gbr_forecast_14days para {espacio_id}: {e.detail}")
-        raise
-    except Exception as e:
-        logger.error(f"Error getting GBR 14 days forecast for {espacio_id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error interno al procesar el modelo predictivo"
-        )
-
 async def get_visit_profiles(db: AsyncSession, espacio_id: int) -> Dict[str, Any]:
     """
     Alternativa A: Enfoque estadístico determinista en base de datos.
@@ -100,9 +87,31 @@ async def get_visit_profiles(db: AsyncSession, espacio_id: int) -> Dict[str, Any
             detail="Error interno al procesar el modelo predictivo"
         )
 
+def _filtrar_ventana_proximas_3h(pronostico: list[Dict[str, Any]], ahora_ref: datetime) -> list[Dict[str, Any]]:
+    """Extrae hasta 3 bloques horarios desde ahora; conserva entradas sin 'ds' para compatibilidad de tests."""
+    candidatos = []
+    for punto in pronostico or []:
+        ds_raw = punto.get("ds")
+        if not ds_raw:
+            candidatos.append(punto)
+            continue
+        try:
+            dt_p = datetime.fromisoformat(str(ds_raw).replace("Z", "+00:00"))
+            if dt_p.tzinfo is not None:
+                dt_p = dt_p.replace(tzinfo=None)
+            if dt_p >= ahora_ref.replace(minute=0, second=0, microsecond=0):
+                candidatos.append(punto)
+        except Exception:
+            candidatos.append(punto)
+    if not candidatos and pronostico:
+        return list(pronostico[:3])
+    return candidatos[:3]
+
+
 async def get_active_alerts(db: AsyncSession) -> Dict[str, Any]:
     try:
         UMBRAL_ALERTA = 0.85
+        ahora_cl = ahora_chile_naive()
         CAPACIDADES, fuente = await get_espacios_activos_capacidades(db)
         
         if not CAPACIDADES and fuente != "fallback":
@@ -139,7 +148,7 @@ async def get_active_alerts(db: AsyncSession) -> Dict[str, Any]:
                     res_pres = await predict_presence_continuous(db, sala=sub_key)
                     if res_pres.get("model_status", {}).get("status") == "unavailable":
                         continue
-                    proximas_3h = res_pres.get("pronostico_7d", [])[:3]
+                    proximas_3h = _filtrar_ventana_proximas_3h(res_pres.get("pronostico_7d", []), ahora_cl)
                     horas_sobre_umbral = [
                         f for f in proximas_3h if f["yhat"] >= cap_sub * UMBRAL_ALERTA
                     ]
@@ -175,7 +184,7 @@ async def get_active_alerts(db: AsyncSession) -> Dict[str, Any]:
                     res_veh = await predict_continuous(db, recinto="vehicular", sala=sub_key)
                     if res_veh.get("model_status", {}).get("status") == "unavailable":
                         continue
-                    proximas_3h = res_veh.get("pronostico_7d", [])[:3]
+                    proximas_3h = _filtrar_ventana_proximas_3h(res_veh.get("pronostico_7d", []), ahora_cl)
                     horas_sobre_umbral = [
                         f for f in proximas_3h if f["yhat"] >= cap_sub * UMBRAL_ALERTA
                     ]
@@ -198,7 +207,7 @@ async def get_active_alerts(db: AsyncSession) -> Dict[str, Any]:
             if model_status["status"] == "unavailable":
                 continue
 
-            proximas_3h = forecasts[:3]
+            proximas_3h = _filtrar_ventana_proximas_3h(forecasts, ahora_cl)
             horas_sobre_umbral = [
                 f for f in proximas_3h if f["yhat"] >= cap * UMBRAL_ALERTA
             ]

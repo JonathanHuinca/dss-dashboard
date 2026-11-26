@@ -9,7 +9,7 @@ from app.core.security import require_permission
 from app.core.validacion_red import sanitizar_error_credencial
 from app.api.v1.endpoints.config import check_ia_active
 
-router = APIRouter(dependencies=[Depends(check_ia_active)])
+router = APIRouter()
 
 SYSTEM_PROMPT = """Eres el Asistente Analitico Inteligente del Sistema de Soporte a Decisiones (DSS) de la Universidad Catolica de Temuco (Campus San Francisco - CSF).
 Tu funcion es responder consultas analiticas en lenguaje natural acerca de la afluencia, ocupacion, perfiles de permanencia, flujos vehiculares y correlacion con el calendario academico basandote estrictamente en los datos del sistema.
@@ -182,7 +182,7 @@ def _ejecutar_generacion_gemini(client, candidate_models: List[str], contents: l
             last_exception = exc
     return "", candidate_models[0] if candidate_models else "gemini-3.1-flash-lite", last_exception
 
-@router.get("/models")
+@router.get("/models", dependencies=[Depends(check_ia_active)])
 async def list_available_models():
     return {
         "models": [
@@ -200,72 +200,15 @@ async def list_available_models():
         "default": "gemini-3.1-flash-lite",
     }
 
-@router.post("/query", response_model=AssistantResponse)
-@router.post("/chat", response_model=AssistantResponse)
+@router.post("/query", response_model=AssistantResponse, deprecated=True)
+@router.post("/chat", response_model=AssistantResponse, deprecated=True)
 async def query_assistant(
     req: AssistantRequest,
     current_user=Depends(require_permission("can_use_ai")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.services.llm_client import build_llm_client
-
-    user_msg = (req.message or req.question or "").strip()
-    if not user_msg:
-        raise HTTPException(status_code=400, detail="Debe proporcionar un mensaje o pregunta")
-
-    selected_model = req.model if req.model in SUPPORTED_MODELS else "gemini-3.1-flash-lite"
-
-    try:
-        llm_client = await build_llm_client(db, espacio_id=1)
-        historial_txt = ""
-        if req.history:
-            lineas = [f"{'Usuario' if h.role == 'user' else 'Asistente'}: {h.content}" for h in req.history[-6:]]
-            historial_txt = "\nContexto reciente:\n" + "\n".join(lineas) + "\n\n"
-
-        modelo_activo = getattr(llm_client, "default_model", selected_model) or selected_model
-        generated_text = await llm_client.generate_response(
-            prompt=f"{historial_txt}Consulta actual: {user_msg}",
-            system_instruction=SYSTEM_PROMPT,
-            model=modelo_activo,
-            temperature=0.2,
-        )
-
-        if not generated_text:
-            fallback_text = build_offline_response(user_msg)
-            return AssistantResponse(
-                reply=fallback_text,
-                model_requested=selected_model,
-                model_used="local-analytics",
-                success=True,
-                live_llm=False,
-                error=None,
-            )
-
-        return AssistantResponse(
-            reply=generated_text,
-            model_requested=selected_model,
-            model_used=modelo_activo,
-            success=True,
-            live_llm=True,
-        )
-
-    except HTTPException:
-        fallback_reply = build_offline_response(user_msg)
-        return AssistantResponse(
-            reply=fallback_reply,
-            model_requested=selected_model,
-            model_used="local-analytics",
-            success=True,
-            live_llm=False,
-            error="Proveedor de IA no configurado. Respondiendo mediante base analítica local del DSS.",
-        )
-    except Exception as exc:
-        fallback_text = build_offline_response(user_msg)
-        return AssistantResponse(
-            reply=fallback_text,
-            model_requested=selected_model,
-            model_used="local-analytics",
-            success=True,
-            live_llm=False,
-            error=sanitizar_error_credencial(exc),
-        )
+    # Endpoint legado retirado: carecía de RLS por recinto, cuota diaria y auditoría ChatAuditLog
+    raise HTTPException(
+        status_code=410,
+        detail="Endpoint legado retirado por política de seguridad, RLS y auditoría. Utilice /api/chat.",
+    )

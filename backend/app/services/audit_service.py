@@ -2,8 +2,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
-from sqlalchemy import select, func
-from sqlalchemy.orm import joinedload
+from sqlalchemy import case, func, select
+from sqlalchemy.orm import contains_eager, joinedload
 
 from app.core.database import AsyncSessionLocal
 from app.core.tiempo import inicio_dia_chile
@@ -53,7 +53,6 @@ async def get_download_audit_history(
     async with AsyncSessionLocal() as session:
         stmt = (
             select(DownloadAuditLog)
-            .options(joinedload(DownloadAuditLog.usuario))
             .order_by(DownloadAuditLog.timestamp.desc())
         )
         count_stmt = select(func.count(DownloadAuditLog.id))
@@ -66,16 +65,22 @@ async def get_download_audit_history(
             count_stmt = count_stmt.where(DownloadAuditLog.formato == formato.lower())
         if search:
             search_pattern = f"%{search}%"
-            stmt = stmt.join(DownloadAuditLog.usuario, isouter=True).where(
+            stmt = (
+                stmt.outerjoin(Usuario, DownloadAuditLog.usuario_id == Usuario.id)
+                .options(contains_eager(DownloadAuditLog.usuario))
+                .where(
+                    (DownloadAuditLog.filtro_detalle.ilike(search_pattern))
+                    | (Usuario.email.ilike(search_pattern))
+                    | (Usuario.nombre_completo.ilike(search_pattern))
+                )
+            )
+            count_stmt = count_stmt.outerjoin(Usuario, DownloadAuditLog.usuario_id == Usuario.id).where(
                 (DownloadAuditLog.filtro_detalle.ilike(search_pattern))
                 | (Usuario.email.ilike(search_pattern))
                 | (Usuario.nombre_completo.ilike(search_pattern))
             )
-            count_stmt = count_stmt.join(DownloadAuditLog.usuario, isouter=True).where(
-                (DownloadAuditLog.filtro_detalle.ilike(search_pattern))
-                | (Usuario.email.ilike(search_pattern))
-                | (Usuario.nombre_completo.ilike(search_pattern))
-            )
+        else:
+            stmt = stmt.options(joinedload(DownloadAuditLog.usuario))
 
         total = (await session.execute(count_stmt)).scalar() or 0
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -102,20 +107,24 @@ async def get_download_audit_history(
             for r in rows
         ]
 
-        # Estadísticas acumuladas usando medianoche real en Chile (columna usa GETDATE local)
+        # Estadísticas acumuladas calculadas en SQL sin cargar toda la tabla a RAM
         today_start_cl = inicio_dia_chile().replace(tzinfo=None)
 
-        all_stmt = select(DownloadAuditLog)
-        all_rows = (await session.execute(all_stmt)).scalars().all()
+        stats_stmt = select(
+            func.count(DownloadAuditLog.id),
+            func.sum(case((DownloadAuditLog.timestamp >= today_start_cl, 1), else_=0)),
+            func.sum(case((DownloadAuditLog.formato == "csv", 1), else_=0)),
+            func.sum(case((DownloadAuditLog.formato == "pdf", 1), else_=0)),
+        )
+        agg = (await session.execute(stats_stmt)).one()
+        total_descargas = int(agg[0] or 0)
+        descargas_hoy = int(agg[1] or 0)
+        descargas_csv = int(agg[2] or 0)
+        descargas_pdf = int(agg[3] or 0)
 
-        total_descargas = len(all_rows)
-        descargas_hoy = sum(1 for r in all_rows if r.timestamp and r.timestamp >= today_start_cl)
-        descargas_csv = sum(1 for r in all_rows if r.formato == "csv")
-        descargas_pdf = sum(1 for r in all_rows if r.formato == "pdf")
-
-        modulos_count: Dict[str, int] = {}
-        for r in all_rows:
-            modulos_count[r.modulo] = modulos_count.get(r.modulo, 0) + 1
+        modulos_stmt = select(DownloadAuditLog.modulo, func.count(DownloadAuditLog.id)).group_by(DownloadAuditLog.modulo)
+        modulos_rows = (await session.execute(modulos_stmt)).all()
+        modulos_count: Dict[str, int] = {str(m): int(c) for m, c in modulos_rows if m is not None}
 
         return {
             "items": items,

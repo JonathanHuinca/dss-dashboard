@@ -148,6 +148,15 @@ class HikCentralOpenAPIAdapter(IngestionAdapter):
             verify_ssl = True
 
         async def _do_req():
+            from app.core.recursos_http import obtener_http_client
+            cliente_comp = obtener_http_client()
+            if cliente_comp is not None and verify_ssl is True:
+                if method.upper() == "POST":
+                    resp = await cliente_comp.post(url, json=payload or {}, headers=headers, timeout=10.0)
+                else:
+                    resp = await cliente_comp.get(url, headers=headers, timeout=10.0)
+                resp.raise_for_status()
+                return resp.json()
             async with httpx.AsyncClient(timeout=10.0, verify=verify_ssl) as client:
                 if method.upper() == "POST":
                     resp = await client.post(url, json=payload or {}, headers=headers)

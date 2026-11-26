@@ -34,11 +34,13 @@ class CsvIngestionAdapter(IngestionAdapter):
 
         def _process():
             try:
-                df = pd.read_csv(io.BytesIO(self.file_bytes), encoding='utf-8')
+                with io.BytesIO(self.file_bytes) as bio:
+                    df = pd.read_csv(bio, encoding='utf-8')
             except UnicodeDecodeError as e:
                 logger.error(f"Error UnicodeDecodeError leyendo CSV UTF-8, intentando latin-1: {e}")
                 try:
-                    df = pd.read_csv(io.BytesIO(self.file_bytes), encoding='latin-1')
+                    with io.BytesIO(self.file_bytes) as bio:
+                        df = pd.read_csv(bio, encoding='latin-1')
                 except Exception as ex:
                     logger.error(f"Error leyendo CSV latin-1: {ex}")
                     return []
@@ -47,7 +49,7 @@ class CsvIngestionAdapter(IngestionAdapter):
                 return []
 
             # CRITICO Ley 21.719: Eliminar PII antes de cualquier procesamiento
-            df.drop(columns=["Persona", "Telefono", "Lista de vehiculos"], errors="ignore", inplace=True)
+            df = df.drop(columns=["Persona", "Telefono", "Lista de vehiculos"], errors="ignore")
 
             dtos = []
             for _, row in df.iterrows():
@@ -116,13 +118,14 @@ class CsvIngestionAdapter(IngestionAdapter):
         def _process():
             try:
                 # XLSX de HikCentral tiene 6 filas de metadatos antes del header
-                df = pd.read_excel(io.BytesIO(self.file_bytes), skiprows=6)
+                with io.BytesIO(self.file_bytes) as bio:
+                    df = pd.read_excel(bio, skiprows=6)
             except Exception as e:
                 logger.error(f"Error leyendo XLSX vehicular: {e}")
                 return []
 
             # CRITICO Ley 21.719: Eliminar PII antes de procesar
-            df.drop(columns=["Persona", "Telefono", "Lista de vehiculos"], errors="ignore", inplace=True)
+            df = df.drop(columns=["Persona", "Telefono", "Lista de vehiculos"], errors="ignore")
 
             dtos = []
             for _, row in df.iterrows():
@@ -163,11 +166,13 @@ class CsvIngestionAdapter(IngestionAdapter):
 
         def _process():
             try:
-                df = pd.read_csv(io.BytesIO(self.file_bytes), encoding='utf-8')
+                with io.BytesIO(self.file_bytes) as bio:
+                    df = pd.read_csv(bio, encoding='utf-8')
             except UnicodeDecodeError as e:
                 logger.error(f"Error UnicodeDecodeError calendario UTF-8: {e}")
                 try:
-                    df = pd.read_csv(io.BytesIO(self.file_bytes), encoding='latin-1')
+                    with io.BytesIO(self.file_bytes) as bio:
+                        df = pd.read_csv(bio, encoding='latin-1')
                 except Exception as ex:
                     logger.error(f"No se pudo leer calendario en latin-1: {ex}")
                     return []

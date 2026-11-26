@@ -174,8 +174,21 @@ def obtener_catalogo_proveedores() -> List[Dict[str, Any]]:
     return list(CATALOGO_PROVEEDORES_IA.values())
 
 
+def _cerrar_cliente_interno_seguro(cliente: Any) -> None:
+    c_interno = getattr(cliente, "client", None)
+    if c_interno is not None:
+        close_fn = getattr(c_interno, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+
+
 def limpiar_cache_clientes_llm() -> None:
-    """Invalida instancias cacheadas tras cambios o eliminaciones de credenciales."""
+    """Invalida y cierra instancias cacheadas tras cambios o eliminaciones de credenciales."""
+    for cli in list(_clientes_llm_cache.values()):
+        _cerrar_cliente_interno_seguro(cli)
     _clientes_llm_cache.clear()
     _modelos_disponibles_cache.clear()
 
@@ -273,14 +286,15 @@ class LLMClientBase(ABC):
         pass
 
     @abstractmethod
-    async def generate_narrative_stream(
+    def generate_narrative_stream(
         self,
         prompt: str,
         system_instruction: Optional[str] = None,
         model_name: Optional[str] = None,
         history: Optional[List[Dict[str, str]]] = None,
     ) -> AsyncIterator[str]:
-        pass
+        """Genera tokens narrativos en streaming asíncrono."""
+        raise NotImplementedError
 
     @abstractmethod
     async def consult_intent(
@@ -431,11 +445,6 @@ def obtener_esquema_herramientas_neutral(espacio_id: int = 1) -> List[Dict[str, 
                 "parameters": _schema_obj({"espacio_id": prop_esp1, "fecha_inicio": prop_f_ini, "fecha_fin": prop_f_fin}),
             },
             {
-                "name": "consultar_pronostico_14d",
-                "description": "Consulta la proyección de demanda a 14 días con HistGradientBoosting y calendario institucional.",
-                "parameters": _schema_obj({"espacio_id": prop_esp1}),
-            },
-            {
                 "name": "consultar_campana_24h",
                 "description": "Consulta el régimen de Horario 24 Horas y Campaña de Exámenes en Sala 2 Pecera CSF04, flujo nocturno según horarios_operacion configurado y aforo delta.",
                 "parameters": _schema_obj({"espacio_id": prop_esp1, "fecha_inicio": prop_f_ini, "fecha_fin": prop_f_fin}),
@@ -543,7 +552,8 @@ def _normalizar_resultado_tool_call(
     anio_objetivo: int,
 ) -> Dict[str, Any]:
     args = dict(raw_args) if raw_args else {}
-    args.setdefault("espacio_id", espacio_id)
+    # Fuerza siempre el espacio validado por RLS e ignora el espacio_id del LLM
+    args["espacio_id"] = espacio_id
     for f_key in ["fecha_inicio", "fecha_fin"]:
         if f_key in args and isinstance(args[f_key], str):
             m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", args[f_key])
@@ -724,11 +734,11 @@ class GeminiClient(LLMClientBase):
         from google import genai
         self.client = genai.Client(api_key=self.api_key)
 
-    def _resolve_model(self, model: Optional[str] = None) -> str:
+    async def _resolve_model(self, model: Optional[str] = None) -> str:
         chosen_model = model or self.default_model
         if chosen_model in ["gemini-1.5-flash", "gemini-3.5-flash", "gemini-3.6-flash"]:
             chosen_model = settings.MODELO_GEMINI_POR_DEFECTO
-        modelos_disponibles = listar_modelos_disponibles(self.client)
+        modelos_disponibles = await asyncio.to_thread(listar_modelos_disponibles, self.client)
         if chosen_model in modelos_disponibles:
             return chosen_model
         logger.warning("Modelo '%s' no disponible. Usando fallback %s.", chosen_model, settings.MODELO_GEMINI_POR_DEFECTO)
@@ -749,7 +759,7 @@ class GeminiClient(LLMClientBase):
     ) -> Dict[str, Any]:
         from google.genai import types
 
-        effective_model = self._resolve_model(model_name)
+        effective_model = await self._resolve_model(model_name)
         tools = get_gemini_tools(espacio_id)
         system_instruction, match_anio_usuario, anio_objetivo = _construir_system_prompt_herramientas(
             prompt, espacio_id, grafico_contexto, fecha_inicio, fecha_fin, periodo_label, filtros, anio_referencia
@@ -761,33 +771,34 @@ class GeminiClient(LLMClientBase):
             temperature=0.1,
         )
 
-        modelos_candidatos = list(dict.fromkeys([
-            effective_model,
-            settings.MODELO_GEMINI_POR_DEFECTO,
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3.5-flash-lite",
-            "gemini-3.8-flash",
-            "gemini-3-flash-preview",
-        ]))
+        modelo_secundario = (
+            settings.MODELO_GEMINI_POR_DEFECTO
+            if effective_model != settings.MODELO_GEMINI_POR_DEFECTO
+            else "gemini-3.1-flash-lite"
+        )
+        modelos_candidatos = list(dict.fromkeys([effective_model, modelo_secundario]))[:2]
 
         gemini_contents = _construir_contents_gemini(prompt, history)
         res = None
-        for mod_cand in modelos_candidatos:
-            if not mod_cand:
-                continue
-            try:
-                async def _llamar(m=mod_cand):
-                    return await self.client.aio.models.generate_content(
-                        model=m,
-                        contents=gemini_contents,
-                        config=config,
-                    )
-                res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
-                if res:
-                    break
-            except Exception as e_mod:
-                logger.warning("Error Gemini analyze_query_with_tools (%s): %s", mod_cand, sanitizar_error_credencial(e_mod, self.api_key))
+        try:
+            async with asyncio.timeout(25):
+                for mod_cand in modelos_candidatos:
+                    if not mod_cand:
+                        continue
+                    try:
+                        async def _llamar(m=mod_cand):
+                            return await self.client.aio.models.generate_content(
+                                model=m,
+                                contents=gemini_contents,
+                                config=config,
+                            )
+                        res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
+                        if res:
+                            break
+                    except Exception as e_mod:
+                        logger.warning("Error Gemini analyze_query_with_tools (%s): %s", mod_cand, sanitizar_error_credencial(e_mod, self.api_key))
+        except TimeoutError:
+            logger.warning("Timeout global (25s) en Gemini analyze_query_with_tools.")
 
         try:
             if res and res.function_calls:
@@ -812,43 +823,47 @@ class GeminiClient(LLMClientBase):
     ) -> AsyncIterator[str]:
         from google.genai import types
 
-        effective_model = self._resolve_model(model_name)
+        effective_model = await self._resolve_model(model_name)
         config = types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2)
-        candidatos_stream = list(dict.fromkeys([
-            effective_model,
-            settings.MODELO_GEMINI_POR_DEFECTO,
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3.5-flash-lite",
-            "gemini-3.8-flash",
-            "gemini-3-flash-preview",
-        ]))
+        modelo_secundario = (
+            settings.MODELO_GEMINI_POR_DEFECTO
+            if effective_model != settings.MODELO_GEMINI_POR_DEFECTO
+            else "gemini-3.1-flash-lite"
+        )
+        candidatos_stream = list(dict.fromkeys([effective_model, modelo_secundario]))[:2]
 
         gemini_contents = _construir_contents_gemini(prompt, history)
         chunks_yielded = 0
         stream_exitoso = False
 
-        for mod_stream in candidatos_stream:
-            if not mod_stream:
-                continue
-            try:
-                res = self.client.aio.models.generate_content_stream(
-                    model=mod_stream,
-                    contents=gemini_contents,
-                    config=config,
-                )
-                stream = await res if inspect.iscoroutine(res) else res
-                async for chunk in stream:
-                    if chunk and chunk.text:
-                        chunks_yielded += 1
-                        yield chunk.text
-                stream_exitoso = True
-                break
-            except Exception as e:
-                logger.warning("Error Gemini stream (%s): %s", mod_stream, sanitizar_error_credencial(e, self.api_key))
-                if chunks_yielded > 0:
-                    yield " (Consulta completada de forma parcial por interrupción del servicio)."
-                    return
+        try:
+            async with asyncio.timeout(25):
+                for mod_stream in candidatos_stream:
+                    if not mod_stream:
+                        continue
+                    try:
+                        res = self.client.aio.models.generate_content_stream(
+                            model=mod_stream,
+                            contents=gemini_contents,
+                            config=config,
+                        )
+                        stream = await res if inspect.iscoroutine(res) else res
+                        async for chunk in stream:
+                            if chunk and chunk.text:
+                                chunks_yielded += 1
+                                yield chunk.text
+                        stream_exitoso = True
+                        break
+                    except Exception as e:
+                        logger.warning("Error Gemini stream (%s): %s", mod_stream, sanitizar_error_credencial(e, self.api_key))
+                        if chunks_yielded > 0:
+                            yield " (Consulta completada de forma parcial por interrupción del servicio)."
+                            return
+        except TimeoutError:
+            logger.warning("Timeout global (25s) en Gemini generate_narrative_stream.")
+            if chunks_yielded > 0:
+                yield " (Consulta completada de forma parcial por tiempo de espera agotado)."
+                return
 
         if not stream_exitoso and chunks_yielded == 0:
             yield _fallback_offline(prompt)["text"]
@@ -864,39 +879,40 @@ class GeminiClient(LLMClientBase):
     ) -> Optional[str]:
         from google.genai import types
 
-        effective_model = self._resolve_model(model)
+        effective_model = await self._resolve_model(model)
         config = types.GenerateContentConfig(temperature=temperature)
         if system_instruction:
             config.system_instruction = system_instruction
         if response_mime_type:
             config.response_mime_type = response_mime_type
 
-        candidatos_resp = list(dict.fromkeys([
-            effective_model,
-            settings.MODELO_GEMINI_POR_DEFECTO,
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3.5-flash-lite",
-            "gemini-3.8-flash",
-            "gemini-3-flash-preview",
-        ]))
+        modelo_secundario = (
+            settings.MODELO_GEMINI_POR_DEFECTO
+            if effective_model != settings.MODELO_GEMINI_POR_DEFECTO
+            else "gemini-3.1-flash-lite"
+        )
+        candidatos_resp = list(dict.fromkeys([effective_model, modelo_secundario]))[:2]
 
         gemini_contents = _construir_contents_gemini(prompt, history)
-        for mod_resp in candidatos_resp:
-            if not mod_resp:
-                continue
-            try:
-                async def _llamar(m=mod_resp):
-                    return await self.client.aio.models.generate_content(
-                        model=m,
-                        contents=gemini_contents,
-                        config=config,
-                    )
-                res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
-                if res and res.text:
-                    return res.text
-            except Exception as e:
-                logger.warning("Error Gemini generate_response (%s): %s", mod_resp, sanitizar_error_credencial(e, self.api_key))
+        try:
+            async with asyncio.timeout(25):
+                for mod_resp in candidatos_resp:
+                    if not mod_resp:
+                        continue
+                    try:
+                        async def _llamar(m=mod_resp):
+                            return await self.client.aio.models.generate_content(
+                                model=m,
+                                contents=gemini_contents,
+                                config=config,
+                            )
+                        res = await ejecutar_con_reintentos_y_tiempo_espera(_llamar)
+                        if res and res.text:
+                            return res.text
+                    except Exception as e:
+                        logger.warning("Error Gemini generate_response (%s): %s", mod_resp, sanitizar_error_credencial(e, self.api_key))
+        except TimeoutError:
+            logger.warning("Timeout global (25s) en Gemini generate_response.")
 
         return _fallback_offline(prompt)["text"]
 
@@ -945,8 +961,19 @@ class ClaudeClient(LLMClientBase):
 
     async def _post_messages(self, payload: Dict[str, Any], timeout_seg: Optional[float] = None) -> Dict[str, Any]:
         import httpx
+        from app.core.recursos_http import obtener_http_client
 
         timeout = timeout_seg or float(getattr(settings, "TIEMPO_ESPERA_LLM_SEGUNDOS", 20))
+        cliente_comp = obtener_http_client()
+        if cliente_comp is not None:
+            resp = await cliente_comp.post(
+                f"{self.base_url}/v1/messages",
+                headers=self._headers(),
+                json=payload,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/v1/messages",
@@ -1051,9 +1078,12 @@ class ClaudeClient(LLMClientBase):
 
         chunks_yielded = 0
         timeout = float(getattr(settings, "TIEMPO_ESPERA_LLM_SEGUNDOS", 20))
+        from app.core.recursos_http import obtener_http_client
+
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("POST", f"{self.base_url}/v1/messages", headers=self._headers(), json=payload) as resp:
+            cliente_comp = obtener_http_client()
+            if cliente_comp is not None:
+                async with cliente_comp.stream("POST", f"{self.base_url}/v1/messages", headers=self._headers(), json=payload, timeout=timeout) as resp:
                     resp.raise_for_status()
                     async for linea in resp.aiter_lines():
                         if not linea or not linea.startswith("data:"):
@@ -1070,6 +1100,25 @@ class ClaudeClient(LLMClientBase):
                             if delta.get("type") == "text_delta" and delta.get("text"):
                                 chunks_yielded += 1
                                 yield delta["text"]
+            else:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream("POST", f"{self.base_url}/v1/messages", headers=self._headers(), json=payload) as resp:
+                        resp.raise_for_status()
+                        async for linea in resp.aiter_lines():
+                            if not linea or not linea.startswith("data:"):
+                                continue
+                            raw_json = linea[5:].strip()
+                            if not raw_json or raw_json == "[DONE]":
+                                continue
+                            try:
+                                evento = json.loads(raw_json)
+                            except json.JSONDecodeError:
+                                continue
+                            if evento.get("type") == "content_block_delta":
+                                delta = evento.get("delta", {})
+                                if delta.get("type") == "text_delta" and delta.get("text"):
+                                    chunks_yielded += 1
+                                    yield delta["text"]
         except Exception as e:
             logger.warning("Error Claude stream: %s", sanitizar_error_credencial(e, self.api_key))
             if chunks_yielded > 0:
@@ -1132,8 +1181,19 @@ class OpenAICompatibleClient(LLMClientBase):
 
     async def _post_completions(self, payload: Dict[str, Any], timeout_seg: Optional[float] = None) -> Dict[str, Any]:
         import httpx
+        from app.core.recursos_http import obtener_http_client
 
         timeout = timeout_seg or float(getattr(settings, "TIEMPO_ESPERA_LLM_SEGUNDOS", 20))
+        cliente_comp = obtener_http_client()
+        if cliente_comp is not None:
+            resp = await cliente_comp.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -1268,9 +1328,12 @@ class OpenAICompatibleClient(LLMClientBase):
 
         chunks_yielded = 0
         timeout = float(getattr(settings, "TIEMPO_ESPERA_LLM_SEGUNDOS", 20))
+        from app.core.recursos_http import obtener_http_client
+
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream("POST", f"{self.base_url}/chat/completions", headers=self._headers(), json=payload) as resp:
+            cliente_comp = obtener_http_client()
+            if cliente_comp is not None:
+                async with cliente_comp.stream("POST", f"{self.base_url}/chat/completions", headers=self._headers(), json=payload, timeout=timeout) as resp:
                     resp.raise_for_status()
                     async for linea in resp.aiter_lines():
                         if not linea or not linea.startswith("data:"):
@@ -1288,6 +1351,26 @@ class OpenAICompatibleClient(LLMClientBase):
                             if delta_txt:
                                 chunks_yielded += 1
                                 yield delta_txt
+            else:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream("POST", f"{self.base_url}/chat/completions", headers=self._headers(), json=payload) as resp:
+                        resp.raise_for_status()
+                        async for linea in resp.aiter_lines():
+                            if not linea or not linea.startswith("data:"):
+                                continue
+                            raw_json = linea[5:].strip()
+                            if not raw_json or raw_json == "[DONE]":
+                                continue
+                            try:
+                                evento = json.loads(raw_json)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = evento.get("choices") or []
+                            if choices:
+                                delta_txt = choices[0].get("delta", {}).get("content")
+                                if delta_txt:
+                                    chunks_yielded += 1
+                                    yield delta_txt
         except Exception as e:
             logger.warning("Error %s stream: %s", self.provider_id, sanitizar_error_credencial(e, self.api_key))
             if chunks_yielded > 0:
@@ -1358,6 +1441,7 @@ async def probar_cliente_llm(
     inicio = time.perf_counter()
     pid = (provider_id or "gemini").strip().lower()
     secreto = (api_key or "").strip()
+    cliente = None
     try:
         cliente = crear_cliente_llm(pid, secreto, modelo, base_url)
         if isinstance(cliente, GeminiClient):
@@ -1415,6 +1499,9 @@ async def probar_cliente_llm(
             "provider_id": pid,
             "modelo": modelo,
         }
+    finally:
+        if cliente is not None:
+            _cerrar_cliente_interno_seguro(cliente)
 
 
 async def build_llm_client(db: AsyncSession, espacio_id: int) -> LLMClientBase:

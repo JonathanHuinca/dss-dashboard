@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class ConfiguracionEspaciosResponse(BaseModel):
@@ -27,7 +27,7 @@ class LLMProviderUpdate(BaseModel):
 
 
 import json
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, model_validator, field_validator
 
 
 class HorarioOperacionBase(BaseModel):
@@ -131,6 +131,12 @@ class ContingenciaCrear(BaseModel):
     hora_inicio: Optional[str] = None
     hora_fin: Optional[str] = None
 
+    @model_validator(mode="after")
+    def validar_rango_fechas(self):
+        if self.fecha_inicio and self.fecha_fin and self.fecha_inicio > self.fecha_fin:
+            raise ValueError("fecha_inicio no puede ser posterior a fecha_fin")
+        return self
+
 
 class ContingenciaRespuesta(ContingenciaCrear):
     id: int
@@ -153,6 +159,12 @@ class EventoCalendarioActualizar(BaseModel):
 class EventoCalendarioCrear(EventoCalendarioActualizar):
     fecha_inicio: date
     fecha_fin: Optional[date] = None
+
+    @model_validator(mode="after")
+    def validar_rango_fechas(self):
+        if self.fecha_inicio and self.fecha_fin and self.fecha_inicio > self.fecha_fin:
+            raise ValueError("fecha_inicio no puede ser posterior a fecha_fin")
+        return self
 
 
 # ---------------------------------------------------------------------------

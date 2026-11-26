@@ -5,6 +5,7 @@ import asyncio
 import gc
 import io
 import logging
+import re
 import tempfile
 import traceback
 import unicodedata
@@ -587,20 +588,27 @@ def _get_target_keywords_set(tipo: str) -> Set[str]:
 
 def _estimate_excel_rows_fast(file_bytes: bytes, sheet_names: List[str], header_row: int = 0) -> int:
     """Calcula el número de filas en milisegundos usando openpyxl en modo read_only."""
+    wb = None
     try:
         from openpyxl import load_workbook
-        wb = load_workbook(io.BytesIO(file_bytes), read_only=True, keep_links=False)
-        total = 0
-        for s in sheet_names:
-            if s in wb.sheetnames:
-                ws = wb[s]
-                if ws.max_row and ws.max_row > header_row:
-                    total += (ws.max_row - header_row)
-        wb.close()
-        return total
+        with io.BytesIO(file_bytes) as bio:
+            wb = load_workbook(bio, read_only=True, keep_links=False)
+            total = 0
+            for s in sheet_names:
+                if s in wb.sheetnames:
+                    ws = wb[s]
+                    if ws.max_row and ws.max_row > header_row:
+                        total += (ws.max_row - header_row)
+            return total
     except Exception as e:
         logger.warning(f"No fue posible estimar filas con openpyxl: {e}")
         return 0
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
 
 
 def _detect_header_row_csv(
@@ -663,7 +671,16 @@ def _detect_header_row_excel(
     (ej. CSF02 y CSF04) y descartando hojas no procesables (ej. Notas, Presentación, TD).
     Retorna (header_row_index, df, total_rows_estimated).
     """
-    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    with io.BytesIO(file_bytes) as bio, pd.ExcelFile(bio) as xl:
+        return _analizar_hojas_excel_con_xl(xl, file_bytes, target_keywords, max_rows)
+
+
+def _analizar_hojas_excel_con_xl(
+    xl: pd.ExcelFile,
+    file_bytes: bytes,
+    target_keywords: Set[str],
+    max_rows: Optional[int] = None,
+) -> Tuple[int, pd.DataFrame, int]:
     sheet_names = xl.sheet_names
 
     excluded_names = {
@@ -790,6 +807,7 @@ def _sanitize_preview_value(col_name: str, val: Any, tipo: str = "") -> Any:
 def es_archivo_institucional_uct(file_source: Any) -> bool:
     """Detecta si el archivo es un Excel multitabla con el esquema institucional UCT."""
     import openpyxl
+    wb = None
     try:
         if isinstance(file_source, (str, Path)):
             wb = openpyxl.load_workbook(file_source, read_only=True, keep_links=False)
@@ -798,10 +816,82 @@ def es_archivo_institucional_uct(file_source: Any) -> bool:
         else:
             return False
         sheets = {_normalize_str(s) for s in wb.sheetnames}
-        wb.close()
         return ("estudiante_carrera" in sheets or "estudiante" in sheets) and ("campus" in sheets or "carrera_programa" in sheets)
     except Exception:
         return False
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+
+_TOKENS_SALIDA_IO = frozenset({"salida", "out", "egreso", "exit", "retroceder", "retroceso"})
+_TOKENS_ENTRADA_IO = frozenset({"entrada", "in", "ingreso", "entry", "avanzar", "avance"})
+
+
+def _extraer_tokens_io(texto: Optional[str]) -> set[str]:
+    if not texto:
+        return set()
+    return set(re.findall(r"[a-z]+", str(texto).strip().lower()))
+
+
+def _tiene_token_puerta_io(puerta: Optional[str]) -> bool:
+    tokens = _extraer_tokens_io(puerta)
+    return bool(tokens & (_TOKENS_ENTRADA_IO | _TOKENS_SALIDA_IO))
+
+
+def _clasificar_sentido_tokens(
+    sentido_raw: Optional[str],
+    puerta_raw: Optional[str] = None,
+    default: str = "entrada",
+) -> str:
+    tokens_s = _extraer_tokens_io(sentido_raw)
+    if tokens_s & _TOKENS_SALIDA_IO:
+        return "salida"
+    if tokens_s & _TOKENS_ENTRADA_IO:
+        return "entrada"
+    tokens_p = _extraer_tokens_io(puerta_raw)
+    if tokens_p & _TOKENS_SALIDA_IO:
+        return "salida"
+    if tokens_p & _TOKENS_ENTRADA_IO:
+        return "entrada"
+    return default
+
+
+def _leer_muestra_institucional_uct_sync(file_bytes: bytes) -> tuple[int, pd.DataFrame, int]:
+    import openpyxl
+    header_row_index = 0
+    df = pd.DataFrame()
+    total_rows = 0
+    wb_prev = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    try:
+        if "ESTUDIANTE_CARRERA" in wb_prev.sheetnames:
+            ws_ec = wb_prev["ESTUDIANTE_CARRERA"]
+            rows_ec = list(ws_ec.iter_rows(values_only=True))
+            if len(rows_ec) > 2:
+                header_row_index = 2
+                detected_cols = [str(c).strip() for c in rows_ec[2] if c is not None and str(c).strip()]
+                sample_data = []
+                for r in rows_ec[3:8]:
+                    if any(c is not None for c in r):
+                        sample_data.append({detected_cols[i]: (str(r[i]) if i < len(r) and r[i] is not None else "") for i in range(min(len(detected_cols), len(r)))})
+                df = pd.DataFrame(sample_data)
+                total_rows = len(rows_ec) - 3
+    finally:
+        wb_prev.close()
+    return header_row_index, df, total_rows
+
+
+def _estimar_filas_excel_sync(file_bytes: bytes, header_idx: int) -> int:
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, keep_links=False)
+    try:
+        candidate_sheets = [s for s in wb.sheetnames if _normalize_str(s) not in {"notas", "nota", "metadata", "instrucciones", "readme", "presentacion", "presentación", "td", "salas"}]
+        return _estimate_excel_rows_fast(file_bytes, candidate_sheets, header_idx)
+    finally:
+        wb.close()
 
 
 async def inspect_uploaded_file(
@@ -828,22 +918,8 @@ async def inspect_uploaded_file(
     # Autodetección de esquema institucional UCT (11 tablas)
     if is_excel and es_archivo_institucional_uct(file_bytes):
         tipo_clean = "institucional_uct"
-        import openpyxl
         try:
-            wb_prev = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-            if "ESTUDIANTE_CARRERA" in wb_prev.sheetnames:
-                ws_ec = wb_prev["ESTUDIANTE_CARRERA"]
-                rows_ec = list(ws_ec.iter_rows(values_only=True))
-                if len(rows_ec) > 2:
-                    header_row_index = 2
-                    detected_cols = [str(c).strip() for c in rows_ec[2] if c is not None and str(c).strip()]
-                    sample_data = []
-                    for r in rows_ec[3:8]:
-                        if any(c is not None for c in r):
-                            sample_data.append({detected_cols[i]: (str(r[i]) if i < len(r) and r[i] is not None else "") for i in range(min(len(detected_cols), len(r)))})
-                    df = pd.DataFrame(sample_data)
-                    total_rows = len(rows_ec) - 3
-            wb_prev.close()
+            header_row_index, df, total_rows = await asyncio.to_thread(_leer_muestra_institucional_uct_sync, file_bytes)
         except Exception as e_inst:
             logger.warning(f"Error cargando muestra institucional UCT: {e_inst}")
             header_row_index, df, total_rows = 0, pd.DataFrame(), 0
@@ -1140,12 +1216,8 @@ async def validar_archivo_ingesta(
             tipo_clean = "asistencia"
 
     if is_excel:
-        import openpyxl
         try:
-            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, keep_links=False)
-            candidate_sheets = [s for s in wb.sheetnames if _normalize_str(s) not in {"notas", "nota", "metadata", "instrucciones", "readme", "presentacion", "presentación", "td", "salas"}]
-            total_filas = _estimate_excel_rows_fast(file_bytes, candidate_sheets, header_idx)
-            wb.close()
+            total_filas = await asyncio.to_thread(_estimar_filas_excel_sync, file_bytes, header_idx)
         except Exception:
             total_filas = len(df)
         if total_filas <= 0:
@@ -1458,21 +1530,14 @@ async def _mapear_df_a_dtos_asistencia(
 
         # Determinación de sentido según columna Sentido o código de Puerta
         puerta_actual = puerta_nominal
-        es_salida = False
+        sentido_res = "entrada"
         if "sentido" in col_map:
-            s_txt = str(row.get(col_map["sentido"], "")).strip().lower()
-            if any(k in s_txt for k in ["salida", "out", "egreso"]):
-                es_salida = True
-            elif any(k in s_txt for k in ["entrada", "in", "ingreso"]):
-                es_salida = False
-            elif puerta_actual:
-                p_txt = puerta_actual.lower()
-                es_salida = any(k in p_txt for k in ["out", "salida", "egreso"])
+            sentido_res = _clasificar_sentido_tokens(str(row.get(col_map["sentido"], "")), puerta_actual)
         elif puerta_actual:
-            p_txt = puerta_actual.lower()
-            es_salida = any(k in p_txt for k in ["out", "salida", "egreso"])
+            sentido_res = _clasificar_sentido_tokens(None, puerta_actual)
+        es_salida = (sentido_res == "salida")
 
-        if "sentido" in col_map or (puerta_actual and ("in" in puerta_actual.lower() or "out" in puerta_actual.lower())):
+        if "sentido" in col_map or _tiene_token_puerta_io(puerta_actual):
             if es_salida:
                 door_out = puerta_actual
                 door_in = None
@@ -1602,20 +1667,53 @@ async def procesar_archivo_institucional_uct(
 ) -> dict:
     """
     Carga de forma transaccional y topológica el modelo institucional UCT (11 tablas)
-    respetando nombres exactos, claves foráneas, SCD-2 para historial de situaciones
-    y anonimización / cifrado según Ley N° 21.719. Sincroniza simultáneamente
-    'dim_estudiante_carrera' para habilitar cruces curriculares inmediatos.
+    garantizando el cierre determinista del workbook en finally.
     """
     import openpyxl
 
-    if isinstance(file_source, (str, Path)):
-        wb = await asyncio.to_thread(openpyxl.load_workbook, file_source, data_only=True)
-        with open(file_source, "rb") as f:
-            f_bytes = f.read()
-        file_hash = calcular_hash_archivo(f_bytes)
-    else:
-        wb = await asyncio.to_thread(openpyxl.load_workbook, io.BytesIO(file_source), data_only=True)
-        file_hash = calcular_hash_archivo(file_source)
+    wb = None
+    try:
+        if isinstance(file_source, (str, Path)):
+            wb = await asyncio.to_thread(openpyxl.load_workbook, file_source, data_only=True)
+            with open(file_source, "rb") as f:
+                f_bytes = f.read()
+            file_hash = calcular_hash_archivo(f_bytes)
+        else:
+            def _abrir_desde_bytes() -> Any:
+                with io.BytesIO(file_source) as bio:
+                    return openpyxl.load_workbook(bio, data_only=True)
+
+            wb = await asyncio.to_thread(_abrir_desde_bytes)
+            file_hash = calcular_hash_archivo(file_source)
+
+        return await _procesar_archivo_institucional_uct_con_wb(
+            wb=wb,
+            file_hash=file_hash,
+            filename=filename,
+            db=db,
+            modo_solapamiento=modo_solapamiento,
+            usuario_id=usuario_id,
+            job_id=job_id,
+            espacio_id=espacio_id,
+        )
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+
+async def _procesar_archivo_institucional_uct_con_wb(
+    wb: Any,
+    file_hash: str,
+    filename: str,
+    db: AsyncSession,
+    modo_solapamiento: str = "merge",
+    usuario_id: Optional[int] = None,
+    job_id: Optional[uuid.UUID] = None,
+    espacio_id: int = 1,
+) -> dict:
 
     if not job_id:
         job_id = uuid.uuid4()
@@ -2099,6 +2197,32 @@ async def ejecutar_ingesta_atomica(
     db: AsyncSession,
     usuario_id: Optional[int] = None,
 ) -> IngestionProcessResponse:
+    """Ejecuta la ingesta atómica serializada por semáforo para evitar carreras y bloqueos en SQL Server."""
+    async with _semaforo_ingesta:
+        return await _ejecutar_ingesta_atomica_impl(
+            file_bytes=file_bytes,
+            filename=filename,
+            tipo=tipo,
+            espacio_id=espacio_id,
+            modo_solapamiento=modo_solapamiento,
+            clave_enlace=clave_enlace,
+            modo_enlace=modo_enlace,
+            db=db,
+            usuario_id=usuario_id,
+        )
+
+
+async def _ejecutar_ingesta_atomica_impl(
+    file_bytes: bytes,
+    filename: str,
+    tipo: str,
+    espacio_id: int,
+    modo_solapamiento: str,
+    clave_enlace: str,
+    modo_enlace: str,
+    db: AsyncSession,
+    usuario_id: Optional[int] = None,
+) -> IngestionProcessResponse:
     """
     Ejecuta el procesamiento definitivo bajo una sola transacción atómica (BEGIN TRANSACTION).
     En modo 'overwrite' purga el rango previo; en modo 'merge' inserta únicamente los no duplicados.
@@ -2232,6 +2356,7 @@ async def ejecutar_ingesta_atomica(
                 )
                 db.add(job)
 
+        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id)
         return IngestionProcessResponse(
             job_id=str(job_id),
             status="completed",
@@ -2289,13 +2414,8 @@ async def ejecutar_ingesta_atomica(
                 calidad = "unknown"
 
             camara_val = str(row.get(col_map.get("camara", ""), "LPR-01")).strip()
-            dir_raw = str(row.get(col_map.get("direccion", ""), "")).strip().lower()
-            if any(k in dir_raw for k in ["avanzar", "entrada", "in", "ingreso"]):
-                direccion = "entrada"
-            elif any(k in dir_raw for k in ["retroceder", "salida", "out", "egreso"]):
-                direccion = "salida"
-            else:
-                direccion = "entrada"
+            dir_raw = str(row.get(col_map.get("direccion", ""), ""))
+            direccion = _clasificar_sentido_tokens(dir_raw, default="entrada")
 
             tipo_v = str(row.get(col_map.get("tipo", ""), "")).strip() or None
             marca_v = str(row.get(col_map.get("marca", ""), "")).strip() or None
@@ -2380,6 +2500,7 @@ async def ejecutar_ingesta_atomica(
                 )
                 db.add(job)
 
+        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id)
         return IngestionProcessResponse(
             job_id=str(job_id),
             status="completed",
@@ -2478,6 +2599,7 @@ async def ejecutar_ingesta_atomica(
         db.add(job)
         await db.commit()
 
+        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id)
         return IngestionProcessResponse(
             job_id=str(job_id),
             status="completed",
@@ -2515,6 +2637,7 @@ async def ejecutar_ingesta_atomica(
             async with db.begin():
                 db.add(job)
 
+        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id)
         return IngestionProcessResponse(
             job_id=str(job_id),
             status="completed",
@@ -2540,15 +2663,12 @@ async def enriquecer_asistencia_retroactiva(
     clave_enlace: str = "auto",
 ) -> Dict[str, Any]:
     """
-    Enriquece retroactivamente los eventos de asistencia que tengan 'Sin carrera catalogada'
-    o carrera nula cruzando en caliente con 'dim_estudiante_carrera' (RF30).
+    Enriquece retroactivamente los eventos de asistencia sin carrera mediante UPDATE ... FROM por lotes.
     """
     tipo_enlace = clave_enlace.lower().strip() if clave_enlace else "auto"
-    stmt_cat = select(DimEstudianteCarrera)
-    res_cat = await db.execute(stmt_cat)
-    estudiantes = res_cat.scalars().all()
+    hay_cat = (await db.execute(text("SELECT TOP 1 1 FROM dim_estudiante_carrera"))).scalar()
 
-    if not estudiantes:
+    if not hay_cat:
         return {
             "status": "warning",
             "espacio_id": espacio_id,
@@ -2557,60 +2677,73 @@ async def enriquecer_asistencia_retroactiva(
             "detalle": "El catálogo dim_estudiante_carrera se encuentra vacío. Cargue previamente el maestro curricular.",
         }
 
-    por_pid = {}
-    por_rut = {}
-    por_mat = {}
-
-    for e in estudiantes:
-        if e.person_id_hash:
-            por_pid[e.person_id_hash] = (e.carr_nombre, e.facultad)
-        if e.rut_hash:
-            por_rut[e.rut_hash] = (e.carr_nombre, e.facultad)
-        if e.matricula:
-            m_norm = str(e.matricula).strip().lower()
-            por_mat[m_norm] = (e.carr_nombre, e.facultad)
-            por_pid[pseudonymize_person(m_norm)] = (e.carr_nombre, e.facultad)
-
-    stmt_ev = (
-        select(EventoAsistencia)
-        .where(
-            EventoAsistencia.espacio_id == espacio_id,
-            (EventoAsistencia.carrera == "Sin carrera catalogada") | (EventoAsistencia.carrera.is_(None)),
-        )
+    pendientes_iniciales = int(
+        (
+            await db.execute(
+                text("""
+                    SELECT COUNT(*) FROM eventos_asistencia
+                    WHERE espacio_id = :espacio_id
+                      AND (carrera = 'Sin carrera catalogada' OR carrera IS NULL)
+                """),
+                {"espacio_id": espacio_id},
+            )
+        ).scalar()
+        or 0
     )
-    res_ev = await db.execute(stmt_ev)
-    eventos = res_ev.scalars().all()
+
+    if tipo_enlace == "rut":
+        condicion_cruce = "dec.rut_hash = ea.person_id_hash"
+    elif tipo_enlace in ("pid", "matricula"):
+        condicion_cruce = "dec.person_id_hash = ea.person_id_hash"
+    else:
+        condicion_cruce = "(dec.person_id_hash = ea.person_id_hash OR dec.rut_hash = ea.person_id_hash)"
+
+    sql_lote = text(f"""
+        UPDATE TOP (5000) ea
+        SET ea.carrera = dec.carr_nombre,
+            ea.facultad = COALESCE(dec.facultad, ea.facultad)
+        FROM eventos_asistencia ea
+        CROSS APPLY (
+            SELECT TOP 1 carr_nombre, facultad
+            FROM dim_estudiante_carrera dec
+            WHERE {condicion_cruce}
+              AND dec.carr_nombre IS NOT NULL
+              AND dec.carr_nombre <> ''
+            ORDER BY dec.id DESC
+        ) dec
+        WHERE ea.espacio_id = :espacio_id
+          AND (ea.carrera = 'Sin carrera catalogada' OR ea.carrera IS NULL)
+    """)
 
     enriquecidos = 0
-    pendientes = 0
+    while True:
+        res_upd = await db.execute(sql_lote, {"espacio_id": espacio_id})
+        filas = int(res_upd.rowcount or 0)
+        enriquecidos += filas
+        await db.commit()
+        if filas < 5000:
+            break
 
-    for ev in eventos:
-        if tipo_enlace == "pid":
-            match = por_pid.get(ev.person_id_hash)
-        elif tipo_enlace == "rut":
-            match = por_rut.get(ev.person_id_hash)
-        else:
-            match = por_pid.get(ev.person_id_hash) or por_rut.get(ev.person_id_hash)
-        if match:
-            carr, fac = match
-            if carr:
-                ev.carrera = carr
-                if fac:
-                    ev.facultad = fac
-                enriquecidos += 1
-            else:
-                pendientes += 1
-        else:
-            pendientes += 1
-
-    await db.commit()
+    pendientes = int(
+        (
+            await db.execute(
+                text("""
+                    SELECT COUNT(*) FROM eventos_asistencia
+                    WHERE espacio_id = :espacio_id
+                      AND (carrera = 'Sin carrera catalogada' OR carrera IS NULL)
+                """),
+                {"espacio_id": espacio_id},
+            )
+        ).scalar()
+        or 0
+    )
 
     return {
         "status": "completed",
         "espacio_id": espacio_id,
         "enriquecidos": enriquecidos,
         "pendientes": pendientes,
-        "total_evaluados": len(eventos),
+        "total_evaluados": max(pendientes_iniciales, enriquecidos + pendientes),
         "detalle": f"Proceso retroactivo finalizado. Se enriquecieron {enriquecidos} eventos con su carrera oficial.",
     }
 
@@ -2625,22 +2758,49 @@ _semaforo_ingesta = asyncio.Semaphore(1)
 async def limpiar_trabajos_ingesta_huerfanos() -> int:
     """
     Marca como 'failed' los trabajos huérfanos que quedaron en 'processing' o 'queued'
-    debido a un reinicio o detención del servidor API.
+    tras un reinicio y elimina archivos temporales PII remanentes del volumen de ingesta.
     """
+    from app.core.config import settings
+
     async with AsyncSessionLocal() as db:
         stmt = select(IngestionJob).where(IngestionJob.estado.in_(["processing", "queued"]))
         res = await db.execute(stmt)
         huerfanos = res.scalars().all()
-        if not huerfanos:
-            return 0
-        ahora = datetime.now(timezone.utc)
-        for job in huerfanos:
-            job.estado = "failed"
-            job.error_detail = "Trabajo huérfano interrumpido por reinicio del servidor API."
-            job.completado_en = ahora
-        await db.commit()
-        logger.warning(f"[ingesta] Se marcaron {len(huerfanos)} trabajos huérfanos como 'failed'.")
-        return len(huerfanos)
+        ids_huerfanos = {str(job.job_id) for job in huerfanos}
+        if huerfanos:
+            ahora = datetime.now(timezone.utc)
+            for job in huerfanos:
+                job.estado = "failed"
+                job.error_detail = "Trabajo huérfano interrumpido por reinicio del servidor API."
+                job.completado_en = ahora
+            await db.commit()
+            logger.warning(f"[ingesta] Se marcaron {len(huerfanos)} trabajos huérfanos como 'failed'.")
+
+    # Limpieza física de archivos temporales PII en DIRECTORIO_INGESTA
+    try:
+        dir_ingesta = Path(settings.DIRECTORIO_INGESTA)
+        if dir_ingesta.exists():
+            archivos_eliminados = 0
+            for item in dir_ingesta.iterdir():
+                if not item.is_file():
+                    continue
+                nombre = item.name
+                es_de_huerfano = any(
+                    nombre.startswith(f"{jid}_") or nombre.startswith(f"temp_{jid}_")
+                    for jid in ids_huerfanos
+                )
+                if es_de_huerfano or nombre.startswith("temp_"):
+                    try:
+                        item.unlink(missing_ok=True)
+                        archivos_eliminados += 1
+                    except Exception as exc_del:
+                        logger.warning(f"[ingesta] No se pudo borrar archivo huérfano {nombre}: {exc_del}")
+            if archivos_eliminados:
+                logger.info(f"[ingesta] Eliminados {archivos_eliminados} archivos PII huérfanos del volumen.")
+    except Exception as exc_dir:
+        logger.warning(f"[ingesta] Error limpiando directorio de ingesta huérfano: {exc_dir}")
+
+    return len(ids_huerfanos)
 
 
 async def invalidar_caches_recinto_y_actualizar_predicciones(espacio_id: int) -> None:
@@ -2662,16 +2822,11 @@ async def invalidar_caches_recinto_y_actualizar_predicciones(espacio_id: int) ->
         logger.warning(f"[ingesta] Error invalidando caché de modelos: {exc}")
 
     try:
-        from app.api.v1.endpoints.chat import _cache_resultados_herramientas, CHAT_CACHE
-        _cache_resultados_herramientas.clear()
-        CHAT_CACHE.clear()
+        from app.services.chat import limpiar_cache_herramientas_chat
+        limpiar_cache_herramientas_chat()
         logger.info("[ingesta] Caché de herramientas analíticas de chat invalidada.")
     except Exception:
         pass
-
-    try:
-        from app.ml.prophet_service import predict_next_7_days
-        await asyncio.to_thread(predict_next_7_days, espacio_id=espacio_id, recalcular=True)
         logger.info(f"[ingesta] Predicciones de 7 días actualizadas para espacio {espacio_id}.")
     except Exception as exc:
         logger.debug(f"[ingesta] Actualización de predicciones omitida o pendiente de modelos: {exc}")
@@ -2737,7 +2892,7 @@ def _procesar_lote_asistencia_sync(
         c for c in lote_df.columns
         if any(k in _normalize_str(c) for k in ["persona", "nombre", "telefono", "teléfono", "correo", "email"])
     ]
-    lote_df.drop(columns=cols_pii, errors="ignore", inplace=True)
+    lote_df = lote_df.drop(columns=cols_pii, errors="ignore")
 
     col_map = {}
     norm_detected = [_normalize_str(c) for c in lote_df.columns]
@@ -2850,23 +3005,36 @@ def _procesar_lote_asistencia_sync(
         facultad_res = facultad_res or "Sin facultad"
 
         puerta_actual = puerta_nominal
-        es_salida = False
-        if "sentido" in col_map:
-            s_txt = str(row.get(col_map["sentido"], "")).strip().lower()
-            if any(k in s_txt for k in ["salida", "out", "egreso"]):
-                es_salida = True
-            elif any(k in s_txt for k in ["entrada", "in", "ingreso"]):
-                es_salida = False
-            elif puerta_actual:
-                es_salida = any(k in puerta_actual.lower() for k in ["out", "salida", "egreso"])
-        elif puerta_actual:
-            es_salida = any(k in puerta_actual.lower() for k in ["out", "salida", "egreso"])
-
-        if es_salida:
+        if pe_dt is not None and us_dt is not None:
+            door_in = puerta_actual
+            door_out = puerta_actual
+            salida_imputada = False
+            entrada_imputada = False
+        elif "sentido" in col_map or _tiene_token_puerta_io(puerta_actual):
+            sentido_raw = str(row.get(col_map["sentido"], "")) if "sentido" in col_map else None
+            es_salida = _clasificar_sentido_tokens(sentido_raw, puerta_actual) == "salida"
+            if es_salida:
+                door_in = None
+                door_out = puerta_actual
+                us_dt = us_dt or event_time
+                pe_dt = None
+                salida_imputada = True
+                entrada_imputada = False
+            else:
+                door_in = puerta_actual
+                door_out = None
+                pe_dt = pe_dt or event_time
+                us_dt = None
+                salida_imputada = False
+                entrada_imputada = False
+        elif pe_dt is not None:
+            door_in = puerta_actual
+            door_out = None
+            salida_imputada = False
+            entrada_imputada = False
+        elif us_dt is not None:
             door_in = None
             door_out = puerta_actual
-            us_dt = event_time
-            pe_dt = None
             salida_imputada = True
             entrada_imputada = False
         else:
@@ -2918,7 +3086,7 @@ def _procesar_lote_vehicular_sync(
         c for c in lote_df.columns
         if any(k in _normalize_str(c) for k in ["telefono", "teléfono", "lista de vehiculos", "lista de vehículos", "nombre", "correo", "email"])
     ]
-    lote_df.drop(columns=cols_pii, errors="ignore", inplace=True)
+    lote_df = lote_df.drop(columns=cols_pii, errors="ignore")
 
     col_map = {}
     for c in lote_df.columns:
@@ -2957,13 +3125,8 @@ def _procesar_lote_vehicular_sync(
             calidad = "unknown"
 
         camara_val = str(row.get(col_map.get("camara", ""), "LPR-01")).strip()
-        dir_raw = str(row.get(col_map.get("direccion", ""), "")).strip().lower()
-        if any(k in dir_raw for k in ["avanzar", "entrada", "in", "ingreso"]):
-            direccion = "entrada"
-        elif any(k in dir_raw for k in ["retroceder", "salida", "out", "egreso"]):
-            direccion = "salida"
-        else:
-            direccion = "entrada"
+        dir_raw = str(row.get(col_map.get("direccion", ""), ""))
+        direccion = _clasificar_sentido_tokens(dir_raw, default="entrada")
 
         tipo_v = str(row.get(col_map.get("tipo", ""), "")).strip() or None
         marca_v = str(row.get(col_map.get("marca", ""), "")).strip() or None
@@ -2984,6 +3147,21 @@ def _procesar_lote_vehicular_sync(
             )
         )
     return dtos_veh
+
+
+def _calcular_rango_fechas_archivo_sync(ruta_archivo: Path, tipo_clean: str) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Recorre los lotes del archivo en hilo trabajador para obtener el rango temporal global antes de overwrite."""
+    min_global: Optional[datetime] = None
+    max_global: Optional[datetime] = None
+    for chunk_df in _iterar_lotes_dataframe(ruta_archivo, tipo_clean, chunk_size=10000):
+        if chunk_df.empty:
+            continue
+        c_min, c_max = extraer_rango_fechas(chunk_df)
+        if c_min and (min_global is None or c_min < min_global):
+            min_global = c_min
+        if c_max and (max_global is None or c_max > max_global):
+            max_global = c_max
+    return min_global, max_global
 
 
 async def procesar_archivo_por_lotes(
@@ -3023,6 +3201,36 @@ async def procesar_archivo_por_lotes(
                 )
                 await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id)
                 return
+
+            # Limpieza única del rango/catálogo previa al procesamiento por lotes en modo overwrite
+            if modo_solapamiento == "overwrite":
+                if tipo_clean == "curricular":
+                    await db.execute(delete(DimEstudianteCarrera))
+                    await db.commit()
+                elif tipo_clean in ("asistencia", "marcajes_torniquete", "vehicular"):
+                    min_ow, max_ow = await asyncio.to_thread(
+                        _calcular_rango_fechas_archivo_sync,
+                        ruta_archivo,
+                        tipo_clean,
+                    )
+                    if min_ow is not None and max_ow is not None:
+                        if tipo_clean == "vehicular":
+                            await db.execute(
+                                delete(EventoVehicular).where(
+                                    EventoVehicular.espacio_id == espacio_id,
+                                    EventoVehicular.time >= min_ow,
+                                    EventoVehicular.time <= max_ow,
+                                )
+                            )
+                        else:
+                            await db.execute(
+                                delete(EventoAsistencia).where(
+                                    EventoAsistencia.espacio_id == espacio_id,
+                                    EventoAsistencia.time >= min_ow,
+                                    EventoAsistencia.time <= max_ow,
+                                )
+                            )
+                        await db.commit()
 
             # Precargar catálogo curricular una sola vez si es asistencia
             maestro_estudiantes = {}
@@ -3160,10 +3368,16 @@ async def procesar_archivo_por_lotes(
 
         except Exception as exc:
             logger.error(f"[ingesta] Error procesando job {job_id}: {exc}\n{traceback.format_exc()}")
-            job.estado = "failed"
-            job.error_detail = str(exc)
-            job.completado_en = datetime.now(timezone.utc)
-            await db.commit()
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            job_fallido = await db.get(IngestionJob, job_id)
+            if job_fallido is not None:
+                job_fallido.estado = "failed"
+                job_fallido.error_detail = str(exc)[:2000]
+                job_fallido.completado_en = datetime.now(timezone.utc)
+                await db.commit()
 
 
 async def encolar_y_procesar_ingesta(

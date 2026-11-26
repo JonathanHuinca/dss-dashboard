@@ -10,7 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.core.config import settings, contexto_url_frontend
-from app.core.database import AsyncSessionLocal
+from app.core.database import AsyncSessionLocal, engine
+from app.core.recursos_http import (
+    cancelar_tareas_fondo,
+    cerrar_http_client,
+    crear_tarea_fondo,
+    iniciar_http_client,
+)
 from app.core.security import ip_whitelist_middleware, get_current_user
 from app.core.startup_seed import run_startup_seed
 from app.api.v1.router import api_router
@@ -23,6 +29,7 @@ logger = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await iniciar_http_client()
     if not settings.GEMINI_API_KEY or not settings.GEMINI_API_KEY.strip():
         logger.warning("Aviso: GEMINI_API_KEY no está configurada en el entorno; el asistente de IA operará en modo limitado.")
 
@@ -65,7 +72,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"[startup] Carga en segundo plano de hechos con aviso: {exc_snap}")
             await precalentar_cache_modulos()
 
-        asyncio.create_task(_restaurar_hechos_y_precalentar())
+        crear_tarea_fondo(_restaurar_hechos_y_precalentar(), nombre="restaurar_hechos_y_precalentar")
     except Exception as exc_cache:
         logger.warning(f"[startup] No se pudo iniciar precalentamiento de caché: {exc_cache}")
 
@@ -75,6 +82,14 @@ async def lifespan(app: FastAPI):
         if settings.PLANIFICADOR_ACTIVO:
             from app.core.planificador import detener_planificador
             await detener_planificador()
+        await cancelar_tareas_fondo()
+        try:
+            from app.services.llm_client import limpiar_cache_clientes_llm
+            limpiar_cache_clientes_llm()
+        except Exception:
+            pass
+        await cerrar_http_client()
+        await engine.dispose()
 
 
 es_produccion = settings.is_production
@@ -125,24 +140,29 @@ async def sincronizar_url_frontend_middleware(request: Request, call_next):
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
 
     if origin and origin.startswith(("http://", "https://")):
-        base_detectada = origin.rstrip("/")
+        parsed = urlparse(origin)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            base_detectada = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
     elif referer and referer.startswith(("http://", "https://")):
         parsed = urlparse(referer)
-        if parsed.scheme and parsed.netloc:
-            base_detectada = f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            base_detectada = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
     elif host and not host.startswith(("api:", "indicadoreshikcentral-api-dev", "127.0.0.1:8000", "localhost:8000")):
-        esquema = "https" if "uct.cl" in host else proto
-        base_detectada = f"{esquema}://{host}".rstrip("/")
+        esquema = "https" if "uct.cl" in host.lower() else proto.lower()
+        parsed = urlparse(f"{esquema}://{host.strip()}")
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            base_detectada = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
 
     if base_detectada:
-        if "indicadoreshikcentral.dev.uct.cl" in base_detectada:
+        if base_detectada == URL_DEV_UCT_HTTP:
             base_detectada = URL_DEV_UCT_HTTPS
-        settings.FRONTEND_URL = base_detectada
-        token_ctx = contexto_url_frontend.set(base_detectada)
-        try:
-            return await call_next(request)
-        finally:
-            contexto_url_frontend.reset(token_ctx)
+        # Solo acepta orígenes institucionales explícitos y nunca muta settings.FRONTEND_URL
+        if base_detectada in settings.origenes_frontend_permitidos:
+            token_ctx = contexto_url_frontend.set(base_detectada)
+            try:
+                return await call_next(request)
+            finally:
+                contexto_url_frontend.reset(token_ctx)
 
     return await call_next(request)
 
@@ -207,6 +227,7 @@ async def readiness_check():
 
     modelos_esperados = [
         "prophet_biblioteca_active.joblib",
+        "prophet_presencia_todas_active.joblib",
         "prophet_vehicular_active.joblib",
     ]
     modelos_disponibles = {m: (directorio_modelos / m).exists() for m in modelos_esperados}

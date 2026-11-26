@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import unicodedata
@@ -50,7 +51,7 @@ async def exportar_grafico_individual_excel(
             filtros={},
             graficos=[payload],
         )
-        contenido_excel = ExcelExportService.generar_excel_nativo(solicitud)
+        contenido_excel = await asyncio.to_thread(ExcelExportService.generar_excel_nativo, solicitud)
         nombre_limpio = sanear_nombre_archivo_header(payload.id)
         nombre_archivo = f"{nombre_limpio}_nativo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
@@ -99,7 +100,7 @@ async def exportar_consolidado_excel(
                 detail="Debe incluir al menos un gráfico para exportar.",
             )
 
-        contenido_excel = ExcelExportService.generar_excel_nativo(solicitud)
+        contenido_excel = await asyncio.to_thread(ExcelExportService.generar_excel_nativo, solicitud)
         mod_slug = sanear_nombre_archivo_header(solicitud.modulo_nombre).lower()
         nombre_archivo = f"Reporte_Consolidado_{mod_slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 

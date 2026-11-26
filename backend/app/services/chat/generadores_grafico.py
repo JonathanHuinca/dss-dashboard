@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Any, Dict, List
 import pandas as pd
 import plotly.graph_objects as go
@@ -9,6 +10,31 @@ from app.services.chat.fechas_chat import MONTH_NAMES
 
 FONDO_TRANSPARENTE = "rgba(0,0,0,0)"
 FUENTE_DEFAULT = "Inter, sans-serif"
+
+
+async def _anio_activo_vista(db: AsyncSession, vista: str, espacio_id: int) -> int:
+    try:
+        res = await db.execute(
+            text(f"SELECT YEAR(MAX(bucket)) FROM {vista} WITH (NOEXPAND) WHERE espacio_id = :espacio_id"),
+            {"espacio_id": espacio_id},
+        )
+        anio = res.scalar()
+        if anio:
+            return int(anio)
+    except Exception:
+        pass
+    return datetime.now().year
+
+
+def _rango_meses_sargable(anio: int, mes_inicio: int, mes_fin: int) -> tuple[datetime, datetime]:
+    m_ini = max(1, min(12, int(mes_inicio)))
+    m_fin = max(m_ini, min(12, int(mes_fin)))
+    ini = datetime(anio, m_ini, 1, 0, 0, 0)
+    if m_fin == 12:
+        fin = datetime(anio + 1, 1, 1, 0, 0, 0)
+    else:
+        fin = datetime(anio, m_fin + 1, 1, 0, 0, 0)
+    return ini, fin
 
 
 def serialize_fig(fig) -> Dict[str, Any]:
@@ -25,36 +51,39 @@ async def generate_monthly_chart(db: AsyncSession, dataset_tipo: str, mes_num: i
     """Genera gráfico Plotly de afluencia mensual con desglose diario."""
     nombre_mes = MONTH_NAMES.get(mes_num, f'Mes {mes_num}')
     if dataset_tipo == 'estacionamiento':
+        anio = await _anio_activo_vista(db, "aforo_horario_estacionamiento", 2)
+        ini, fin = _rango_meses_sargable(anio, mes_num, mes_num)
         sql = """
             SELECT CAST(bucket AS DATE) as fecha,
-                   FORMAT(CAST(bucket AS DATE), 'dd MMM') as etiqueta,
                    SUM(entradas) as entradas,
                    SUM(salidas) as salidas
-            FROM aforo_horario_estacionamiento
-            WHERE MONTH(bucket) = :mes_num
-            GROUP BY CAST(bucket AS DATE), FORMAT(CAST(bucket AS DATE), 'dd MMM')
+            FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+            WHERE espacio_id = :espacio_id
+              AND bucket >= :inicio AND bucket < :fin
+            GROUP BY CAST(bucket AS DATE)
             ORDER BY fecha ASC
         """
-        res = await db.execute(text(sql), {"mes_num": mes_num})
+        res = await db.execute(text(sql), {"espacio_id": 2, "inicio": ini, "fin": fin})
         rows = [dict(r._mapping) for r in res.all()]
         df = pd.DataFrame(rows)
         if df.empty:
             fallback_sql = """
                 SELECT TOP 20
                        CAST(bucket AS DATE) as fecha,
-                       FORMAT(CAST(bucket AS DATE), 'dd MMM') as etiqueta,
                        SUM(entradas) as entradas,
                        SUM(salidas) as salidas
-                FROM aforo_horario_estacionamiento
-                GROUP BY CAST(bucket AS DATE), FORMAT(CAST(bucket AS DATE), 'dd MMM')
+                FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+                WHERE espacio_id = :espacio_id
+                GROUP BY CAST(bucket AS DATE)
                 ORDER BY fecha ASC
             """
-            res = await db.execute(text(fallback_sql))
+            res = await db.execute(text(fallback_sql), {"espacio_id": 2})
             rows = [dict(r._mapping) for r in res.all()]
             df = pd.DataFrame(rows)
             nombre_mes = 'Reciente'
         if df.empty:
             return None, None, f"No se encontraron registros de estacionamiento para {nombre_mes}."
+        df['etiqueta'] = pd.to_datetime(df['fecha']).dt.strftime('%d %b')
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=df['etiqueta'],
@@ -88,38 +117,41 @@ async def generate_monthly_chart(db: AsyncSession, dataset_tipo: str, mes_num: i
             f"a lo largo de {len(df)} jornadas monitoreadas, con un promedio diario de {prom_dia:,} vehículos."
         )
     else:
+        anio = await _anio_activo_vista(db, "aforo_horario_biblioteca", 1)
+        ini, fin = _rango_meses_sargable(anio, mes_num, mes_num)
         sql = """
             SELECT CAST(bucket AS DATE) as fecha,
-                   FORMAT(CAST(bucket AS DATE), 'dd MMM') as etiqueta,
                    SUM(ingresos) as ingresos,
                    SUM(salidas) as salidas,
                    SUM(personas_unicas) as personas_unicas
-            FROM aforo_horario_biblioteca
-            WHERE MONTH(bucket) = :mes_num
-            GROUP BY CAST(bucket AS DATE), FORMAT(CAST(bucket AS DATE), 'dd MMM')
+            FROM aforo_horario_biblioteca WITH (NOEXPAND)
+            WHERE espacio_id = :espacio_id
+              AND bucket >= :inicio AND bucket < :fin
+            GROUP BY CAST(bucket AS DATE)
             ORDER BY fecha ASC
         """
-        res = await db.execute(text(sql), {"mes_num": mes_num})
+        res = await db.execute(text(sql), {"espacio_id": 1, "inicio": ini, "fin": fin})
         rows = [dict(r._mapping) for r in res.all()]
         df = pd.DataFrame(rows)
         if df.empty:
             fallback_sql = """
                 SELECT TOP 20
                        CAST(bucket AS DATE) as fecha,
-                       FORMAT(CAST(bucket AS DATE), 'dd MMM') as etiqueta,
                        SUM(ingresos) as ingresos,
                        SUM(salidas) as salidas,
                        SUM(personas_unicas) as personas_unicas
-                FROM aforo_horario_biblioteca
-                GROUP BY CAST(bucket AS DATE), FORMAT(CAST(bucket AS DATE), 'dd MMM')
+                FROM aforo_horario_biblioteca WITH (NOEXPAND)
+                WHERE espacio_id = :espacio_id
+                GROUP BY CAST(bucket AS DATE)
                 ORDER BY fecha ASC
             """
-            res = await db.execute(text(fallback_sql))
+            res = await db.execute(text(fallback_sql), {"espacio_id": 1})
             rows = [dict(r._mapping) for r in res.all()]
             df = pd.DataFrame(rows)
             nombre_mes = 'Reciente'
         if df.empty:
             return None, None, f"No se encontraron registros de biblioteca para {nombre_mes}."
+        df['etiqueta'] = pd.to_datetime(df['fecha']).dt.strftime('%d %b')
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=df['etiqueta'],
@@ -168,24 +200,28 @@ async def generate_monthly_chart(db: AsyncSession, dataset_tipo: str, mes_num: i
 async def generate_weekly_chart(db: AsyncSession, dataset_tipo: str = "biblioteca"):
     """Genera gráfico Plotly de evolución semanal según semanas ISO."""
     if dataset_tipo == "estacionamiento":
+        espacio_id = 2
         sql = """
             SELECT CONCAT(DATEPART(YEAR, bucket), '-W', RIGHT(CONCAT('0', DATEPART(ISO_WEEK, bucket)), 2)) as semana,
                    SUM(entradas) as ingresos,
                    SUM(salidas) as salidas
-            FROM aforo_horario_estacionamiento
+            FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+            WHERE espacio_id = :espacio_id
             GROUP BY CONCAT(DATEPART(YEAR, bucket), '-W', RIGHT(CONCAT('0', DATEPART(ISO_WEEK, bucket)), 2))
             ORDER BY semana ASC
         """
     else:
+        espacio_id = 1
         sql = """
             SELECT CONCAT(DATEPART(YEAR, bucket), '-W', RIGHT(CONCAT('0', DATEPART(ISO_WEEK, bucket)), 2)) as semana,
                    SUM(ingresos) as ingresos,
                    SUM(salidas) as salidas
-            FROM aforo_horario_biblioteca
+            FROM aforo_horario_biblioteca WITH (NOEXPAND)
+            WHERE espacio_id = :espacio_id
             GROUP BY CONCAT(DATEPART(YEAR, bucket), '-W', RIGHT(CONCAT('0', DATEPART(ISO_WEEK, bucket)), 2))
             ORDER BY semana ASC
         """
-    res = await db.execute(text(sql))
+    res = await db.execute(text(sql), {"espacio_id": espacio_id})
     rows = [dict(r._mapping) for r in res.all()]
     df = pd.DataFrame(rows)
     if df.empty:
@@ -239,7 +275,8 @@ async def generate_exams_impact_chart(db: AsyncSession):
                COUNT(b.d) as dias_analizados
         FROM (
             SELECT CAST(bucket AS DATE) as d, SUM(ingresos) as tot 
-            FROM aforo_horario_biblioteca 
+            FROM aforo_horario_biblioteca WITH (NOEXPAND)
+            WHERE espacio_id = 1
             GROUP BY CAST(bucket AS DATE)
         ) b 
         LEFT JOIN calendario_academico c ON b.d = c.fecha 
@@ -297,7 +334,8 @@ async def generate_peak_hours_chart(db: AsyncSession, dataset_tipo: str = "bibli
             SELECT DATEPART(HOUR, bucket) as hora,
                    ROUND(AVG(CAST(entradas AS FLOAT)), 0) as promedio_entradas,
                    ROUND(AVG(CAST(salidas AS FLOAT)), 0) as promedio_salidas
-            FROM aforo_horario_estacionamiento
+            FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+            WHERE espacio_id = 2
             GROUP BY DATEPART(HOUR, bucket)
             ORDER BY hora ASC
         """
@@ -326,7 +364,8 @@ async def generate_peak_hours_chart(db: AsyncSession, dataset_tipo: str = "bibli
         SELECT DATEPART(HOUR, bucket) as hora,
                ROUND(AVG(CAST(ingresos AS FLOAT)), 0) as promedio_ingresos,
                MAX(ingresos) as max_ingresos
-        FROM aforo_horario_biblioteca
+        FROM aforo_horario_biblioteca WITH (NOEXPAND)
+        WHERE espacio_id = 1
         GROUP BY DATEPART(HOUR, bucket)
         ORDER BY hora ASC
     """
@@ -374,7 +413,8 @@ async def generate_cameras_chart(db: AsyncSession):
                SUM(entradas) as entradas,
                SUM(salidas) as salidas,
                SUM(lecturas_fallidas) as fallidas
-        FROM aforo_horario_estacionamiento
+        FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+        WHERE espacio_id = 2
         GROUP BY camara
         ORDER BY entradas DESC
     """
@@ -414,63 +454,37 @@ async def generate_cameras_chart(db: AsyncSession):
     return serialize_fig(fig), serialize_df(df), explicacion
 
 
-def generate_stay_profiles_chart():
-    """Genera gráfico Plotly donut para clasificación de perfiles de permanencia."""
-    labels = ['Corta (< 60m)', 'Media (60-180m)', 'Larga (> 180m)']
-    values = [8730, 8152, 5015]
-    colors_list = ['#64748B', '#003865', '#C59B27']
-    fig = go.Figure(data=[
-        go.Pie(
-            labels=labels,
-            values=values,
-            hole=0.45,
-            marker_colors=colors_list,
-            textinfo='label+percent',
-            hovertemplate='<b>%{label}</b><br>Usuarios: %{value:,}<br>Proporción: %{percent}<extra></extra>'
-        )
-    ])
-    fig.update_layout(
-        title='Clasificación de Perfiles de Permanencia (Random Forest)',
-        paper_bgcolor=FONDO_TRANSPARENTE,
-        plot_bgcolor=FONDO_TRANSPARENTE,
-        margin=dict(t=40, r=20, b=40, l=20),
-        font=dict(family=FUENTE_DEFAULT, size=11, color='#64748b')
-    )
-    table_data = [
-        {"perfil": "Corta (< 60m)", "total": 8730, "porcentaje": 39.87, "permanencia_promedio_min": 24.6},
-        {"perfil": "Media (60-180m)", "total": 8152, "porcentaje": 37.23, "permanencia_promedio_min": 104.5},
-        {"perfil": "Larga (> 180m)", "total": 5015, "porcentaje": 22.90, "permanencia_promedio_min": 429.4}
-    ]
-    explicacion = (
-        "El modelo Random Forest clasifica la permanencia en: Corta (39.87%, trámites y préstamos rápidos), "
-        "Media (37.23%, bloques de clase y estudio acotado) y Larga (22.90%, jornadas intensivas de estudio en pisos superiores)."
-    )
-    return serialize_fig(fig), table_data, explicacion
-
-
 async def generate_monthly_trend_chart(db: AsyncSession, dataset_tipo: str, start_month: int, end_month: int):
     """Genera gráfico Plotly comparativo entre rangos de meses."""
     if dataset_tipo == 'estacionamiento':
+        espacio_id = 2
+        anio = await _anio_activo_vista(db, "aforo_horario_estacionamiento", espacio_id)
+        ini, fin = _rango_meses_sargable(anio, start_month, end_month)
         sql = """
             SELECT MONTH(bucket) as mes_num,
                    SUM(entradas) as ingresos,
                    SUM(salidas) as salidas
-            FROM aforo_horario_estacionamiento
-            WHERE MONTH(bucket) BETWEEN :start_m AND :end_m
+            FROM aforo_horario_estacionamiento WITH (NOEXPAND)
+            WHERE espacio_id = :espacio_id
+              AND bucket >= :inicio AND bucket < :fin
             GROUP BY MONTH(bucket)
             ORDER BY mes_num ASC
         """
     else:
+        espacio_id = 1
+        anio = await _anio_activo_vista(db, "aforo_horario_biblioteca", espacio_id)
+        ini, fin = _rango_meses_sargable(anio, start_month, end_month)
         sql = """
             SELECT MONTH(bucket) as mes_num,
                    SUM(ingresos) as ingresos,
                    SUM(salidas) as salidas
-            FROM aforo_horario_biblioteca
-            WHERE MONTH(bucket) BETWEEN :start_m AND :end_m
+            FROM aforo_horario_biblioteca WITH (NOEXPAND)
+            WHERE espacio_id = :espacio_id
+              AND bucket >= :inicio AND bucket < :fin
             GROUP BY MONTH(bucket)
             ORDER BY mes_num ASC
         """
-    res = await db.execute(text(sql), {"start_m": start_month, "end_m": end_month})
+    res = await db.execute(text(sql), {"espacio_id": espacio_id, "inicio": ini, "fin": fin})
     rows = [dict(r._mapping) for r in res.all()]
     df = pd.DataFrame(rows)
     if df.empty:

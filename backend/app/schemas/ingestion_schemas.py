@@ -3,7 +3,7 @@ ingestion_schemas.py — Esquemas Pydantic para el módulo de Ingesta Inteligent
 """
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SchemaFieldMapping(BaseModel):
@@ -104,5 +104,4 @@ class IngestionHistoryItem(BaseModel):
     espacio_id: Optional[int] = None
     error_detail: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

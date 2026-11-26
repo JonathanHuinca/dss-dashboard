@@ -1,11 +1,11 @@
 from datetime import date
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import cachear_respuesta, TTL_KPIS_DIA, TTL_HISTORICOS
 from app.core.database import get_db
-from app.core.security import get_current_user, validar_acceso_espacio
+from app.core.security import get_current_user, obtener_espacios_autorizados, validar_acceso_espacio
 from app.domain.auth_models import Usuario
 from app.services.metrics_service import MetricsService
 from app.schemas.metrics_schemas import KPISummaryResponse, DateBoundsResponse
@@ -74,9 +74,20 @@ async def get_date_bounds(
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if espacio_id is not None:
-        validar_acceso_espacio(espacio_id, current_user)
+    espacio_efectivo = espacio_id
+    if espacio_efectivo is not None:
+        validar_acceso_espacio(espacio_efectivo, current_user)
+    else:
+        espacios_autorizados = obtener_espacios_autorizados(current_user)
+        if espacios_autorizados is not None:
+            if not espacios_autorizados:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Acceso denegado: no cuenta con recintos autorizados.",
+                )
+            if len(espacios_autorizados) == 1:
+                espacio_efectivo = espacios_autorizados[0]
     return await MetricsService.get_date_bounds(
         session=db,
-        espacio_id=espacio_id,
+        espacio_id=espacio_efectivo,
     )

@@ -225,11 +225,19 @@ async def scrape_and_sync_uct_calendar(session: AsyncSession) -> dict:
         "Accept-Language": "es-CL,es;q=0.9,en;q=0.8"
     }
     
-    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
-        resp = await client.get(UCT_CALENDAR_URL)
+    from app.core.recursos_http import obtener_http_client
+    cliente_comp = obtener_http_client()
+    if cliente_comp is not None:
+        resp = await cliente_comp.get(UCT_CALENDAR_URL, headers=headers, timeout=25.0, follow_redirects=True)
         if resp.status_code != 200:
             raise RuntimeError(f"Error HTTP {resp.status_code} al conectar con {UCT_CALENDAR_URL}")
         html = resp.text
+    else:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(UCT_CALENDAR_URL)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Error HTTP {resp.status_code} al conectar con {UCT_CALENDAR_URL}")
+            html = resp.text
 
     # Cada fila del calendario tiene 3 celdas div class="td"
     row_pattern = re.compile(

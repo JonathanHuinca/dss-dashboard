@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     ENABLE_IP_WHITELIST: bool = False
     ALLOWED_SUBNETS: str = "10.20.0.0/16,127.0.0.1/32"
     FRONTEND_URL: str = "https://indicadoreshikcentral.dev.uct.cl"
+    ALLOWED_FRONTEND_ORIGINS: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:5174,http://127.0.0.1:5174,"
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://indicadoreshikcentral.dev.uct.cl,"
+        "https://indicadoreshikcentral.dev.uct.cl,"
+        "https://dashboard.uct.cl"
+    )
 
     # Servidor de Correo SMTP institucional
     SMTP_HOST: str = ""
@@ -107,9 +115,19 @@ class Settings(BaseSettings):
     MINIMO_EVENTOS_CALENDARIO: int = 20
 
     @property
-
     def allowed_subnets_list(self) -> List[str]:
         return [s.strip() for s in self.ALLOWED_SUBNETS.split(",") if s.strip()]
+
+    @property
+    def origenes_frontend_permitidos(self) -> set[str]:
+        origenes = {
+            o.strip().rstrip("/").lower()
+            for o in self.ALLOWED_FRONTEND_ORIGINS.split(",")
+            if o.strip().startswith(("http://", "https://"))
+        }
+        if self.FRONTEND_URL and self.FRONTEND_URL.strip().startswith(("http://", "https://")):
+            origenes.add(self.FRONTEND_URL.strip().rstrip("/").lower())
+        return origenes
 
     @property
     def is_production(self) -> bool:

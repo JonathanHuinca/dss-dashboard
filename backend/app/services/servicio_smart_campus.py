@@ -8,8 +8,10 @@ Implementa la arquitectura de Doble Pipeline:
    sesiones completas, calculando permanencias reales, imputando salidas no marcadas y actualizando rollups.
 """
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import statistics
 from decimal import Decimal
 from datetime import date, datetime, time, timedelta, timezone
@@ -25,6 +27,7 @@ from app.core.security import (
     pseudonymize_person,
     pseudonymize_vehicle,
 )
+from app.core.tiempo import ZONA_CHILE, ahora_chile_naive
 from app.domain.models import (
     Espacio,
     EstadoSincronizacionFuente,
@@ -95,12 +98,42 @@ async def registrar_estado_sincronizacion(
 # PIPELINE 1: INGESTA HORARIA EN VIVO (AFORO EN TIEMPO REAL)
 # =============================================================================
 
+def _parse_dt_chile_naive(val: Any) -> Optional[datetime]:
+    """Normaliza ISO o datetime (incluyendo sufijo Z/+00:00) a hora local de Chile naive."""
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        dt = val
+    else:
+        try:
+            dt = datetime.fromisoformat(str(val).strip().replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(ZONA_CHILE).replace(tzinfo=None)
+    return dt
+
+
+def _clasificar_sentido_smart_campus(sentido: Any, vehiculo: bool = False) -> str:
+    tokens = set(re.findall(r"[a-z]+", str(sentido or "").strip().lower()))
+    if vehiculo:
+        if tokens & {"alejandose", "salida", "out", "egreso", "exit"}:
+            return "salida"
+        return "entrada"
+    if tokens & {"salida", "out", "egreso", "exit"}:
+        return "salida"
+    if tokens & {"entrada", "in", "ingreso", "entry"}:
+        return "entrada"
+    return "entrada"
+
+
 async def sincronizar_aforo_vivo_horario(
     db: AsyncSession,
     espacio_id_peatonal: int = 1,
     espacio_id_vehicular: int = 2,
     desde_manual: Optional[date] = None,
     hasta_manual: Optional[date] = None,
+    fuente: str = "todas",
 ) -> Dict[str, Any]:
     """
     Sincroniza de forma incremental e idempotente los eventos desde la última fecha
@@ -109,40 +142,49 @@ async def sincronizar_aforo_vivo_horario(
     """
     from sqlalchemy import text
 
-    hoy = hasta_manual or datetime.now().date()
+    fuente_norm = (fuente or "todas").strip().lower()
+    sinc_torniquetes = fuente_norm in ("todas", "torniquetes", "biblioteca")
+    sinc_estacionamientos = fuente_norm in ("todas", "estacionamientos", "vehicular")
+
+    hoy = hasta_manual or ahora_chile_naive().date()
     limite_retroceso = hoy - timedelta(days=45)
     adaptador = SmartCampusAdapter()
 
     # Determinar fecha de inicio incremental para Biblioteca (torniquetes)
     if desde_manual:
         desde_peatonal = desde_manual
-    else:
+    elif sinc_torniquetes:
         fila_max_p = (
             await db.execute(
-                text("SELECT MAX(CAST(time AS DATE)) FROM eventos_asistencia WHERE espacio_id = :espacio_id"),
+                text("SELECT CAST(MAX(time) AS DATE) FROM eventos_asistencia WHERE espacio_id = :espacio_id"),
                 {"espacio_id": espacio_id_peatonal},
             )
         ).scalar()
         if fila_max_p and isinstance(fila_max_p, str):
             fila_max_p = date.fromisoformat(fila_max_p[:10])
         desde_peatonal = max(fila_max_p, limite_retroceso) if (fila_max_p and fila_max_p <= hoy) else hoy
+    else:
+        desde_peatonal = hoy
 
     # Determinar fecha de inicio incremental para Estacionamientos (ANPR)
     if desde_manual:
         desde_vehicular = desde_manual
-    else:
+    elif sinc_estacionamientos:
         fila_max_v = (
             await db.execute(
-                text("SELECT MAX(CAST(time AS DATE)) FROM eventos_vehiculares WHERE espacio_id = :espacio_id"),
+                text("SELECT CAST(MAX(time) AS DATE) FROM eventos_vehiculares WHERE espacio_id = :espacio_id"),
                 {"espacio_id": espacio_id_vehicular},
             )
         ).scalar()
         if fila_max_v and isinstance(fila_max_v, str):
             fila_max_v = date.fromisoformat(fila_max_v[:10])
         desde_vehicular = max(fila_max_v, limite_retroceso) if (fila_max_v and fila_max_v <= hoy) else hoy
+    else:
+        desde_vehicular = hoy
 
     resumen = {
         "fecha": hoy.isoformat(),
+        "fuente": fuente_norm,
         "rango_torniquetes": f"{desde_peatonal.isoformat()} a {hoy.isoformat()}",
         "rango_estacionamientos": f"{desde_vehicular.isoformat()} a {hoy.isoformat()}",
         "torniquetes": {"leidos": 0, "insertados": 0, "duplicados": 0},
@@ -151,36 +193,43 @@ async def sincronizar_aforo_vivo_horario(
     }
 
     # 1. Sincronizar Torniquetes de Biblioteca
-    try:
+    if sinc_torniquetes:
+      try:
         raw_torniquetes = await adaptador.obtener_marcajes_torniquetes(desde=desde_peatonal, hasta=hoy)
         resumen["torniquetes"]["leidos"] = len(raw_torniquetes)
 
         if raw_torniquetes:
+            desde_dt_p = datetime.combine(desde_peatonal, time(0, 0))
+            hasta_excl_dt_p = datetime.combine(hoy + timedelta(days=1), time(0, 0))
             res_existentes = await db.execute(
                 text("""
                     SELECT time, person_id_hash
                     FROM eventos_asistencia
                     WHERE espacio_id = :espacio_id
-                      AND CAST(time AS DATE) >= :desde
-                      AND CAST(time AS DATE) <= :hasta
+                      AND time >= :desde_dt
+                      AND time < :hasta_excl_dt
                 """),
-                {"espacio_id": espacio_id_peatonal, "desde": desde_peatonal, "hasta": hoy},
+                {"espacio_id": espacio_id_peatonal, "desde_dt": desde_dt_p, "hasta_excl_dt": hasta_excl_dt_p},
             )
             existentes_set = {(row[0], row[1]) for row in res_existentes.fetchall()}
 
             # Contabilizar marcajes por persona-día en el lote descargado
             conteo_persona_dia: Dict[tuple, int] = {}
             eventos_preparados = []
-            for r in raw_torniquetes:
+            for idx_ev, r in enumerate(raw_torniquetes):
                 fecha_str = r.get("fecha", "")
                 if not fecha_str:
                     continue
-                dt_evento = datetime.fromisoformat(fecha_str).replace(tzinfo=None)
+                dt_evento = _parse_dt_chile_naive(fecha_str)
+                if not dt_evento:
+                    continue
                 raw_id = r.get("matricula") or r.get("id_visitante") or ""
                 if raw_id:
                     person_hash = pseudonymize_person(str(raw_id).strip())
                 else:
-                    person_hash = f"sin_id_{dt_evento.strftime('%Y%m%d%H%M%S')}_{r.get('puerta', 'desc')[:20]}"
+                    puerta_ev = str(r.get("puerta") or r.get("acceso") or "desc")[:12]
+                    digest_ev = hashlib.sha256(f"{dt_evento.isoformat()}_{puerta_ev}_{idx_ev}".encode()).hexdigest()[:10]
+                    person_hash = f"sin_id_{dt_evento.strftime('%Y%m%d%H%M%S')}_{digest_ev}"
                 clave_pd = (person_hash, dt_evento.date())
                 conteo_persona_dia[clave_pd] = conteo_persona_dia.get(clave_pd, 0) + 1
                 eventos_preparados.append((dt_evento, person_hash, r))
@@ -195,8 +244,7 @@ async def sincronizar_aforo_vivo_horario(
                     duplicados += 1
                     continue
 
-                sentido = str(r.get("sentido", "")).lower()
-                es_salida = any(s in sentido for s in ["salida", "out", "egreso"])
+                es_salida = _clasificar_sentido_smart_campus(r.get("sentido"), vehiculo=False) == "salida"
                 puerta = r.get("puerta") or r.get("acceso") or "Torniquete"
                 total_m = conteo_persona_dia.get((person_hash, dt_evento.date()), 1)
 
@@ -231,7 +279,8 @@ async def sincronizar_aforo_vivo_horario(
                 await db.commit()
 
             if insertados > 0:
-                # Enriquecer carrera y facultad desde dim_estudiante_carrera y calcular permanencia por sesión diaria
+                # Enriquecer carrera y facultad con CROSS APPLY TOP 1 para evitar ambigüedad ante duplicados en dim_estudiante_carrera
+                desde_dt_upd = datetime.combine(desde_peatonal, time(0, 0))
                 await db.execute(
                     text("""
                         UPDATE ea
@@ -241,11 +290,16 @@ async def sincronizar_aforo_vivo_horario(
                                 ELSE COALESCE(ea.facultad, dec.facultad)
                             END
                         FROM eventos_asistencia ea
-                        INNER JOIN dim_estudiante_carrera dec ON ea.person_id_hash = dec.person_id_hash
+                        CROSS APPLY (
+                            SELECT TOP 1 carr_nombre, facultad
+                            FROM dim_estudiante_carrera d
+                            WHERE d.person_id_hash = ea.person_id_hash
+                            ORDER BY d.id DESC
+                        ) dec
                         WHERE ea.espacio_id = :espacio_id
-                          AND CAST(ea.time AS DATE) >= :desde
+                          AND ea.time >= :desde_dt
                     """),
-                    {"espacio_id": espacio_id_peatonal, "desde": desde_peatonal},
+                    {"espacio_id": espacio_id_peatonal, "desde_dt": desde_dt_upd},
                 )
                 await db.commit()
 
@@ -262,23 +316,28 @@ async def sincronizar_aforo_vivo_horario(
             filas_duplicadas=resumen["torniquetes"]["duplicados"],
             estado="exitoso",
         )
-    except Exception as exc:
-        logger.error(f"[SmartCampus] Error en sincronización horaria de torniquetes: {exc}")
-        resumen["errores"].append(f"Torniquetes: {str(exc)}")
-        await registrar_estado_sincronizacion(
-            db,
-            fuente="torniquetes",
-            espacio_id=espacio_id_peatonal,
-            fecha_sincronizada=hoy,
-            filas_leidas=resumen["torniquetes"]["leidos"],
-            filas_insertadas=resumen["torniquetes"]["insertados"],
-            filas_duplicadas=resumen["torniquetes"]["duplicados"],
-            estado="fallido",
-            ultimo_error=str(exc),
-        )
+      except Exception as exc:
+          try:
+              await db.rollback()
+          except Exception:
+              pass
+          logger.error(f"[SmartCampus] Error en sincronización horaria de torniquetes: {exc}")
+          resumen["errores"].append(f"Torniquetes: {str(exc)}")
+          await registrar_estado_sincronizacion(
+              db,
+              fuente="torniquetes",
+              espacio_id=espacio_id_peatonal,
+              fecha_sincronizada=hoy,
+              filas_leidas=resumen["torniquetes"]["leidos"],
+              filas_insertadas=resumen["torniquetes"]["insertados"],
+              filas_duplicadas=resumen["torniquetes"]["duplicados"],
+              estado="fallido",
+              ultimo_error=str(exc),
+          )
 
     # 2. Sincronizar Pasos de Estacionamientos (los 3 sectores)
-    try:
+    if sinc_estacionamientos:
+      try:
         raw_estacionamientos = await adaptador.obtener_pasos_estacionamientos(
             desde=desde_vehicular,
             hasta=hoy,
@@ -287,15 +346,17 @@ async def sincronizar_aforo_vivo_horario(
         resumen["estacionamientos"]["leidos"] = len(raw_estacionamientos)
 
         if raw_estacionamientos:
+            desde_dt_v = datetime.combine(desde_vehicular, time(0, 0))
+            hasta_excl_dt_v = datetime.combine(hoy + timedelta(days=1), time(0, 0))
             res_v = await db.execute(
                 text("""
                     SELECT time, patente_hash, camara
                     FROM eventos_vehiculares
                     WHERE espacio_id = :espacio_id
-                      AND CAST(time AS DATE) >= :desde
-                      AND CAST(time AS DATE) <= :hasta
+                      AND time >= :desde_dt
+                      AND time < :hasta_excl_dt
                 """),
-                {"espacio_id": espacio_id_vehicular, "desde": desde_vehicular, "hasta": hoy},
+                {"espacio_id": espacio_id_vehicular, "desde_dt": desde_dt_v, "hasta_excl_dt": hasta_excl_dt_v},
             )
             v_existentes_set = {(row[0], row[1], row[2]) for row in res_v.fetchall()}
 
@@ -307,7 +368,9 @@ async def sincronizar_aforo_vivo_horario(
                 fecha_str = r.get("fecha", "")
                 if not fecha_str:
                     continue
-                dt_evento = datetime.fromisoformat(fecha_str).replace(tzinfo=None)
+                dt_evento = _parse_dt_chile_naive(fecha_str)
+                if not dt_evento:
+                    continue
 
                 patente_raw = str(r.get("patente", "")).strip().upper()
                 if not patente_raw:
@@ -325,13 +388,7 @@ async def sincronizar_aforo_vivo_horario(
                     v_duplicados += 1
                     continue
 
-                sentido_raw = str(r.get("sentido", "")).lower()
-                if "acercandose" in sentido_raw or "entrada" in sentido_raw:
-                    direccion = "entrada"
-                elif "alejandose" in sentido_raw or "salida" in sentido_raw:
-                    direccion = "salida"
-                else:
-                    direccion = "entrada"
+                direccion = _clasificar_sentido_smart_campus(r.get("sentido"), vehiculo=True)
 
                 nuevo_vehicular = EventoVehicular(
                     time=dt_evento,
@@ -370,24 +427,30 @@ async def sincronizar_aforo_vivo_horario(
             filas_duplicadas=resumen["estacionamientos"]["duplicados"],
             estado="exitoso",
         )
-    except Exception as exc:
-        logger.error(f"[SmartCampus] Error en sincronización horaria de estacionamientos: {exc}")
-        resumen["errores"].append(f"Estacionamientos: {str(exc)}")
-        await registrar_estado_sincronizacion(
-            db,
-            fuente="estacionamientos",
-            espacio_id=espacio_id_vehicular,
-            fecha_sincronizada=hoy,
-            filas_leidas=resumen["estacionamientos"]["leidos"],
-            filas_insertadas=resumen["estacionamientos"]["insertados"],
-            filas_duplicadas=resumen["estacionamientos"]["duplicados"],
-            estado="fallido",
-            ultimo_error=str(exc),
-        )
+      except Exception as exc:
+          try:
+              await db.rollback()
+          except Exception:
+              pass
+          logger.error(f"[SmartCampus] Error en sincronización horaria de estacionamientos: {exc}")
+          resumen["errores"].append(f"Estacionamientos: {str(exc)}")
+          await registrar_estado_sincronizacion(
+              db,
+              fuente="estacionamientos",
+              espacio_id=espacio_id_vehicular,
+              fecha_sincronizada=hoy,
+              filas_leidas=resumen["estacionamientos"]["leidos"],
+              filas_insertadas=resumen["estacionamientos"]["insertados"],
+              filas_duplicadas=resumen["estacionamientos"]["duplicados"],
+              estado="fallido",
+              ultimo_error=str(exc),
+          )
 
-    # Invalidar cachés de recinto cuando existan nuevos datos
-    await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id_peatonal)
-    await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id_vehicular)
+    # Invalidar cachés del recinto sincronizado
+    if sinc_torniquetes:
+        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id_peatonal)
+    if sinc_estacionamientos:
+        await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id_vehicular)
 
     return resumen
 
@@ -401,6 +464,7 @@ async def consolidar_dia_cerrado(
     fecha_objetivo: Optional[date] = None,
     espacio_id_peatonal: int = 1,
     espacio_id_vehicular: int = 2,
+    fuente: str = "todas",
 ) -> Dict[str, Any]:
     """
     Consolida un día completo cerrado (por defecto ayer D-1).
@@ -417,13 +481,18 @@ async def consolidar_dia_cerrado(
     """
     from app.services.config_service import get_horarios_operacion
 
-    ayer_raw = fecha_objetivo or (datetime.now().date() - timedelta(days=1))
+    fuente_norm = (fuente or "todas").strip().lower()
+    cons_torniquetes = fuente_norm in ("todas", "torniquetes", "biblioteca")
+    cons_estacionamientos = fuente_norm in ("todas", "estacionamientos", "vehicular")
+
+    ayer_raw = fecha_objetivo or (ahora_chile_naive().date() - timedelta(days=1))
     ayer: date = ayer_raw.date() if isinstance(ayer_raw, datetime) else ayer_raw
     dia_siguiente = ayer + timedelta(days=1)
     adaptador = SmartCampusAdapter()
 
     resumen = {
         "fecha_consolidada": ayer.isoformat(),
+        "fuente": fuente_norm,
         "regimen_detectado": "regular",
         "sesiones_consolidadas": 0,
         "sesiones_cruzadas_24h": 0,
@@ -440,15 +509,7 @@ async def consolidar_dia_cerrado(
     dia_nombre = dias_map[ayer.weekday()]
 
     def _parse_iso_naive(val: Any) -> Optional[datetime]:
-        if not val:
-            return None
-        if isinstance(val, datetime):
-            return val.replace(tzinfo=None) if val.tzinfo is not None else val
-        try:
-            dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
-            return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
-        except Exception:
-            return None
+        return _parse_dt_chile_naive(val)
 
     horarios = await get_horarios_operacion(db, espacio_id=espacio_id_peatonal)
     reglas_rango = [
@@ -518,13 +579,14 @@ async def consolidar_dia_cerrado(
     raw_torniquetes: List[Dict[str, Any]] = []
     hasta_consulta = dia_siguiente if es_regimen_nocturno else ayer
 
-    try:
+    if cons_torniquetes:
+      try:
         raw_torniquetes = await adaptador.obtener_marcajes_torniquetes(desde=ayer, hasta=hasta_consulta)
-    except Exception as exc_api:
+      except Exception as exc_api:
         logger.warning(f"[SmartCampus] API externa no respondió para {ayer}: {exc_api}. Activando fallback a base de datos.")
         resumen["errores"].append(f"Aviso API torniquetes: {str(exc_api)}")
 
-    if not raw_torniquetes:
+      if not raw_torniquetes:
         try:
             t_inicio_ea = datetime.combine(ayer, time(0, 0))
             t_fin_ea = (dt_cierre_nocturno + timedelta(minutes=15)) if es_regimen_nocturno else datetime.combine(dia_siguiente, time(0, 0))
@@ -547,6 +609,7 @@ async def consolidar_dia_cerrado(
                 raw_torniquetes.append({
                     "fecha": ev.time.isoformat(),
                     "id_visitante": ev.person_id_hash,
+                    "ya_seudonimizado": True,
                     "sentido": sentido_local,
                     "puerta": ev.door_entrada or ev.door_salida or "Torniquete",
                 })
@@ -554,19 +617,29 @@ async def consolidar_dia_cerrado(
                     raw_torniquetes.append({
                         "fecha": ev.ultima_salida.isoformat(),
                         "id_visitante": ev.person_id_hash,
+                        "ya_seudonimizado": True,
                         "sentido": "salida",
                         "puerta": ev.door_salida or "Torniquete",
                     })
         except Exception as exc_db:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
             logger.error(f"[SmartCampus] Error en fallback local de torniquetes: {exc_db}")
             resumen["errores"].append(f"BD local torniquetes: {str(exc_db)}")
 
     try:
         if raw_torniquetes:
             eventos_por_persona: Dict[str, List[Dict[str, Any]]] = {}
-            for r in raw_torniquetes:
+            for idx_ev, r in enumerate(raw_torniquetes):
                 raw_id = r.get("id_visitante") or r.get("matricula") or ""
-                p_hash = pseudonymize_person(str(raw_id).strip()) if raw_id else f"sin_id_{r.get('fecha', '')}"
+                if r.get("ya_seudonimizado") and raw_id:
+                    p_hash = str(raw_id).strip()
+                elif raw_id:
+                    p_hash = pseudonymize_person(str(raw_id).strip())
+                else:
+                    p_hash = f"sin_id_{r.get('fecha', '')}_{idx_ev}"
                 eventos_por_persona.setdefault(p_hash, []).append(r)
 
             total_ingresos = 0
@@ -581,8 +654,7 @@ async def consolidar_dia_cerrado(
 
                 entradas_d1: List[datetime] = []
                 for e in eventos:
-                    sent = str(e.get("sentido", "")).lower()
-                    if any(s in sent for s in ["entrada", "in", "ingreso"]):
+                    if _clasificar_sentido_smart_campus(e.get("sentido"), vehiculo=False) == "entrada":
                         dt_in_cand = _parse_iso_naive(e.get("fecha"))
                         if dt_in_cand and dt_in_cand.date() == ayer:
                             entradas_d1.append(dt_in_cand)
@@ -602,8 +674,7 @@ async def consolidar_dia_cerrado(
 
                 salidas_validas: List[datetime] = []
                 for e in eventos:
-                    sent = str(e.get("sentido", "")).lower()
-                    if any(s in sent for s in ["salida", "out", "egreso"]):
+                    if _clasificar_sentido_smart_campus(e.get("sentido"), vehiculo=False) == "salida":
                         dt_out_cand = _parse_iso_naive(e.get("fecha"))
                         if dt_out_cand and dt_in < dt_out_cand <= limite_salida:
                             salidas_validas.append(dt_out_cand)
@@ -677,7 +748,8 @@ async def consolidar_dia_cerrado(
         resumen["errores"].append(f"Torniquetes cerrado: {str(exc_p)}")
 
     # 2. Consolidar Vehicular
-    try:
+    if cons_estacionamientos:
+      try:
         raw_vehiculos: List[Dict[str, Any]] = []
         try:
             raw_vehiculos = await adaptador.obtener_pasos_estacionamientos(desde=ayer, hasta=ayer, solo_completas=True)
@@ -707,6 +779,10 @@ async def consolidar_dia_cerrado(
                         "sentido": v.direccion,
                     })
             except Exception as exc_v_db:
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
                 logger.error(f"[SmartCampus] Error en fallback local vehicular: {exc_v_db}")
                 resumen["errores"].append(f"BD local vehicular: {str(exc_v_db)}")
 
@@ -716,8 +792,7 @@ async def consolidar_dia_cerrado(
             patentes_unicas_set: Set[str] = set()
 
             for r in raw_vehiculos:
-                sentido = str(r.get("sentido", "")).lower()
-                if "acercandose" in sentido or "entrada" in sentido:
+                if _clasificar_sentido_smart_campus(r.get("sentido"), vehiculo=True) == "entrada":
                     v_entradas += 1
                 else:
                     v_salidas += 1
@@ -756,10 +831,10 @@ async def consolidar_dia_cerrado(
                 "salidas": v_salidas,
                 "vehiculos_unicos": len(patentes_unicas_set),
             }
-    except Exception as exc:
-        await db.rollback()
-        logger.error(f"[SmartCampus] Error consolidando día cerrado vehicular: {exc}")
-        resumen["errores"].append(f"Estacionamientos cerrado: {str(exc)}")
+      except Exception as exc:
+          await db.rollback()
+          logger.error(f"[SmartCampus] Error consolidando día cerrado vehicular: {exc}")
+          resumen["errores"].append(f"Estacionamientos cerrado: {str(exc)}")
 
     return resumen
 

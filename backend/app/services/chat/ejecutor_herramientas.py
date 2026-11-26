@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Optional
 from cachetools import TTLCache
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tiempo import ZONA_CHILE
 from app.schemas.chat_schemas import ChatRequest
 from app.services.attendance_service import AttendanceService, obtener_capacidades_salas_cacheadas
 from app.services.calendar_service import CalendarService, TIPOS_INCIDENCIA_OPERATIVA
 from app.services.vehicle_service import VehicleService
-from app.services.prediction_service import get_prophet_forecast, get_prophet_presence_forecast, get_gbr_forecast_14days, get_visit_profiles
+from app.services.prediction_service import get_prophet_forecast, get_prophet_presence_forecast, get_visit_profiles
 from app.services.chat.fechas_chat import (
     extraer_o_normalizar_fechas,
     obtener_anio_activo_espacio,
@@ -24,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 _cache_resultados_herramientas: TTLCache = TTLCache(maxsize=300, ttl=60)
 _cache_graficos_contexto: TTLCache = TTLCache(maxsize=300, ttl=60)
+
+
+def limpiar_cache_herramientas_chat() -> None:
+    """Limpia todas las cachés en memoria de resultados y gráficos del asistente IA."""
+    _cache_resultados_herramientas.clear()
+    _cache_graficos_contexto.clear()
 
 
 def _fmt_fecha_cl(iso_str: Optional[str]) -> str:
@@ -40,6 +47,8 @@ def _fmt_ts_cl(iso_str: Optional[str]) -> str:
         return "N/D"
     try:
         dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(ZONA_CHILE)
         return dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
         return str(iso_str)
@@ -404,24 +413,50 @@ async def _resolver_datos_grafico_contexto_interno(
     fig_data = None
     table_data = None
 
-    SLUGS_EXCLUSIVOS_BIBLIOTECA = [
-        "distribucion_curricular", "torniquetes", "comparativa_salas",
-        "distribucion_marcajes", "checkins", "promedio_dias_semana", "volumen_mensual",
-        "evolucion_semanal", "impacto_examenes", "perfiles_visita", "pronostico_14d", "permanencia_salas",
-        "campana_24h", "analisis_24h", "flujo_nocturno", "justificacion_24h"
-    ]
-    SLUGS_EXCLUSIVOS_ESTACIONAMIENTO = [
-        "composicion_flota", "flota_vehicular", "camaras_anpr", "movilidad_intercampus", "kmeans_clusters"
-    ]
+    SLUGS_COMUNES = (
+        "presencia_intervalos", "aforo_presencia", "realtime_presence",
+        "aforo_curva", "curva_ocupacion", "curva_de_aforo", "curva_de_ocupacion",
+        "prophet", "pronostico_prophet", "prediccion_prophet",
+        "flujo_horario", "flujo_horario_de",
+        "mapa_calor", "heatmap", "mapa_de_calor",
+        "hitos_academicos", "impacto_calendario", "academic_milestones",
+    )
+    SLUGS_EXCLUSIVOS_BIBLIOTECA = (
+        "prophet_presencia", "presencia_prophet",
+        "comparativa_salas", "comparativa_de_salas", "comparativa_de_afluencia",
+        "torniquetes", "uso_de_torniquetes", "doors_usage",
+        "distribucion_marcajes", "distribucion_de_marcajes", "checkins",
+        "promedio_dias_semana", "promedio_diario_de_ingresos", "daily_average",
+        "volumen_mensual", "monthly_volume",
+        "evolucion_semanal", "weekly_evolution",
+        "distribucion_curricular", "poblacion_academica", "curricular",
+        "pronostico_14d", "proyeccion_de_demanda",
+        "perfiles_visita", "perfiles_de_visita", "visit_profiles",
+        "impacto_examenes", "permanencia_salas",
+        "campana_24h", "analisis_24h", "flujo_nocturno", "justificacion_24h", "nocturno", "pecera_24h",
+    )
+    SLUGS_EXCLUSIVOS_ESTACIONAMIENTO = (
+        "composicion_flota", "composicion_de_la_flota", "fleet_composition",
+        "top_marcas", "top_marcas_de_vehiculos",
+        "camaras_anpr", "distribucion_de_capturas", "camaras",
+        "movilidad_intercampus", "flujo_de_movilidad", "intercampus",
+        "kmeans_clusters", "kmeans", "clusters", "conductuales",
+    )
+    SLUGS_PERMITIDOS_POR_ESPACIO = {
+        1: SLUGS_COMUNES + SLUGS_EXCLUSIVOS_BIBLIOTECA,
+        2: SLUGS_COMUNES + SLUGS_EXCLUSIVOS_ESTACIONAMIENTO,
+    }
     if espacio_id == 1 and any(s in slug for s in SLUGS_EXCLUSIVOS_ESTACIONAMIENTO):
         return None, None, "El gráfico seleccionado pertenece al módulo de Estacionamiento CSF. Para consultarlo, cambie al módulo Estacionamiento en el selector superior.", None, None
     if espacio_id == 2 and any(s in slug for s in SLUGS_EXCLUSIVOS_BIBLIOTECA):
         return None, None, "El gráfico seleccionado pertenece al módulo de Biblioteca CSF. Para consultarlo, cambie al módulo Biblioteca en el selector superior.", None, None
+    if espacio_id not in SLUGS_PERMITIDOS_POR_ESPACIO or not any(s in slug for s in SLUGS_PERMITIDOS_POR_ESPACIO[espacio_id]):
+        return None, None, "Acceso denegado: el gráfico solicitado no está autorizado para el recinto activo.", None, None
 
     try:
         # 0. Curva de Presencia Física por Intervalos de Sesión [entrada, salida]
         if any(k in slug for k in ["presencia_intervalos", "aforo_presencia", "realtime_presence"]):
-            if espacio_id == 2 or "vehic" in slug:
+            if espacio_id == 2:
                 data = await VehicleService.get_realtime_presence_curve(
                     session=db,
                     fecha_inicio=d_ini,
@@ -650,7 +685,7 @@ async def _resolver_datos_grafico_contexto_interno(
                 table_data = data[:50] if isinstance(data, list) else None
 
         # 2a. Pronóstico Prophet de Presencia Física
-        elif any(k in slug for k in ["prophet_presencia", "presencia_prophet"]):
+        elif any(k in slug for k in ["prophet_presencia", "presencia_prophet", "pronostico_14d", "proyeccion_de_demanda"]):
             data = await get_prophet_presence_forecast(db, sala=_normalizar_sala_prophet_bib(sala))
             component = "ForecastLineChart"
             payload = data
@@ -1120,24 +1155,6 @@ async def _resolver_datos_grafico_contexto_interno(
                 for c in carreras_ordenadas[:30]
             ] if carreras_ordenadas else None
 
-        # 13. Pronóstico 14 Días GBR
-        elif any(k in slug for k in ["pronostico_14d", "proyeccion_de_demanda", "gbr"]):
-            data = await get_gbr_forecast_14days(db, espacio_id=1)
-            component = "Forecast14DaysPlotlyChart"
-            payload = data.get("predicciones", data)
-            preds = data.get("predicciones", [])
-            max_dia = max(preds, key=lambda x: x.get("aforo_proyectado", 0)) if preds else {}
-            sum_14 = sum(x.get("aforo_proyectado", 0) for x in preds)
-            avg_14 = (sum_14 / len(preds)) if preds else 0
-            resumen_metricas = (
-                f"Gráfico enfocado: Proyección de Demanda Futura a 14 Días (HistGradientBoosting + Calendario).\n"
-                f"- Día con mayor afluencia proyectada: {max_dia.get('fecha', 'N/D')} ({max_dia.get('dia_semana', '')}) con {max_dia.get('aforo_proyectado', 0):,.0f} usuarios proyectados.\n"
-                f"- Demanda media diaria proyectada: {avg_14:,.0f} usuarios/día.\n"
-                f"- Horizonte evaluado: 14 días calendario.\n"
-                f"{contexto_hitos}"
-            )
-            table_data = preds if preds else None
-
         # 14. Perfiles de Visita
         elif any(k in slug for k in ["perfiles_visita", "perfiles_de_visita", "visit_profiles"]):
             data = await AttendanceService.get_visit_profiles_donut(
@@ -1314,11 +1331,25 @@ async def _resolver_datos_grafico_contexto_interno(
             table_data = top_carr[:15] if top_carr else None
 
         else:
-            # Fallback determinista general por si el nombre no coincide exactamente
-            component, payload, fig_data, table_data = await ejecutar_consulta_tool(
-                "consultar_aforo_historico", {"espacio_id": espacio_id}, db, espacio_id
+            # Fallback determinista general conservando período y filtros activos
+            args_fb = {"espacio_id": espacio_id}
+            if fecha_inicio:
+                args_fb["fecha_inicio"] = fecha_inicio
+            if fecha_fin:
+                args_fb["fecha_fin"] = fecha_fin
+            req_fb = ChatRequest(
+                prompt="Resumen del gráfico",
+                espacio_id=espacio_id,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                filtros=filtros,
             )
-            resumen_metricas = f"Gráfico enfocado: {slug}. Se han cargado los registros históricos correspondientes al espacio {nombre_espacio}."
+            component, payload, res_fallback, fig_data, table_data = await ejecutar_consulta_tool(
+                "consultar_aforo_historico", args_fb, db, espacio_id, req=req_fb
+            )
+            resumen_metricas = res_fallback or (
+                f"Gráfico enfocado: {slug}. Se han cargado los registros históricos correspondientes al espacio {nombre_espacio}."
+            )
 
     except Exception as exc:
         logger.error(f"Error resolviendo datos del gráfico de contexto '{slug}': {exc}", exc_info=True)
@@ -1352,19 +1383,31 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
     Retorna: (componente_react, datos_crudos, resumen_metricas, fig_data_fallback, table_data_fallback)
     """
     from datetime import date
-    espacio = args.get("espacio_id", espacio_id) or espacio_id
+    # Fuerza siempre el espacio validado por RLS e ignora el espacio_id enviado por el LLM
+    espacio = espacio_id
     f_ini = args.get("fecha_inicio") or (req.fecha_inicio if req else None)
     f_fin = args.get("fecha_fin") or (req.fecha_fin if req else None)
     prompt_txt = req.prompt if req else ""
     anio_activo = await obtener_anio_activo_espacio(db, espacio)
     d_ini, d_fin = extraer_o_normalizar_fechas(f_ini, f_fin, prompt_txt, anio_defecto=anio_activo)
 
+    HERRAMIENTAS_COMUNES = {
+        "consultar_mapa_calor",
+        "consultar_picos_flujo",
+        "consultar_proyeccion_prophet",
+        "consultar_kpis_actuales",
+        "consultar_calendario_academico",
+        "consultar_aforo_historico",
+    }
     HERRAMIENTAS_BIBLIOTECA = {
         "consultar_distribucion_carreras",
         "consultar_torniquetes_accesos",
         "consultar_comparativa_salas",
         "consultar_perfiles_visita",
-        "consultar_pronostico_14d",
+        "consultar_campana_24h",
+        "consultar_flujo_nocturno",
+        "consultar_evolucion_semanal",
+        "consultar_volumen_mensual",
     }
     HERRAMIENTAS_ESTACIONAMIENTO = {
         "consultar_flota_vehicular",
@@ -1372,10 +1415,16 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
         "consultar_movilidad_intercampus",
         "consultar_clustering_vehicular",
     }
+    HERRAMIENTAS_PERMITIDAS_POR_ESPACIO = {
+        1: HERRAMIENTAS_COMUNES | HERRAMIENTAS_BIBLIOTECA,
+        2: HERRAMIENTAS_COMUNES | HERRAMIENTAS_ESTACIONAMIENTO,
+    }
     if espacio == 1 and tool_name in HERRAMIENTAS_ESTACIONAMIENTO:
         return None, None, "Acceso denegado: herramienta vehicular no permitida en módulo Biblioteca CSF.", None, None
     if espacio == 2 and tool_name in HERRAMIENTAS_BIBLIOTECA:
         return None, None, "Acceso denegado: herramienta de biblioteca no permitida en módulo Estacionamiento CSF.", None, None
+    if tool_name not in HERRAMIENTAS_PERMITIDAS_POR_ESPACIO.get(espacio, set()):
+        return None, None, "Acceso denegado: herramienta no autorizada para el recinto activo.", None, None
 
     if tool_name == "consultar_mapa_calor":
         if espacio == 2:
@@ -1461,10 +1510,6 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
 
     elif tool_name == "consultar_perfiles_visita":
         c, p, res_m, f, t = await resolver_datos_grafico_contexto("perfiles_visita", espacio, str(d_ini) if d_ini else None, str(d_fin) if d_fin else None, db, req.filtros if req else None)
-        return c, p, res_m, f, t
-
-    elif tool_name == "consultar_pronostico_14d":
-        c, p, res_m, f, t = await resolver_datos_grafico_contexto("pronostico_14d", espacio, str(d_ini) if d_ini else None, str(d_fin) if d_fin else None, db, req.filtros if req else None)
         return c, p, res_m, f, t
 
     elif tool_name in ["consultar_campana_24h", "consultar_flujo_nocturno"]:
@@ -1759,12 +1804,15 @@ async def _ejecutar_consulta_tool_interno(tool_name: str, args: dict, db: AsyncS
 
 
 async def ejecutar_consulta_tool(tool_name: str, args: dict, db: AsyncSession, espacio_id: int, req: Optional[ChatRequest] = None):
-    f_ini = args.get("fecha_inicio") or (req.fecha_inicio if req else None)
-    f_fin = args.get("fecha_fin") or (req.fecha_fin if req else None)
-    clave_cache = f"tool:{tool_name}:{espacio_id}:{json.dumps(args, sort_keys=True, default=str)}:{f_ini}:{f_fin}"
+    args_seguros = dict(args or {})
+    args_seguros["espacio_id"] = espacio_id
+    f_ini = args_seguros.get("fecha_inicio") or (req.fecha_inicio if req else None)
+    f_fin = args_seguros.get("fecha_fin") or (req.fecha_fin if req else None)
+    filtros_canon = json.dumps(req.filtros or {}, sort_keys=True, default=str) if req else "{}"
+    clave_cache = f"tool:{tool_name}:{espacio_id}:{json.dumps(args_seguros, sort_keys=True, default=str)}:{f_ini}:{f_fin}:{filtros_canon}"
     if clave_cache in _cache_resultados_herramientas:
         return _cache_resultados_herramientas[clave_cache]
-    resultado = await _ejecutar_consulta_tool_interno(tool_name, args, db, espacio_id, req)
+    resultado = await _ejecutar_consulta_tool_interno(tool_name, args_seguros, db, espacio_id, req)
     _cache_resultados_herramientas[clave_cache] = resultado
     return resultado
 

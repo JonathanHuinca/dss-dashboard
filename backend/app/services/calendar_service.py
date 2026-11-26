@@ -1,6 +1,7 @@
 import logging
 from datetime import date, timedelta
 from typing import Iterable, List, Optional
+from fastapi import HTTPException
 from sqlalchemy import select, delete, text, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.models import CalendarioAcademico, ContingenciaAcademica
@@ -190,7 +191,7 @@ class CalendarService:
             or_(
                 CalendarioAcademico.fuente == "contingencia_manual",
                 CalendarioAcademico.tipo_contingencia.isnot(None),
-                CalendarioAcademico.descripcion.like("%[%"),
+                CalendarioAcademico.descripcion.like("%[[]%"),
             )
         )
         fechas_cal = (await db.execute(q_cal)).scalars().all()
@@ -207,6 +208,8 @@ class CalendarService:
         return await self.reconciliar_dias_calendario(db, fechas, commit=True)
 
     async def crear_contingencia(self, db: AsyncSession, data: ContingenciaCrear) -> ContingenciaAcademica:
+        if data.fecha_inicio > data.fecha_fin:
+            raise HTTPException(status_code=400, detail="La fecha de inicio no puede ser posterior a la fecha de fin.")
         subespacio_limpio = (data.subespacio or "todos").strip()
         nueva = ContingenciaAcademica(
             fecha_inicio=data.fecha_inicio,
@@ -317,7 +320,7 @@ class CalendarService:
                     mapa_espacios.setdefault(d_cur, [])
                     if int(esp_val) not in mapa_espacios[d_cur]:
                         mapa_espacios[d_cur].append(int(esp_val))
-                if c.implica_cierre_total or c.tipo in ("suspension_sala", "mantencion_cierre", "toma_campus", "climatica", "duelo"):
+                if bool(c.implica_cierre_total):
                     mapa_contingencia_cierre[d_cur] = True
                 if c.tipo == "paro_federado":
                     mapa_contingencia_paro_fed[d_cur] = True
@@ -575,6 +578,8 @@ class CalendarService:
         is_strike_carrera: bool = False,
         tipo_contingencia: Optional[str] = None,
     ) -> List[CalendarioAcademico]:
+        if fecha_inicio > fecha_fin:
+            raise HTTPException(status_code=400, detail="La fecha de inicio no puede ser posterior a la fecha de fin.")
         items = []
         cur = fecha_inicio
         while cur <= fecha_fin:

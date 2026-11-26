@@ -1,11 +1,16 @@
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles, validar_acceso_espacio
+from app.core.security import (
+    get_current_user,
+    get_optional_current_user,
+    require_roles,
+    validar_acceso_espacio,
+)
 from app.domain.auth_models import Usuario
 from app.services.auth_service import normalizar_rol
 from app.services.servicio_reportes_compartidos import ServicioReportesCompartidos
@@ -32,7 +37,7 @@ def verificar_permiso_compartir_reportes(
 
 class RegistrarConsultorReporteRequest(BaseModel):
     nombre_completo: str = Field(..., min_length=2)
-    email: str = Field(..., min_length=3)
+    email: EmailStr
     cargo: str = Field(..., min_length=2)
     unidad_academica: str = Field(..., min_length=2)
 
@@ -55,7 +60,7 @@ class NotaItemSchema(BaseModel):
 class CrearReporteCompartidoRequest(BaseModel):
     espacio_id: int = Field(..., description="1=Biblioteca CSF, 2=Estacionamiento CSF")
     destinatario_nombre: str = Field(..., min_length=2)
-    destinatario_email: str = Field(..., min_length=3)
+    destinatario_email: EmailStr
     destinatario_cargo: str = Field(..., min_length=2)
     destinatario_unidad: str = Field(..., min_length=2)
     titulo_reporte: str = Field(..., min_length=3)
@@ -115,6 +120,7 @@ async def obtener_mis_reportes(
 @router.post("/consultores", status_code=status.HTTP_201_CREATED, summary="Crear cuenta de usuario Consultor_Reporte y enviar invitación de contraseña")
 async def registrar_consultor_reporte(
     payload: RegistrarConsultorReporteRequest,
+    background_tasks: BackgroundTasks,
     current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
     db: AsyncSession = Depends(get_db),
 ):
@@ -122,23 +128,25 @@ async def registrar_consultor_reporte(
         session=db,
         usuario_actual=current_user,
         payload=payload.model_dump(),
+        background_tasks=background_tasks,
     )
 
 
 @router.get("/usuarios-candidatos", summary="Listar usuarios institucionales activos candidatos para rol Consultor_Reporte")
 async def obtener_usuarios_candidatos(
-    current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
+    current_user: Usuario = Depends(require_roles(["Admin_Sistema", "Director_Recinto"])),
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.obtener_usuarios_candidatos_consultor(
         session=db,
+        usuario_actual=current_user,
     )
 
 
 @router.post("/vincular-usuario-existente", status_code=status.HTTP_201_CREATED, summary="Vincular usuario del campus a rol Consultor_Reporte preservando su contraseña")
 async def vincular_usuario_existente(
     payload: VincularUsuarioExistenteRequest,
-    current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
+    current_user: Usuario = Depends(require_roles(["Admin_Sistema", "Director_Recinto"])),
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.vincular_usuario_existente_consultor(
@@ -166,6 +174,7 @@ async def listar_reportes_compartidos(
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Crear enlace de reporte ejecutivo compartido")
 async def crear_reporte_compartido(
     payload: CrearReporteCompartidoRequest,
+    background_tasks: BackgroundTasks,
     current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
     db: AsyncSession = Depends(get_db),
 ):
@@ -174,6 +183,7 @@ async def crear_reporte_compartido(
         session=db,
         usuario_actual=current_user,
         payload=payload.model_dump(),
+        background_tasks=background_tasks,
     )
 
 
@@ -225,6 +235,7 @@ async def obtener_eventos_reporte(
 async def actualizar_reporte_compartido(
     reporte_id: str,
     payload: ActualizarReporteCompartidoRequest,
+    background_tasks: BackgroundTasks,
     current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
     db: AsyncSession = Depends(get_db),
 ):
@@ -233,6 +244,7 @@ async def actualizar_reporte_compartido(
         usuario_actual=current_user,
         reporte_id=reporte_id,
         payload=payload.model_dump(exclude_unset=True),
+        background_tasks=background_tasks,
     )
 
 
@@ -253,20 +265,21 @@ async def eliminar_reporte_compartido(
 async def actualizar_estado_destinatario(
     destinatario_id: int,
     payload: ActualizarDestinatarioEstadoRequest,
-    current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
+    current_user: Usuario = Depends(require_roles(["Admin_Sistema", "Director_Recinto"])),
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.actualizar_estado_destinatario(
         session=db,
         destinatario_id=destinatario_id,
         activo=payload.activo,
+        usuario_actual=current_user,
     )
 
 
 @router.delete("/destinatarios/{destinatario_id}", summary="Eliminar usuario Consultor de Reportes y sus reportes asociados")
 async def eliminar_destinatario_consultor(
     destinatario_id: int,
-    current_user: Usuario = Depends(verificar_permiso_compartir_reportes),
+    current_user: Usuario = Depends(require_roles(["Admin_Sistema"])),
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.eliminar_destinatario_consultor(
@@ -277,12 +290,13 @@ async def eliminar_destinatario_consultor(
 
 
 # ---------------------------------------------------------------------------
-# Endpoints públicos confinados por token criptográfico (para el destinatario)
+# Endpoints de acceso a reportes compartidos (requieren autenticación JWT para datos)
 # ---------------------------------------------------------------------------
-@router.get("/publico/{token_acceso}", summary="Obtener datos confinados de un reporte compartido por token")
+@router.get("/publico/{token_acceso}", summary="Obtener metadatos o datos autenticados de un reporte compartido por token")
 async def obtener_reporte_publico(
     token_acceso: str,
     request: Request,
+    current_user: Optional[Usuario] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     ip_origen = request.client.host if request.client else None
@@ -292,17 +306,20 @@ async def obtener_reporte_publico(
         token_acceso=token_acceso,
         ip_origen=ip_origen,
         user_agent=user_agent,
+        usuario_actual=current_user,
     )
 
 
-@router.get("/portal/{token_portal}", summary="Obtener bandeja histórica de reportes del destinatario")
+@router.get("/portal/{token_portal}", summary="Obtener bandeja histórica de reportes del destinatario autenticado")
 async def obtener_portal_destinatario(
     token_portal: str,
+    current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.obtener_portal_destinatario_por_token(
         session=db,
         token_portal=token_portal,
+        usuario_actual=current_user,
     )
 
 
@@ -311,6 +328,7 @@ async def registrar_evento_reporte_publico(
     token_acceso: str,
     payload: EventoReportePublicoRequest,
     request: Request,
+    current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     ip_origen = request.client.host if request.client else None
@@ -322,17 +340,20 @@ async def registrar_evento_reporte_publico(
         detalle=payload.detalle,
         ip_origen=ip_origen,
         user_agent=user_agent,
+        usuario_actual=current_user,
     )
 
 
 @router.get("/publico/{token_acceso}/ia/historial", summary="Obtener historial de chat IA persistido del reporte compartido")
 async def obtener_historial_ia_reporte_publico(
     token_acceso: str,
+    current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     return await ServicioReportesCompartidos.obtener_historial_ia_reporte_publico(
         session=db,
         token_acceso=token_acceso,
+        usuario_actual=current_user,
     )
 
 
@@ -341,6 +362,7 @@ async def consultar_ia_reporte_publico(
     token_acceso: str,
     payload: ConsultaIAReporteRequest,
     request: Request,
+    current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     ip_origen = request.client.host if request.client else None
@@ -352,5 +374,6 @@ async def consultar_ia_reporte_publico(
         sesion_id=payload.sesion_id or "principal",
         ip_origen=ip_origen,
         user_agent=user_agent,
+        usuario_actual=current_user,
     )
 

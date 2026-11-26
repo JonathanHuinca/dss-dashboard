@@ -11,10 +11,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import get_current_user, require_role, validar_acceso_espacio
+from app.core.security import (
+    get_current_user,
+    obtener_espacios_autorizados,
+    require_permission,
+    require_role,
+    validar_acceso_espacio,
+)
 from app.core.database import get_db
 from app.core.tiempo import marcar_utc
+from app.domain.auth_models import Usuario
 from app.domain.models import IngestionJob
+from app.services.auth_service import normalizar_rol
 from app.schemas.ingestion_schemas import (
     FileInspectionResponse,
     IngestionValidationResponse,
@@ -57,16 +65,19 @@ async def inspect_file_endpoint(
 
     validar_acceso_espacio(espacio_id, current_user)
 
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo subido se encuentra vacío")
+    try:
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo subido se encuentra vacío")
 
-    return await inspect_uploaded_file(
-        file_bytes=file_bytes,
-        filename=file.filename,
-        tipo=tipo,
-        espacio_id=espacio_id,
-    )
+        return await inspect_uploaded_file(
+            file_bytes=file_bytes,
+            filename=file.filename,
+            tipo=tipo,
+            espacio_id=espacio_id,
+        )
+    finally:
+        await file.close()
 
 
 @router.post(
@@ -91,17 +102,20 @@ async def validate_file_endpoint(
 
     validar_acceso_espacio(espacio_id, current_user)
 
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo subido se encuentra vacío")
+    try:
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo subido se encuentra vacío")
 
-    return await validar_archivo_ingesta(
-        file_bytes=file_bytes,
-        filename=file.filename,
-        tipo=tipo,
-        espacio_id=espacio_id,
-        db=db,
-    )
+        return await validar_archivo_ingesta(
+            file_bytes=file_bytes,
+            filename=file.filename,
+            tipo=tipo,
+            espacio_id=espacio_id,
+            db=db,
+        )
+    finally:
+        await file.close()
 
 
 @router.post(
@@ -129,13 +143,13 @@ async def process_file_endpoint(
 
     validar_acceso_espacio(espacio_id, current_user)
 
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo subido se encuentra vacío")
-
-    user_id = getattr(current_user, "id", current_user.get("id") if isinstance(current_user, dict) else None)
-
     try:
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El archivo subido se encuentra vacío")
+
+        user_id = getattr(current_user, "id", current_user.get("id") if isinstance(current_user, dict) else None)
+
         return await ejecutar_ingesta_atomica(
             file_bytes=file_bytes,
             filename=file.filename,
@@ -150,6 +164,9 @@ async def process_file_endpoint(
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    finally:
+        await file.close()
         logger.error(f"Error durante la transacción de ingesta: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -204,7 +221,7 @@ async def _guardar_archivo_ingesta_stream(file: UploadFile, ruta_temporal: Path,
                     if ruta_temporal.exists():
                         ruta_temporal.unlink()
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail=f"El archivo excede el tamaño máximo permitido de {settings.TAMANO_MAXIMO_INGESTA_MB} MB.",
                     )
                 hasher.update(chunk)
@@ -267,7 +284,10 @@ async def upload_file(
     ruta_temporal = dir_ingesta / f"temp_{job_id}_{nombre_limpio}"
 
     limite_bytes = settings.TAMANO_MAXIMO_INGESTA_MB * 1024 * 1024
-    sha256_hash = await _guardar_archivo_ingesta_stream(file, ruta_temporal, limite_bytes)
+    try:
+        sha256_hash = await _guardar_archivo_ingesta_stream(file, ruta_temporal, limite_bytes)
+    finally:
+        await file.close()
 
     # 3. Rechazar duplicados preexistentes si no es modo overwrite
     if modo_solapamiento != "overwrite":
@@ -297,8 +317,9 @@ async def upload_file(
     db.add(nuevo_job)
     await db.commit()
 
-    # 6. Ejecutar pipeline mediante tarea asíncrona con semáforo
-    asyncio.create_task(
+    # 6. Ejecutar pipeline mediante tarea asíncrona con referencia fuerte y semáforo
+    from app.core.recursos_http import crear_tarea_fondo
+    crear_tarea_fondo(
         encolar_y_procesar_ingesta(
             job_id=job_id,
             ruta_archivo=str(ruta_definitiva),
@@ -307,7 +328,8 @@ async def upload_file(
             modo_solapamiento=modo_solapamiento,
             clave_enlace=clave_enlace,
             modo_enlace=modo_enlace,
-        )
+        ),
+        nombre=f"ingesta_{job_id}",
     )
 
     return {
@@ -320,11 +342,22 @@ async def upload_file(
 
 
 @router.get("/{job_id}/status")
-async def get_job_status(job_id: uuid.UUID, db: AsyncSession = Depends(get_db), current_user = Depends(get_current_user)):
+async def get_job_status(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: Usuario = Depends(require_permission("can_ingest")),
+):
     job = await db.get(IngestionJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job no encontrado")
-        
+
+    if job.espacio_id is not None:
+        validar_acceso_espacio(job.espacio_id, current_user)
+    else:
+        es_admin = any(normalizar_rol(r.nombre) == "Admin_Sistema" for r in (current_user.roles or []))
+        if not es_admin and job.creado_por != current_user.id:
+            raise HTTPException(status_code=403, detail="No autorizado para consultar este trabajo de ingesta.")
+
     return {
         "job_id": str(job.job_id),
         "estado": job.estado,
@@ -337,9 +370,15 @@ async def get_job_status(job_id: uuid.UUID, db: AsyncSession = Depends(get_db), 
 @router.get("/history", response_model=List[IngestionHistoryItem])
 async def get_ingestion_history(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user: Usuario = Depends(require_permission("can_ingest")),
 ):
-    stmt = select(IngestionJob).order_by(IngestionJob.creado_en.desc()).limit(50)
+    espacios_autorizados = obtener_espacios_autorizados(current_user)
+    if espacios_autorizados is not None and not espacios_autorizados:
+        return []
+    stmt = select(IngestionJob)
+    if espacios_autorizados is not None:
+        stmt = stmt.where(IngestionJob.espacio_id.in_(espacios_autorizados))
+    stmt = stmt.order_by(IngestionJob.creado_en.desc()).limit(50)
     result = await db.execute(stmt)
     jobs = result.scalars().all()
     

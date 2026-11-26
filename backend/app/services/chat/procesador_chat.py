@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -18,9 +19,9 @@ from app.services.servicio_chat_persistente import (
     obtener_conversacion,
     agregar_mensaje,
     obtener_ultimos_mensajes_contexto,
-    validar_cuota_ia_usuario,
+    reservar_cuota_ia_usuario,
+    finalizar_reserva_cuota_ia,
 )
-from app.services.chat.auditoria_chat import registrar_auditoria_chat
 from app.services.chat.fechas_chat import obtener_anio_activo_espacio
 from app.services.chat.ejecutor_herramientas import (
     ejecutar_consulta_tool,
@@ -97,77 +98,84 @@ async def procesar_consulta_analitica(
         req.espacio_id = 1
     validar_acceso_espacio(req.espacio_id, current_user)
 
-    # Validación persistente de cuota diaria antes de procesar la consulta
-    await validar_cuota_ia_usuario(db, current_user)
-
-    # Resolución o creación de la conversación persistente
-    conversacion = None
-    conversacion_existente = False
-    if req.conversacion_id:
-        try:
-            conv_uuid = uuid.UUID(req.conversacion_id)
-            conversacion = await obtener_conversacion(db, conv_uuid, user_id, cargar_mensajes=False)
-            conversacion_existente = conversacion is not None
-        except Exception:
-            conversacion = None
-
-    if not conversacion:
-        conversacion = await crear_conversacion(
-            db,
-            usuario_id=user_id,
-            espacio_id=req.espacio_id,
-            prompt_inicial=prompt_text,
-        )
-
-    # Recuperar memoria conversacional previa ANTES de guardar el turno actual
-    historial_previo = []
-    if conversacion_existente:
-        mensajes_previos = await obtener_ultimos_mensajes_contexto(db, conversacion.id, limite=12)
-        for m in mensajes_previos:
-            txt_m = (m.contenido or "").strip()
-            if not txt_m:
-                continue
-            if len(txt_m) > 1200:
-                txt_m = txt_m[:1200] + "..."
-            historial_previo.append({
-                "role": "assistant" if m.rol == "assistant" else "user",
-                "content": txt_m,
-            })
-
-    llm_client = await build_llm_client(db, req.espacio_id)
-    modelo_efectivo = getattr(llm_client, "default_model", None) or req.model
-
-    # Persistencia inmediata del mensaje del usuario
-    await agregar_mensaje(
+    # Reserva atómica y fail-closed de cuota diaria ANTES de procesar o invocar al LLM
+    audit_id = await reservar_cuota_ia_usuario(
         db,
-        conversacion_id=conversacion.id,
-        rol="user",
-        tipo="text",
-        contenido=prompt_text,
-        modelo=modelo_efectivo,
+        current_user,
+        prompt_text=prompt_text,
+        dataset_tipo=req.dataset_tipo,
+        modelo_utilizado=req.model,
+        origen="dashboard",
     )
 
-    nombre_espacio = "Estacionamiento CSF" if req.espacio_id == 2 else "Biblioteca CSF"
-
-    # Enrutamiento inteligente: verificar si la pregunta aplica al gráfico enfocado o es una consulta libre/fechas
-    debe_usar_grafico_contexto = False
-    if req.grafico_contexto:
-        texto_bajo = prompt_text.lower()
-        slug_ctx = re.sub(r'[^a-z0-9_]', '_', req.grafico_contexto.lower()).strip('_')
-        es_consulta_fechas = bool(re.search(r'(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|\d{1,2}\s+(?:al|hasta)\s+\d{1,2})', texto_bajo))
-
-        if es_consulta_fechas:
-            debe_usar_grafico_contexto = False
-        elif "camara" in slug_ctx:
-            debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["flota", "marca", "intercampus", "cluster"])
-        elif "flota" in slug_ctx:
-            debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["camara", "cámara", "anpr", "intercampus", "cluster"])
-        elif "torniquete" in slug_ctx:
-            debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["carrera", "facultad", "prophet", "pronostico", "pronóstico"])
-        else:
-            debe_usar_grafico_contexto = True
-
     try:
+        # Resolución o creación de la conversación persistente
+        conversacion = None
+        conversacion_existente = False
+        if req.conversacion_id:
+            try:
+                conv_uuid = uuid.UUID(req.conversacion_id)
+                conversacion = await obtener_conversacion(db, conv_uuid, user_id, cargar_mensajes=False)
+                conversacion_existente = conversacion is not None
+            except Exception:
+                conversacion = None
+
+        if not conversacion:
+            conversacion = await crear_conversacion(
+                db,
+                usuario_id=user_id,
+                espacio_id=req.espacio_id,
+                prompt_inicial=prompt_text,
+            )
+
+        # Recuperar memoria conversacional previa ANTES de guardar el turno actual
+        historial_previo = []
+        if conversacion_existente:
+            mensajes_previos = await obtener_ultimos_mensajes_contexto(db, conversacion.id, limite=12)
+            for m in mensajes_previos:
+                txt_m = (m.contenido or "").strip()
+                if not txt_m:
+                    continue
+                if len(txt_m) > 1200:
+                    txt_m = txt_m[:1200] + "..."
+                historial_previo.append({
+                    "role": "assistant" if m.rol == "assistant" else "user",
+                    "content": txt_m,
+                })
+
+        llm_client = await build_llm_client(db, req.espacio_id)
+        modelo_efectivo = getattr(llm_client, "default_model", None) or req.model
+
+        # Persistencia inmediata del mensaje del usuario
+        await agregar_mensaje(
+            db,
+            conversacion_id=conversacion.id,
+            rol="user",
+            tipo="text",
+            contenido=prompt_text,
+            modelo=modelo_efectivo,
+        )
+
+        nombre_espacio = "Estacionamiento CSF" if req.espacio_id == 2 else "Biblioteca CSF"
+
+        # Enrutamiento inteligente: verificar si la pregunta aplica al gráfico enfocado o es una consulta libre/fechas
+        debe_usar_grafico_contexto = False
+        if req.grafico_contexto:
+            texto_bajo = prompt_text.lower()
+            slug_ctx = re.sub(r'[^a-z0-9_]', '_', req.grafico_contexto.lower()).strip('_')
+            es_consulta_fechas = bool(re.search(r'(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|\d{1,2}\s+(?:al|hasta)\s+\d{1,2})', texto_bajo))
+
+            if es_consulta_fechas:
+                debe_usar_grafico_contexto = False
+            elif "camara" in slug_ctx:
+                debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["flota", "marca", "intercampus", "cluster"])
+            elif "flota" in slug_ctx:
+                debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["camara", "cámara", "anpr", "intercampus", "cluster"])
+            elif "torniquete" in slug_ctx:
+                debe_usar_grafico_contexto = not any(k in texto_bajo for k in ["carrera", "facultad", "prophet", "pronostico", "pronóstico"])
+            else:
+                debe_usar_grafico_contexto = True
+
         if debe_usar_grafico_contexto and req.grafico_contexto:
             raw_component, raw_payload, resumen_metricas, raw_fig, raw_table = await resolver_datos_grafico_contexto(
                 grafico_id=req.grafico_contexto,
@@ -257,11 +265,18 @@ async def procesar_consulta_analitica(
 
         conv_id_actual = conversacion.id
 
-        # Flujo Server-Sent Events (SSE) streaming
+        # Flujo Server-Sent Events (SSE) streaming liberando la sesión de BD del request antes del stream
         if is_sse:
+            if isinstance(db, AsyncSession):
+                await db.close()
+
             async def sse_stream():
+                full_text = []
+                status_final = "error"
+                narrativa_fin: Optional[str] = None
+                reserva_finalizada = False
+                stream_gen = None
                 try:
-                    # Primer frame: metadatos estructurados con componente y payload crudo
                     meta_payload = {
                         "type": "meta",
                         "intent": tool_name,
@@ -272,67 +287,80 @@ async def procesar_consulta_analitica(
                     }
                     yield f"data: {json.dumps(meta_payload, default=str)}\n\n"
 
-                    # Frames sucesivos: tokens narrativos de IA
-                    full_text = []
                     if is_tool_call:
-                        async for chunk in llm_client.generate_narrative_stream(
+                        stream_gen = llm_client.generate_narrative_stream(
                             prompt=summary_prompt,
                             model_name=modelo_efectivo,
                             history=historial_previo,
-                        ):
-                            full_text.append(chunk)
-                            yield f"data: {json.dumps({'type': 'text', 'chunk': chunk})}\n\n"
+                        )
+                        try:
+                            async for chunk in stream_gen:
+                                full_text.append(chunk)
+                                yield f"data: {json.dumps({'type': 'text', 'chunk': chunk})}\n\n"
+                        finally:
+                            aclose_fn = getattr(stream_gen, "aclose", None)
+                            if callable(aclose_fn):
+                                try:
+                                    await aclose_fn()
+                                except Exception:
+                                    pass
                     else:
                         chunk = analysis.get("text", "")
                         full_text.append(chunk)
                         yield f"data: {json.dumps({'type': 'text', 'chunk': chunk})}\n\n"
 
-                    # Frame final de finalización
-                    yield f"data: {json.dumps({'type': 'done', 'conversacion_id': str(conv_id_actual)})}\n\n"
-
-                    # Persistir mensaje del asistente en SQL Server estructurado
-                    narrativa = "".join(full_text)
+                    narrativa_fin = "".join(full_text)
                     async with AsyncSessionLocal() as async_db:
                         await agregar_mensaje(
                             async_db,
                             conversacion_id=conv_id_actual,
                             rol="assistant",
                             tipo=tipo,
-                            contenido=narrativa,
+                            contenido=narrativa_fin,
                             herramienta=tool_name if (is_tool_call and tipo == "component") else None,
                             argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
                             modelo=modelo_efectivo,
                         )
-
+                    status_final = "éxito"
                     elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-                    background_tasks.add_task(
-                        registrar_auditoria_chat,
-                        user_id,
-                        prompt_text,
-                        req.dataset_tipo,
-                        modelo_efectivo,
-                        "éxito",
-                        elapsed_ms,
-                        narrativa,
-                        "dashboard",
-                        None,
+                    await asyncio.shield(
+                        finalizar_reserva_cuota_ia(
+                            audit_id,
+                            status_final=status_final,
+                            response_time_ms=elapsed_ms,
+                            respuesta_text=narrativa_fin,
+                            modelo_utilizado=modelo_efectivo,
+                        )
                     )
+                    reserva_finalizada = True
+                    yield f"data: {json.dumps({'type': 'done', 'conversacion_id': str(conv_id_actual)})}\n\n"
+                except (asyncio.CancelledError, GeneratorExit):
+                    narrativa_fin = "".join(full_text) or None
+                    status_final = "éxito" if full_text else "cancelado"
+                    raise
                 except Exception as stream_err:
-                    elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-                    background_tasks.add_task(
-                        registrar_auditoria_chat,
-                        user_id,
-                        prompt_text,
-                        req.dataset_tipo,
-                        modelo_efectivo,
-                        f"error: {str(stream_err)[:100]}",
-                        elapsed_ms,
-                    )
+                    status_final = f"error: {str(stream_err)[:100]}"
                     yield f"data: {json.dumps({'type': 'error', 'error': str(stream_err)})}\n\n"
+                finally:
+                    if not reserva_finalizada:
+                        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+                        await asyncio.shield(
+                            finalizar_reserva_cuota_ia(
+                                audit_id,
+                                status_final=status_final,
+                                response_time_ms=elapsed_ms,
+                                respuesta_text=narrativa_fin,
+                                modelo_utilizado=modelo_efectivo,
+                            )
+                        )
 
             return StreamingResponse(sse_stream(), media_type="text/event-stream", background=background_tasks)
 
-        # Flujo REST estándar asíncrono
+        # Flujo REST estándar asíncrono: liberar sesión antes de esperar HTTP externo del LLM
+        es_sesion_real = isinstance(db, AsyncSession)
+        if es_sesion_real:
+            await db.close()
+
         if is_tool_call:
             narrativa = (
                 await llm_client.generate_response(
@@ -345,30 +373,39 @@ async def procesar_consulta_analitica(
         else:
             narrativa = analysis.get("text", "No se generó respuesta para la consulta.")
 
-        # Persistir mensaje estructurado sin figuras Plotly monolíticas
-        await agregar_mensaje(
-            db,
-            conversacion_id=conv_id_actual,
-            rol="assistant",
-            tipo=tipo,
-            contenido=narrativa,
-            herramienta=tool_name if (is_tool_call and tipo == "component") else None,
-            argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
-            modelo=modelo_efectivo,
-        )
+        if es_sesion_real:
+            async with AsyncSessionLocal() as db_post:
+                await agregar_mensaje(
+                    db_post,
+                    conversacion_id=conv_id_actual,
+                    rol="assistant",
+                    tipo=tipo,
+                    contenido=narrativa,
+                    herramienta=tool_name if (is_tool_call and tipo == "component") else None,
+                    argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
+                    modelo=modelo_efectivo,
+                )
+        else:
+            await agregar_mensaje(
+                db,
+                conversacion_id=conv_id_actual,
+                rol="assistant",
+                tipo=tipo,
+                contenido=narrativa,
+                herramienta=tool_name if (is_tool_call and tipo == "component") else None,
+                argumentos_json=json.dumps(tool_args, ensure_ascii=False) if (is_tool_call and tipo == "component" and tool_args) else None,
+                modelo=modelo_efectivo,
+            )
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-        background_tasks.add_task(
-            registrar_auditoria_chat,
-            user_id,
-            prompt_text,
-            req.dataset_tipo,
-            modelo_efectivo,
-            "éxito",
-            elapsed_ms,
-            narrativa,
-            "dashboard",
-            None,
+        await asyncio.shield(
+            finalizar_reserva_cuota_ia(
+                audit_id,
+                status_final="éxito",
+                response_time_ms=elapsed_ms,
+                respuesta_text=narrativa,
+                modelo_utilizado=modelo_efectivo,
+            )
         )
 
         return ChatResponse(
@@ -384,13 +421,12 @@ async def procesar_consulta_analitica(
         )
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-        background_tasks.add_task(
-            registrar_auditoria_chat,
-            user_id if 'user_id' in locals() else getattr(current_user, "id", None),
-            prompt_text if 'prompt_text' in locals() else getattr(req, "prompt", ""),
-            getattr(req, "dataset_tipo", None),
-            modelo_efectivo if 'modelo_efectivo' in locals() else getattr(req, "model", None),
-            f"error: {str(exc)[:100]}",
-            elapsed_ms,
+        await asyncio.shield(
+            finalizar_reserva_cuota_ia(
+                audit_id,
+                status_final=f"error: {str(exc)[:100]}",
+                response_time_ms=elapsed_ms,
+                modelo_utilizado=locals().get("modelo_efectivo") or getattr(req, "model", None),
+            )
         )
         raise exc

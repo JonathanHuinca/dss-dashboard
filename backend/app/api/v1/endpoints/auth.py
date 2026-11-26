@@ -1,4 +1,4 @@
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -104,13 +104,6 @@ async def login(
         email=user.email,
     )
 
-    try:
-        import asyncio
-        from app.core.cache import precalentar_cache_modulos
-        asyncio.create_task(precalentar_cache_modulos())
-    except Exception:
-        pass
-
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
@@ -127,13 +120,13 @@ async def login(
     )
 
 
-def map_usuario_response(u: Usuario) -> UsuarioResponse:
+def map_usuario_response(u: Any) -> UsuarioResponse:
     return UsuarioResponse(
         id=u.id,
         email=u.email,
         nombre_completo=u.nombre_completo,
         is_active=u.is_active,
-        allowed_datasets=u.allowed_datasets,
+        allowed_datasets=list(u.allowed_datasets or []),
         can_use_ai=u.can_use_ai,
         can_export=u.can_export,
         can_ingest=u.can_ingest,
@@ -162,6 +155,7 @@ async def get_me(
     summary="Inicialización de roles por defecto",
 )
 async def initialize_roles(
+    _: Usuario = Depends(require_role("Admin_Sistema")),
     db: AsyncSession = Depends(get_db),
 ) -> List[RolResponse]:
     created = await seed_default_roles(db)

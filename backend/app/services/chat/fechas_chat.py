@@ -1,3 +1,4 @@
+import calendar
 import json
 import logging
 import re
@@ -158,21 +159,27 @@ def extraer_o_normalizar_fechas(
     d_fin = None
 
     texto = prompt_texto.lower()
-    match_anio = re.search(r'\b(20\d{2})\b', texto)
-    anio_objetivo = int(match_anio.group(1)) if match_anio else anio_defecto
+    matches_anio = re.findall(r'\b(20\d{2})\b', texto)
+    anios_unicos = list(dict.fromkeys(int(a) for a in matches_anio))
+    anio_unico_prompt = anios_unicos[0] if len(anios_unicos) == 1 else None
+    anio_objetivo = anio_unico_prompt or (anios_unicos[0] if anios_unicos else anio_defecto)
+
+    def _construir_fecha_segura(anio: int, mes: int, dia: int) -> date:
+        ultimo = calendar.monthrange(anio, mes)[1]
+        return date(anio, mes, min(max(1, dia), ultimo))
 
     if f_ini_raw:
         try:
             d_ini = date.fromisoformat(str(f_ini_raw)[:10])
-            if d_ini.year != anio_objetivo:
-                d_ini = date(anio_objetivo, d_ini.month, d_ini.day)
+            if anio_unico_prompt is not None and d_ini.year != anio_unico_prompt:
+                d_ini = _construir_fecha_segura(anio_unico_prompt, d_ini.month, d_ini.day)
         except Exception:
             pass
     if f_fin_raw:
         try:
             d_fin = date.fromisoformat(str(f_fin_raw)[:10])
-            if d_fin.year != anio_objetivo:
-                d_fin = date(anio_objetivo, d_fin.month, d_fin.day)
+            if anio_unico_prompt is not None and d_fin.year != anio_unico_prompt:
+                d_fin = _construir_fecha_segura(anio_unico_prompt, d_fin.month, d_fin.day)
         except Exception:
             pass
 
@@ -201,27 +208,29 @@ def extraer_o_normalizar_fechas(
                 mes1_str = match_rango.group(2)
                 dia2 = int(match_rango.group(3))
                 mes2_str = match_rango.group(4)
-                mes2 = meses_map.get(mes2_str, 10)
-                mes1 = meses_map.get(mes1_str, mes2) if mes1_str else mes2
-                try:
-                    if not d_ini:
-                        d_ini = date(anio_objetivo, mes1, dia1)
-                    if not d_fin:
-                        d_fin = date(anio_objetivo, mes2, dia2)
-                except Exception:
-                    pass
+                mes2 = meses_map.get(mes2_str)
+                mes1 = meses_map.get(mes1_str) if mes1_str else mes2
+                if mes1 and mes2:
+                    try:
+                        if len(anios_unicos) >= 2 and anios_unicos[0] <= anios_unicos[1]:
+                            anio_ini, anio_fin = anios_unicos[0], anios_unicos[1]
+                        elif mes1 > mes2:
+                            anio_ini, anio_fin = anio_objetivo - 1, anio_objetivo
+                        else:
+                            anio_ini = anio_fin = anio_objetivo
+                        if not d_ini:
+                            d_ini = _construir_fecha_segura(anio_ini, mes1, dia1)
+                        if not d_fin:
+                            d_fin = _construir_fecha_segura(anio_fin, mes2, dia2)
+                    except Exception:
+                        pass
             else:
                 for mes_nombre, mes_num in meses_map.items():
                     if len(mes_nombre) > 3 and mes_nombre in texto:
                         if not d_ini:
                             d_ini = date(anio_objetivo, mes_num, 1)
                         if not d_fin:
-                            if mes_num in [1, 3, 5, 7, 8, 10, 12]:
-                                ultimo_dia = 31
-                            elif mes_num == 2:
-                                ultimo_dia = 28
-                            else:
-                                ultimo_dia = 30
+                            ultimo_dia = calendar.monthrange(anio_objetivo, mes_num)[1]
                             d_fin = date(anio_objetivo, mes_num, ultimo_dia)
                         break
 
@@ -321,7 +330,8 @@ async def obtener_contexto_calendario_rango(
 
             etq_str = f" [{', '.join(etiquetas)}]" if etiquetas else ""
             if desc_oficial or etiquetas:
-                hitos.append(f"- {r.fecha.strftime('%d/%m/%Y (%A)')}: {desc_oficial}{etq_str}")
+                dias_es = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+                hitos.append(f"- {r.fecha.strftime('%d/%m/%Y')} ({dias_es[r.fecha.weekday()]}): {desc_oficial}{etq_str}")
 
         # Contingencias académicas e incidencias operativas vigentes desde tabla fuente
         for c in contingencias:

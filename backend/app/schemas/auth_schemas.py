@@ -20,7 +20,7 @@ class RolResponse(RolBase):
 
 
 class RolQuotaUpdate(BaseModel):
-    rate_limit_quota: str
+    rate_limit_quota: str = Field(..., pattern=r"^\d+/(day|d[ií]a)$")
     cooldown_segundos: int = Field(ge=0, le=3600, default=10)
 
 

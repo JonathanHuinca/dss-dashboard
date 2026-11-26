@@ -7,11 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.core.cache import invalidar_cache_por_espacio, limpiar_toda_la_cache
 from app.core.config import settings
-from app.core.security import validar_acceso_espacio
+from app.core.security import obtener_espacios_autorizados, validar_acceso_espacio
 from app.core.database import get_db
 from app.core.security_cipher import decrypt_api_key, mask_api_key
 from app.core.tiempo import marcar_utc
 from app.domain.auth_models import Usuario
+from app.domain.config_models import HorarioOperacion
+from app.domain.models import ContingenciaAcademica
+from app.services.auth_service import normalizar_rol
 from app.schemas.config_schemas import (
     CatalogoProveedoresIAResponse,
     ConfiguracionEspaciosResponse,
@@ -207,6 +210,10 @@ async def set_llm_provider(
     )
 
 
+def _es_admin_sistema(user: Usuario) -> bool:
+    return any(normalizar_rol(r.nombre) == "Admin_Sistema" for r in (getattr(user, "roles", None) or []))
+
+
 @router.get("/horarios", response_model=list[HorarioOperacionResponse], summary="Listar horarios de operación")
 async def list_horarios(
     espacio_id: Optional[int] = None,
@@ -215,34 +222,30 @@ async def list_horarios(
     current_user: Usuario = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[HorarioOperacionResponse]:
+    espacios_autorizados = obtener_espacios_autorizados(current_user)
     if espacio_id is not None:
         validar_acceso_espacio(espacio_id, current_user)
+    elif espacios_autorizados is not None and not espacios_autorizados:
+        return []
     horarios = await get_horarios_operacion(db=db, espacio_id=espacio_id, anio=anio, subespacio=subespacio)
+    if espacios_autorizados is not None:
+        horarios = [h for h in horarios if h.espacio_id in espacios_autorizados]
     return [HorarioOperacionResponse.model_validate(h) for h in horarios]
-
-
-def _notificar_cambio_operativo_a_modelos() -> None:
-    try:
-        from app.ml.orquestador_entrenamiento import estado_entrenamiento, ejecutar_entrenamiento_en_fondo
-        if not estado_entrenamiento.get("en_progreso", False):
-            asyncio.create_task(ejecutar_entrenamiento_en_fondo(forzar=True))
-    except Exception:
-        pass
 
 
 @router.post("/horarios", response_model=HorarioOperacionResponse, summary="Crear horario de operación")
 async def create_horario(
     data: HorarioOperacionCreate,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("SuperAdmin", "Directivo")),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
 ) -> HorarioOperacionResponse:
+    validar_acceso_espacio(data.espacio_id, current_user)
     horario = await create_horario_operacion(db=db, data=data)
     from app.services.attendance_service import invalidar_cache_horarios_asistencia
     from app.services.vehicle_service import invalidar_cache_horarios_vehiculos
     invalidar_cache_horarios_asistencia(horario.espacio_id)
     invalidar_cache_horarios_vehiculos(horario.espacio_id)
     await invalidar_cache_por_espacio(horario.espacio_id)
-    _notificar_cambio_operativo_a_modelos()
     return HorarioOperacionResponse.model_validate(horario)
 
 
@@ -251,8 +254,18 @@ async def update_horario(
     horario_id: int,
     data: HorarioOperacionUpdate,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("SuperAdmin", "Directivo")),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
 ) -> HorarioOperacionResponse:
+    existente = await db.get(HorarioOperacion, horario_id)
+    if not existente:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Horario de operación no encontrado",
+        )
+    validar_acceso_espacio(existente.espacio_id, current_user)
+    nuevo_espacio = getattr(data, "espacio_id", None)
+    if nuevo_espacio is not None:
+        validar_acceso_espacio(nuevo_espacio, current_user)
     horario = await update_horario_operacion(db=db, horario_id=horario_id, data=data)
     if not horario:
         raise HTTPException(
@@ -264,7 +277,6 @@ async def update_horario(
     invalidar_cache_horarios_asistencia(horario.espacio_id)
     invalidar_cache_horarios_vehiculos(horario.espacio_id)
     await invalidar_cache_por_espacio(horario.espacio_id)
-    _notificar_cambio_operativo_a_modelos()
     return HorarioOperacionResponse.model_validate(horario)
 
 
@@ -272,8 +284,15 @@ async def update_horario(
 async def delete_horario(
     horario_id: int,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("SuperAdmin", "Directivo")),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
 ) -> dict:
+    existente = await db.get(HorarioOperacion, horario_id)
+    if not existente:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Horario de operación no encontrado",
+        )
+    validar_acceso_espacio(existente.espacio_id, current_user)
     deleted = await delete_horario_operacion(db=db, horario_id=horario_id)
     if not deleted:
         raise HTTPException(
@@ -282,19 +301,23 @@ async def delete_horario(
         )
     from app.services.attendance_service import invalidar_cache_horarios_asistencia
     from app.services.vehicle_service import invalidar_cache_horarios_vehiculos
-    invalidar_cache_horarios_asistencia()
-    invalidar_cache_horarios_vehiculos()
-    await limpiar_toda_la_cache()
-    _notificar_cambio_operativo_a_modelos()
+    invalidar_cache_horarios_asistencia(existente.espacio_id)
+    invalidar_cache_horarios_vehiculos(existente.espacio_id)
+    await invalidar_cache_por_espacio(existente.espacio_id)
     return {"detail": "Horario eliminado exitosamente"}
 
 
 @router.get("/espacios", response_model=list[EspacioResponse], summary="Listar todos los espacios y capacidades")
 async def list_espacios(
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    current_user: Usuario = Depends(get_current_user),
 ) -> list[EspacioResponse]:
+    espacios_autorizados = obtener_espacios_autorizados(current_user)
+    if espacios_autorizados is not None and not espacios_autorizados:
+        return []
     espacios = await get_espacios(db)
+    if espacios_autorizados is not None:
+        espacios = [e for e in espacios if e.id in espacios_autorizados]
     return [EspacioResponse.model_validate(e) for e in espacios]
 
 
@@ -335,7 +358,7 @@ async def update_capacidad(
 @router.post("/calendar/sync-scrape", summary="Sincronizar calendario académico UCT mediante web scraping")
 async def sync_calendar_scrape(
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("SuperAdmin", "Directivo")),
+    _: Usuario = Depends(require_role("Admin_Sistema")),
 ) -> dict:
     from app.services.calendar_scraper import scrape_and_sync_uct_calendar
     try:
@@ -397,11 +420,22 @@ async def listar_contingencias(
 async def registrar_contingencia(
     data: ContingenciaCrear,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("SuperAdmin", "Directivo")),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
 ) -> ContingenciaRespuesta:
+    if data.espacio_id is None:
+        if not _es_admin_sistema(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo Admin_Sistema puede registrar contingencias globales sin recinto asignado.",
+            )
+    else:
+        validar_acceso_espacio(data.espacio_id, current_user)
     servicio = CalendarService()
     nueva = await servicio.crear_contingencia(db, data)
-    await limpiar_toda_la_cache()
+    if data.espacio_id is not None:
+        await invalidar_cache_por_espacio(data.espacio_id)
+    else:
+        await limpiar_toda_la_cache()
     _notificar_cambio_operativo_a_modelos()
     return ContingenciaRespuesta.model_validate(nueva)
 
@@ -410,8 +444,22 @@ async def registrar_contingencia(
 async def eliminar_contingencia(
     contingencia_id: int,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("SuperAdmin", "Directivo")),
+    current_user: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
 ) -> dict:
+    existente = await db.get(ContingenciaAcademica, contingencia_id)
+    if not existente:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Contingencia académica no encontrada",
+        )
+    if existente.espacio_id is None:
+        if not _es_admin_sistema(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo Admin_Sistema puede eliminar contingencias globales.",
+            )
+    else:
+        validar_acceso_espacio(existente.espacio_id, current_user)
     servicio = CalendarService()
     eliminado = await servicio.eliminar_contingencia(db, contingencia_id)
     if not eliminado:
@@ -419,7 +467,10 @@ async def eliminar_contingencia(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Contingencia académica no encontrada",
         )
-    await limpiar_toda_la_cache()
+    if existente.espacio_id is not None:
+        await invalidar_cache_por_espacio(existente.espacio_id)
+    else:
+        await limpiar_toda_la_cache()
     _notificar_cambio_operativo_a_modelos()
     return {"detail": "Contingencia académica eliminada exitosamente"}
 
@@ -450,7 +501,7 @@ async def listar_eventos_calendario(
 @router.post("/calendar/depurar", summary="Depurar registros irrelevantes del calendario académico")
 async def depurar_calendario_academico(
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
+    _: Usuario = Depends(require_role("Admin_Sistema")),
 ) -> dict:
     servicio = CalendarService()
     eliminados = await servicio.depurar_calendario_basura(db)
@@ -465,7 +516,7 @@ async def actualizar_evento_calendario(
     fecha: date,
     datos: EventoCalendarioActualizar,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
+    _: Usuario = Depends(require_role("Admin_Sistema")),
 ) -> dict:
     servicio = CalendarService()
     item = await servicio.actualizar_evento_calendario(
@@ -493,7 +544,7 @@ async def actualizar_evento_calendario(
 async def crear_evento_calendario(
     datos: EventoCalendarioCrear,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
+    _: Usuario = Depends(require_role("Admin_Sistema")),
 ) -> dict:
     servicio = CalendarService()
     fecha_fin = datos.fecha_fin or datos.fecha_inicio
@@ -521,7 +572,7 @@ async def crear_evento_calendario(
 async def eliminar_evento_calendario(
     fecha: date,
     db: AsyncSession = Depends(get_db),
-    _: Usuario = Depends(require_role("Admin_Sistema", "Director_Recinto")),
+    _: Usuario = Depends(require_role("Admin_Sistema")),
 ) -> dict:
     servicio = CalendarService()
     eliminado = await servicio.eliminar_evento_calendario(db, fecha)

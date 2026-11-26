@@ -1,3 +1,4 @@
+import asyncio
 import io
 import re
 import math
@@ -56,6 +57,22 @@ class ExcelExportService:
         """
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {"in_memory": True, "nan_inf_to_errors": True})
+        cerrado = False
+        try:
+            ExcelExportService._poblar_excel_nativo_sync(workbook, solicitud)
+            workbook.close()
+            cerrado = True
+            return output.getvalue()
+        finally:
+            if not cerrado:
+                try:
+                    workbook.close()
+                except Exception:
+                    pass
+            output.close()
+
+    @staticmethod
+    def _poblar_excel_nativo_sync(workbook: Any, solicitud: SolicitudExportacionExcel) -> None:
 
         # Estilos y formatos
         fmt_titulo_resumen = workbook.add_format({
@@ -390,9 +407,6 @@ class ExcelExportService:
 
             idx_grafico += 1
 
-        workbook.close()
-        return output.getvalue()
-
     @staticmethod
     async def generar_reporte_plantilla_salas_estudio(
         session: AsyncSession,
@@ -442,7 +456,12 @@ class ExcelExportService:
                 SUM(CASE WHEN (ea.door_entrada LIKE '%CSF04%' OR ea.door_salida LIKE '%CSF04%') AND ea.door_entrada IS NOT NULL THEN 1 ELSE 0 END) AS sala_2,
                 COUNT(ea.time) AS total_general
             FROM ea_filtrada ea
-            LEFT JOIN dim_estudiante_carrera dec ON dec.person_id_hash = ea.person_id_hash
+            OUTER APPLY (
+                SELECT TOP 1 d.carr_nombre
+                FROM dim_estudiante_carrera d
+                WHERE d.person_id_hash = ea.person_id_hash
+                ORDER BY d.id DESC
+            ) dec
             GROUP BY COALESCE(dec.carr_nombre, ea.carrera, 'Sin Carrera')
             HAVING COUNT(ea.time) > 0
             ORDER BY total_general DESC
@@ -491,10 +510,51 @@ class ExcelExportService:
             ORDER BY hora ASC
         """)
         rows_horas = (await session.execute(sql_horas, params)).fetchall()
+        return await asyncio.to_thread(
+            ExcelExportService._construir_workbook_salas_sync,
+            list(rows_carreras),
+            list(rows_dias_mes),
+            list(rows_dias_sem),
+            list(rows_horas),
+            periodo_label,
+        )
 
-        # Inicializar libro Excel
+    @staticmethod
+    def _construir_workbook_salas_sync(
+        rows_carreras: list,
+        rows_dias_mes: list,
+        rows_dias_sem: list,
+        rows_horas: list,
+        periodo_label: Optional[str],
+    ) -> bytes:
+        """Construye síncronamente el libro xlsxwriter en hilo trabajador."""
         output = io.BytesIO()
         workbook = xlsxwriter.Workbook(output, {"in_memory": True})
+        cerrado = False
+        try:
+            ExcelExportService._poblar_workbook_salas_sync(
+                workbook, rows_carreras, rows_dias_mes, rows_dias_sem, rows_horas, periodo_label
+            )
+            workbook.close()
+            cerrado = True
+            return output.getvalue()
+        finally:
+            if not cerrado:
+                try:
+                    workbook.close()
+                except Exception:
+                    pass
+            output.close()
+
+    @staticmethod
+    def _poblar_workbook_salas_sync(
+        workbook: Any,
+        rows_carreras: list,
+        rows_dias_mes: list,
+        rows_dias_sem: list,
+        rows_horas: list,
+        periodo_label: Optional[str],
+    ) -> None:
         sheet_name = "REPORTE SALAS DE ESTUDIOS"
         ws = workbook.add_worksheet(sheet_name)
         ws.set_tab_color("#002B49")
@@ -863,7 +923,4 @@ class ExcelExportService:
             c5.set_size({"width": 460, "height": 340})
             fila_pos_c5 = fila_total_horas + 2
             ws.insert_chart(f"W{fila_pos_c5}", c5, {"x_offset": 5, "y_offset": 5})
-
-        workbook.close()
-        return output.getvalue()
 

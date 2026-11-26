@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.limiter import limiter, get_rate_limit_by_role
-from app.core.security import require_permission, validar_acceso_espacio
+from app.core.security import require_permission, require_role, validar_acceso_espacio
+from app.core.tiempo import marcar_utc
 from app.domain.auth_models import Usuario
 from app.api.v1.endpoints.config import check_ia_active
 from app.schemas.chat_schemas import (
@@ -27,6 +28,12 @@ from app.services.chat import (
 
 router = APIRouter(dependencies=[Depends(check_ia_active)])
 CHAT_CACHE: TTLCache = TTLCache(maxsize=128, ttl=600)
+
+
+def _iso_utc_z(dt) -> str:
+    if not dt:
+        return ""
+    return marcar_utc(dt).isoformat().replace("+00:00", "Z")
 
 
 @router.post("", response_model=ChatResponse, summary="Procesar consulta analítica con asistente IA")
@@ -53,8 +60,8 @@ async def list_user_conversations(
     return [
         ConversacionResumenResponse(
             id=str(c.id), usuario_id=c.usuario_id, espacio_id=c.espacio_id, titulo=c.titulo,
-            creada_en=c.creada_en.isoformat() if c.creada_en else "",
-            actualizada_en=c.actualizada_en.isoformat() if c.actualizada_en else "", archivada=c.archivada
+            creada_en=_iso_utc_z(c.creada_en),
+            actualizada_en=_iso_utc_z(c.actualizada_en), archivada=c.archivada
         ) for c in convs
     ]
 
@@ -69,8 +76,8 @@ async def create_user_conversation(
     c = await crear_conversacion(db, current_user.id, req.espacio_id, req.titulo)
     return ConversacionResumenResponse(
         id=str(c.id), usuario_id=c.usuario_id, espacio_id=c.espacio_id, titulo=c.titulo,
-        creada_en=c.creada_en.isoformat() if c.creada_en else "",
-        actualizada_en=c.actualizada_en.isoformat() if c.actualizada_en else "", archivada=c.archivada
+        creada_en=_iso_utc_z(c.creada_en),
+        actualizada_en=_iso_utc_z(c.actualizada_en), archivada=c.archivada
     )
 
 
@@ -91,13 +98,13 @@ async def get_user_conversation_detail(
         MensajeItemResponse(
             id=str(m.id), conversacion_id=str(m.conversacion_id), rol=m.rol, tipo=m.tipo,
             contenido=m.contenido, herramienta=m.herramienta, argumentos_json=m.argumentos_json,
-            modelo=m.modelo, creado_en=m.creado_en.isoformat() if m.creado_en else ""
+            modelo=m.modelo, creado_en=_iso_utc_z(m.creado_en)
         ) for m in conv.mensajes
     ]
     return ConversacionDetalleResponse(
         id=str(conv.id), usuario_id=conv.usuario_id, espacio_id=conv.espacio_id, titulo=conv.titulo,
-        creada_en=conv.creada_en.isoformat() if conv.creada_en else "",
-        actualizada_en=conv.actualizada_en.isoformat() if conv.actualizada_en else "",
+        creada_en=_iso_utc_z(conv.creada_en),
+        actualizada_en=_iso_utc_z(conv.actualizada_en),
         archivada=conv.archivada, mensajes=mensajes
     )
 
@@ -155,7 +162,7 @@ async def get_user_quota_info(
 @router.post("/purgar-eliminadas", summary="Purgar conversaciones expiradas")
 @router.post("/purge-deleted", include_in_schema=False)
 async def purge_expired_conversations(
-    db: AsyncSession = Depends(get_db), current_user: Usuario = Depends(require_permission("can_manage_users")),
+    db: AsyncSession = Depends(get_db), current_user: Usuario = Depends(require_role("Admin_Sistema")),
 ):
     purgadas = await purgar_conversaciones_eliminadas(db)
     return {"status": "success", "purgadas": purgadas, "retencion_dias": settings.RETENCION_CHAT_DIAS}
@@ -172,12 +179,12 @@ async def get_chat_history(
     if conversacion_id:
         try:
             conv = await obtener_conversacion(db, uuid.UUID(conversacion_id), current_user.id, cargar_mensajes=True)
-            if conv:
+            if conv and getattr(conv, "espacio_id", espacio_id) == espacio_id:
                 mensajes_out = [
                     {
                         "id": str(m.id), "rol": m.rol, "tipo": m.tipo, "contenido": m.contenido,
                         "herramienta": m.herramienta, "argumentos_json": m.argumentos_json,
-                        "modelo": m.modelo, "creado_en": m.creado_en.isoformat() if m.creado_en else "",
+                        "modelo": m.modelo, "creado_en": _iso_utc_z(m.creado_en),
                     } for m in conv.mensajes
                 ]
         except Exception:

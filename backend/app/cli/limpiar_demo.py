@@ -10,11 +10,12 @@ import argparse
 import asyncio
 import logging
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import selectinload
 
 from app.core.database import AsyncSessionLocal
 from app.domain.auth_models import TokenActivacion, Usuario, UsuarioRol
+from app.domain.models import IngestionJob
 from app.domain.reportes_compartidos_models import (
     AuditoriaAccesoReporte,
     DestinatarioReporte,
@@ -80,7 +81,7 @@ async def limpiar_cuentas_demo(
             dest_ids = list(
                 (
                     await db.execute(
-                        select(DestinatarioReporte.id).where(func.lower(DestinatarioReporte.email) == email_low)
+                        select(DestinatarioReporte.id).where(DestinatarioReporte.email == email_low)
                     )
                 )
                 .scalars()
@@ -103,6 +104,8 @@ async def limpiar_cuentas_demo(
                     await db.execute(delete(ReporteCompartido).where(ReporteCompartido.id.in_(rep_ids)))
                 await db.execute(delete(DestinatarioReporte).where(DestinatarioReporte.id.in_(dest_ids)))
 
+            await db.execute(update(Usuario).where(Usuario.created_by_user_id == u.id).values(created_by_user_id=None))
+            await db.execute(update(IngestionJob).where(IngestionJob.creado_por == u.id).values(creado_por=None))
             await db.execute(delete(TokenActivacion).where(TokenActivacion.usuario_id == u.id))
             await db.execute(delete(UsuarioRol).where(UsuarioRol.usuario_id == u.id))
             await db.execute(delete(Usuario).where(Usuario.id == u.id))

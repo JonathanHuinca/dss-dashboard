@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import json
 import logging
 try:
@@ -25,13 +26,30 @@ ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
 
 
 def _ahora_chile_naive() -> datetime:
-    """Retorna la fecha y hora local de Chile (America/Santiago) sin tzinfo para persistencia uniforme en BD."""
+    """Retorna la fecha y hora local de Chile (America/Santiago) sin tzinfo para cálculos locales/cron."""
     return datetime.now(ZONA_HORARIA_CHILE).replace(tzinfo=None)
+
+
+def _ahora_utc_naive() -> datetime:
+    """Retorna la fecha y hora actual UTC sin tzinfo para timers, latidos y auditoría libre de DST."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _chile_naive_a_utc_naive(dt_cl: datetime) -> datetime:
+    """Convierte un datetime naive en hora Chile a UTC naive."""
+    aware = dt_cl.replace(tzinfo=ZONA_HORARIA_CHILE) if dt_cl.tzinfo is None else dt_cl
+    return aware.astimezone(timezone.utc).replace(tzinfo=None)
 
 # Instancia singleton de AsyncIOScheduler
 planificador: Optional[AsyncIOScheduler] = None
 _bloqueos_memoria: Dict[str, asyncio.Lock] = {}
 _tareas_en_ejecucion_tasks: Dict[uuid.UUID, asyncio.Task] = {}
+_tarea_recuperacion: Optional[asyncio.Task] = None
+
+
+def obtener_bloqueo_tarea(nombre_tarea: str) -> asyncio.Lock:
+    """Retorna el lock de memoria asociado a una tarea del planificador."""
+    return _obtener_bloqueo_memoria(nombre_tarea)
 
 
 class ReentranciaError(Exception):
@@ -99,13 +117,19 @@ async def _handler_reentrenar_modelos_ml(disparador: str = "manual") -> Dict[str
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=tiempo_max_seg)
     except asyncio.TimeoutError:
-        try:
+        with suppress(Exception):
             proc.kill()
-        except Exception:
-            pass
+        with suppress(Exception):
+            await proc.wait()
         raise TimeoutError(
             f"El subproceso de reentrenamiento excedió el tiempo límite de {settings.TIEMPO_MAXIMO_TAREA_MINUTOS} minutos."
         )
+    except asyncio.CancelledError:
+        with suppress(Exception):
+            proc.kill()
+        with suppress(Exception):
+            await proc.wait()
+        raise
 
     stdout_str = stdout_bytes.decode("utf-8", errors="replace")
     stderr_str = stderr_bytes.decode("utf-8", errors="replace")
@@ -236,12 +260,12 @@ CATALOGO_TAREAS: Dict[str, Dict[str, Any]] = {
         "frecuencia": "horaria",
     },
     "consolidar_smart_campus_nocturno": {
-        "descripcion": "Consolidación nocturna diaria a las 00:05 para cerrar el día anterior (D-1)",
-        "cron_trigger": CronTrigger(hour=0, minute=5, timezone=ZONA_HORARIA_CHILE),
-        "cron_str": "5 0 * * * (00:05 AM tras cada jornada hábil D-1)",
+        "descripcion": "Consolidación nocturna diaria a las 01:15 para cerrar el día anterior (D-1)",
+        "cron_trigger": CronTrigger(hour=1, minute=15, timezone=ZONA_HORARIA_CHILE),
+        "cron_str": "15 1 * * * (01:15 AM tras cada jornada hábil D-1)",
         "handler": _handler_consolidar_smart_campus_nocturno,
-        "catchup_hora": 0,
-        "catchup_minuto": 5,
+        "catchup_hora": 1,
+        "catchup_minuto": 15,
         "frecuencia": "diaria",
     },
 
@@ -261,6 +285,7 @@ async def es_momento_operativo_para_tarea(
     session: AsyncSession,
     nombre_tarea: str,
     dt_eval: Optional[datetime] = None,
+    contexto: Any = None,
 ) -> Tuple[bool, str]:
     """
     Evalúa si una tarea automática debe ejecutarse en `dt_eval` según el horario de atención
@@ -274,20 +299,26 @@ async def es_momento_operativo_para_tarea(
     ahora = dt_eval or _ahora_chile_naive()
 
     if nombre_tarea == "sincronizar_smart_campus_en_vivo":
-        return await verificar_hora_operativa_campus(session, ahora, margen_post_cierre_horas=1)
+        return await verificar_hora_operativa_campus(
+            session, ahora, margen_post_cierre_horas=1, contexto=contexto
+        )
 
     if nombre_tarea in ("reentrenar_modelos_ml", "purgar_conversaciones_chat"):
-        op1, m1 = await verificar_modulo_opera_en_fecha(session, 1, ahora)
-        op2, m2 = await verificar_modulo_opera_en_fecha(session, 2, ahora)
-        if op1 or op2:
-            return True, m1 if op1 else m2
+        op1, m1 = await verificar_modulo_opera_en_fecha(session, 1, ahora, contexto=contexto)
+        if op1:
+            return True, m1
+        op2, m2 = await verificar_modulo_opera_en_fecha(session, 2, ahora, contexto=contexto)
+        if op2:
+            return True, m2
         return False, f"Día no laboral ({m1})"
 
     if nombre_tarea == "consolidar_smart_campus_nocturno":
         ayer = ahora - timedelta(days=1)
-        op1, m1 = await verificar_modulo_opera_en_fecha(session, 1, ayer)
-        op2, m2 = await verificar_modulo_opera_en_fecha(session, 2, ayer)
-        if op1 or op2:
+        op1, m1 = await verificar_modulo_opera_en_fecha(session, 1, ayer, contexto=contexto)
+        if op1:
+            return True, f"Jornada D-1 hábil ({ayer.strftime('%Y-%m-%d')})"
+        op2, _m2 = await verificar_modulo_opera_en_fecha(session, 2, ayer, contexto=contexto)
+        if op2:
             return True, f"Jornada D-1 hábil ({ayer.strftime('%Y-%m-%d')})"
         return False, f"Jornada D-1 no laboral ({m1})"
 
@@ -298,6 +329,7 @@ async def calcular_proxima_ejecucion_habil(
     session: AsyncSession,
     nombre_tarea: str,
     ahora_cl: Optional[datetime] = None,
+    contexto: Any = None,
 ) -> Optional[datetime]:
     """
     Calcula la próxima fecha/hora real de ejecución saltando feriados, recesos,
@@ -310,6 +342,18 @@ async def calcular_proxima_ejecucion_habil(
     trigger: CronTrigger = info["cron_trigger"]
     cursor = ahora_cl or datetime.now(ZONA_HORARIA_CHILE)
 
+    tareas_con_calendario = (
+        "sincronizar_smart_campus_en_vivo",
+        "reentrenar_modelos_ml",
+        "purgar_conversaciones_chat",
+        "consolidar_smart_campus_nocturno",
+    )
+    if contexto is None and nombre_tarea in tareas_con_calendario:
+        from app.ml.orquestador_entrenamiento import precargar_contexto_operativo
+
+        fecha_base = cursor.astimezone(ZONA_HORARIA_CHILE).date() - timedelta(days=1)
+        contexto = await precargar_contexto_operativo(session, fecha_inicio=fecha_base, dias=35)
+
     if nombre_tarea == "sincronizar_smart_campus_en_vivo":
         # Buscar hasta 14 días (336 horas) la primera ventana horaria hábil
         prev = None
@@ -318,7 +362,9 @@ async def calcular_proxima_ejecucion_habil(
             if not candidato:
                 return None
             cand_naive = candidato.astimezone(ZONA_HORARIA_CHILE).replace(tzinfo=None)
-            es_op, _ = await es_momento_operativo_para_tarea(session, nombre_tarea, cand_naive)
+            es_op, _ = await es_momento_operativo_para_tarea(
+                session, nombre_tarea, cand_naive, contexto=contexto
+            )
             if es_op:
                 return candidato
             prev = candidato
@@ -333,7 +379,9 @@ async def calcular_proxima_ejecucion_habil(
             if not candidato:
                 return None
             cand_naive = candidato.astimezone(ZONA_HORARIA_CHILE).replace(tzinfo=None)
-            es_op, _ = await es_momento_operativo_para_tarea(session, nombre_tarea, cand_naive)
+            es_op, _ = await es_momento_operativo_para_tarea(
+                session, nombre_tarea, cand_naive, contexto=contexto
+            )
             if es_op:
                 return candidato
             prev = candidato
@@ -350,8 +398,8 @@ async def calcular_proxima_ejecucion_habil(
 
 async def limpiar_tareas_huerfanas(al_iniciar: bool = False) -> int:
     """Limpia tareas 'en_curso' cuyo latido superó los 15 minutos o interrumpidas por reinicio."""
-    ahora_local = _ahora_chile_naive()
-    limite = ahora_local - timedelta(minutes=15)
+    ahora_utc = _ahora_utc_naive()
+    limite = ahora_utc - timedelta(minutes=15)
     async with AsyncSessionLocal() as session:
         condiciones = [EjecucionTarea.estado == "en_curso"]
         if not al_iniciar:
@@ -361,7 +409,7 @@ async def limpiar_tareas_huerfanas(al_iniciar: bool = False) -> int:
             .where(*condiciones)
             .values(
                 estado="fallido",
-                fin_en=ahora_local,
+                fin_en=ahora_utc,
                 error="Interrumpido por reinicio o latido vencido (huérfana)",
             )
         )
@@ -388,7 +436,7 @@ async def _actualizar_latido_periodico(ejecucion_id: uuid.UUID, stop_event: asyn
                             EjecucionTarea.id == ejecucion_id,
                             EjecucionTarea.estado == "en_curso",
                         )
-                        .values(latido_en=_ahora_chile_naive())
+                        .values(latido_en=_ahora_utc_naive())
                     )
                     await session.commit()
             except Exception as e_hb:
@@ -415,7 +463,7 @@ async def ejecutar_tarea(
     lock = _obtener_bloqueo_memoria(nombre)
 
     async with lock:
-        ahora = _ahora_chile_naive()
+        ahora = _ahora_utc_naive()
         limite_latido = ahora - timedelta(minutes=15)
 
         async with AsyncSessionLocal() as session:
@@ -487,6 +535,7 @@ async def ejecutar_tarea(
         estado_final = "exitoso"
         error_msg = None
         resumen_dict = None
+        cancelado = False
 
         try:
             handler = info_tarea["handler"]
@@ -494,6 +543,11 @@ async def ejecutar_tarea(
                 resumen_dict = await asyncio.wait_for(handler(disparador=disparador), timeout=tiempo_max_seg)
             else:
                 resumen_dict = await asyncio.wait_for(handler(), timeout=tiempo_max_seg)
+        except asyncio.CancelledError:
+            cancelado = True
+            estado_final = "fallido"
+            error_msg = "Tarea cancelada durante el apagado o detención del servicio."
+            logger.warning(f"[planificador] Tarea '{nombre}' ({ejecucion_id}) cancelada.")
         except asyncio.TimeoutError:
             estado_final = "fallido"
             error_msg = f"Tiempo de ejecución cancelado por exceder límite de {settings.TIEMPO_MAXIMO_TAREA_MINUTOS} minutos."
@@ -505,6 +559,8 @@ async def ejecutar_tarea(
         finally:
             stop_event.set()
             tarea_latido.cancel()
+            with suppress(asyncio.CancelledError):
+                await tarea_latido
             _tareas_en_ejecucion_tasks.pop(ejecucion_id, None)
 
             # Medición de memoria pico
@@ -516,25 +572,29 @@ async def ejecutar_tarea(
                     pass
 
             resumen_json_str = json.dumps(resumen_dict, ensure_ascii=False) if resumen_dict is not None else None
-            fin_tiempo = _ahora_chile_naive()
+            fin_tiempo = _ahora_utc_naive()
 
-            async with AsyncSessionLocal() as session_fin:
-                await session_fin.execute(
-                    update(EjecucionTarea)
-                    .where(EjecucionTarea.id == ejecucion_id)
-                    .values(
-                        estado=estado_final,
-                        fin_en=fin_tiempo,
-                        latido_en=fin_tiempo,
-                        error=error_msg,
-                        resumen_json=resumen_json_str,
-                        memoria_pico_mb=memoria_mb,
+            async def _persistir_estado_final():
+                async with AsyncSessionLocal() as session_fin:
+                    await session_fin.execute(
+                        update(EjecucionTarea)
+                        .where(EjecucionTarea.id == ejecucion_id)
+                        .values(
+                            estado=estado_final,
+                            fin_en=fin_tiempo,
+                            latido_en=fin_tiempo,
+                            error=error_msg,
+                            resumen_json=resumen_json_str,
+                            memoria_pico_mb=memoria_mb,
+                        )
                     )
-                )
-                await session_fin.commit()
+                    await session_fin.commit()
+
+            with suppress(Exception):
+                await asyncio.shield(_persistir_estado_final())
 
             # Tarea 4: Reintento tras 30 minutos si falla el reentrenamiento de modelos ML
-            if estado_final == "fallido" and nombre == "reentrenar_modelos_ml" and disparador != "reintento":
+            if not cancelado and estado_final == "fallido" and nombre == "reentrenar_modelos_ml" and disparador != "reintento":
                 if planificador and planificador.running:
                     reintento_dt = datetime.now(ZONA_HORARIA_CHILE) + timedelta(minutes=30)
                     job_id = f"reintento_ml_{int(datetime.now(ZONA_HORARIA_CHILE).timestamp())}"
@@ -555,6 +615,8 @@ async def ejecutar_tarea(
                         id=job_id,
                         name=f"Reintento tras 30m de {nombre}",
                     )
+        if cancelado:
+            raise asyncio.CancelledError()
 
     tarea_coro = asyncio.create_task(_proceso_ejecucion())
     _tareas_en_ejecucion_tasks[ejecucion_id] = tarea_coro
@@ -583,7 +645,7 @@ async def ejecutar_recuperacion_al_inicio() -> None:
                 if not es_op:
                     logger.info(f"[planificador] Catch-up horario omitido para '{nombre}': {motivo_op}")
                     continue
-                hace_una_hora = ahora_chile - timedelta(minutes=55)
+                hace_una_hora = _ahora_utc_naive() - timedelta(minutes=55)
                 stmt_h = select(EjecucionTarea).where(
                     EjecucionTarea.tarea == nombre,
                     EjecucionTarea.inicio_en >= hace_una_hora,
@@ -611,12 +673,12 @@ async def ejecutar_recuperacion_al_inicio() -> None:
 
             if frecuencia == "diaria":
                 prevista = ahora_chile.replace(hour=hora_prog, minute=minuto_prog, second=0, microsecond=0)
-                limite_tiempo = prevista - timedelta(minutes=5)
+                limite_tiempo = _chile_naive_a_utc_naive(prevista - timedelta(minutes=5))
             elif frecuencia == "anual":
                 mes_prog = info.get("catchup_mes", 1)
                 dia_prog = info.get("catchup_dia", 1)
                 prevista = ahora_chile.replace(month=mes_prog, day=dia_prog, hour=hora_prog, minute=minuto_prog, second=0, microsecond=0)
-                limite_tiempo = datetime(ahora_chile.year, 1, 1, 0, 0, 0)
+                limite_tiempo = _chile_naive_a_utc_naive(datetime(ahora_chile.year, 1, 1, 0, 0, 0))
             else:
                 continue
 
@@ -647,10 +709,15 @@ async def ejecutar_recuperacion_al_inicio() -> None:
 _tarea_monitor_reloj: Optional[asyncio.Task] = None
 
 
+_MAX_REINTENTOS_VENTANA_HORA = 3
+_ENFRIAMIENTO_FALLO_SEGUNDOS = 120
+
+
 async def _monitor_reloj_planificador() -> None:
     """
     Despierta periódicamente el planificador y verifica que las tareas horarias no se pierdan
     en horario hábil ante derivas entre CLOCK_MONOTONIC y CLOCK_REALTIME en contenedores Docker.
+    Aplica límite de reintentos y enfriamiento por ventana horaria ante fallos consecutivos.
     """
     while planificador and planificador.running:
         try:
@@ -661,7 +728,10 @@ async def _monitor_reloj_planificador() -> None:
 
             ahora_chile = _ahora_chile_naive()
             if ahora_chile.minute >= 5:
-                inicio_ventana_hora = ahora_chile.replace(minute=0, second=0, microsecond=0)
+                inicio_ventana_cl = ahora_chile.replace(minute=0, second=0, microsecond=0)
+                inicio_ventana_utc = _chile_naive_a_utc_naive(inicio_ventana_cl)
+                ahora_utc = _ahora_utc_naive()
+
                 async with AsyncSessionLocal() as session:
                     es_op, _ = await es_momento_operativo_para_tarea(
                         session, "sincronizar_smart_campus_en_vivo", ahora_chile
@@ -670,16 +740,35 @@ async def _monitor_reloj_planificador() -> None:
                         continue
                     stmt_h = select(EjecucionTarea).where(
                         EjecucionTarea.tarea == "sincronizar_smart_campus_en_vivo",
-                        EjecucionTarea.inicio_en >= inicio_ventana_hora,
+                        EjecucionTarea.inicio_en >= inicio_ventana_utc,
                         EjecucionTarea.estado.in_(["exitoso", "en_curso"]),
                     )
                     ejecutada_esta_hora = (await session.execute(stmt_h)).scalars().first()
-                    if not ejecutada_esta_hora:
-                        logger.info(
-                            f"[planificador] Detectada ventana horaria hábil sin ejecución desde {inicio_ventana_hora.strftime('%H:%M')}. "
-                            "Disparando 'sincronizar_smart_campus_en_vivo'..."
+                    if ejecutada_esta_hora:
+                        continue
+
+                    stmt_fallos = (
+                        select(EjecucionTarea)
+                        .where(
+                            EjecucionTarea.tarea == "sincronizar_smart_campus_en_vivo",
+                            EjecucionTarea.inicio_en >= inicio_ventana_utc,
+                            EjecucionTarea.estado == "fallido",
                         )
-                        await ejecutar_tarea("sincronizar_smart_campus_en_vivo", disparador="programado")
+                        .order_by(desc(EjecucionTarea.inicio_en))
+                    )
+                    fallos_ventana = list((await session.execute(stmt_fallos)).scalars().all())
+                    if len(fallos_ventana) >= _MAX_REINTENTOS_VENTANA_HORA:
+                        continue
+                    if fallos_ventana:
+                        ultimo_fallo = fallos_ventana[0]
+                        if (ahora_utc - ultimo_fallo.inicio_en).total_seconds() < _ENFRIAMIENTO_FALLO_SEGUNDOS:
+                            continue
+
+                    logger.info(
+                        f"[planificador] Detectada ventana horaria hábil sin ejecución desde {inicio_ventana_cl.strftime('%H:%M')}. "
+                        "Disparando 'sincronizar_smart_campus_en_vivo'..."
+                    )
+                    await ejecutar_tarea("sincronizar_smart_campus_en_vivo", disparador="programado")
         except asyncio.CancelledError:
             break
         except Exception as exc_mon:
@@ -688,7 +777,7 @@ async def _monitor_reloj_planificador() -> None:
 
 async def iniciar_planificador() -> None:
     """Inicializa APScheduler, limpia huérfanas y evalúa catch-up si PLANIFICADOR_ACTIVO es true."""
-    global planificador, _tarea_monitor_reloj
+    global planificador, _tarea_monitor_reloj, _tarea_recuperacion
     if not settings.PLANIFICADOR_ACTIVO:
         logger.info("[planificador] PLANIFICADOR_ACTIVO es falso. Planificador no iniciado.")
         return
@@ -738,16 +827,34 @@ async def iniciar_planificador() -> None:
     logger.info("[planificador] APScheduler activo y en ejecución.")
 
     # 3. Catch-up al inicio y monitor continuo de reloj
-    asyncio.create_task(ejecutar_recuperacion_al_inicio())
+    _tarea_recuperacion = asyncio.create_task(ejecutar_recuperacion_al_inicio())
     _tarea_monitor_reloj = asyncio.create_task(_monitor_reloj_planificador())
 
 
 async def detener_planificador() -> None:
-    """Detiene APScheduler limpiamente durante el apagado del servidor."""
-    global planificador, _tarea_monitor_reloj
+    """Detiene APScheduler y cancela limpiamente tareas activas durante el apagado del servidor."""
+    global planificador, _tarea_monitor_reloj, _tarea_recuperacion
+    tareas_a_cancelar: List[asyncio.Task] = []
+
     if _tarea_monitor_reloj and not _tarea_monitor_reloj.done():
         _tarea_monitor_reloj.cancel()
-        _tarea_monitor_reloj = None
+        tareas_a_cancelar.append(_tarea_monitor_reloj)
+    _tarea_monitor_reloj = None
+
+    if _tarea_recuperacion and not _tarea_recuperacion.done():
+        _tarea_recuperacion.cancel()
+        tareas_a_cancelar.append(_tarea_recuperacion)
+    _tarea_recuperacion = None
+
+    for t_activa in list(_tareas_en_ejecucion_tasks.values()):
+        if t_activa and not t_activa.done():
+            t_activa.cancel()
+            tareas_a_cancelar.append(t_activa)
+
+    if tareas_a_cancelar:
+        with suppress(asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(asyncio.gather(*tareas_a_cancelar, return_exceptions=True), timeout=5.0)
+
     if planificador and planificador.running:
         logger.info("[planificador] Deteniendo APScheduler...")
         planificador.shutdown(wait=False)

@@ -1,6 +1,6 @@
 """
 orquestador_entrenamiento.py — Orquestador de Entrenamiento de Modelos de Machine Learning
-con arquitectura Campeón vs. Retador (Prophet, GBR y KMeans).
+con arquitectura Campeón vs. Retador (Prophet y KMeans).
 """
 import asyncio
 import json
@@ -8,8 +8,10 @@ import logging
 import os
 import shutil
 import sys
-from datetime import datetime, timezone, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import joblib
@@ -188,10 +190,6 @@ def _evaluar_campeon_existente(
                 y_pred = np.clip(y_pred, a_min=0, a_max=cap_val)
             if es_horario_abierto is not None:
                 y_pred[es_horario_abierto == 0] = 0.0
-
-        elif familia == "HistGradientBoosting":
-            reg = obj["model"] if isinstance(obj, dict) and "model" in obj else obj
-            y_pred = np.clip(reg.predict(test_features), 0, None)
 
         else:
             return None, None
@@ -395,111 +393,6 @@ async def _entrenar_retador_prophet(
     }
 
 
-async def _entrenar_retador_gbr(
-    session: AsyncSession,
-    clave_modelo: str,
-    espacio_id: int,
-) -> Dict[str, Any]:
-    """Entrena y valida un modelo retador GBR para predicción de demanda."""
-    from sklearn.ensemble import HistGradientBoostingRegressor
-    from sklearn.model_selection import train_test_split
-
-    FEATURE_COLS = ["dia_semana", "mes", "dia_ano", "is_exam_period", "is_break", "is_holiday"]
-
-    if espacio_id == 1:
-        sql = text("""
-            SELECT
-                CAST(ea.time AS DATE) AS fecha,
-                COUNT(*) AS total_demanda,
-                COALESCE(MAX(CASE WHEN ca.is_exam_period = 1 THEN 1 ELSE 0 END), 0) AS is_exam_period,
-                COALESCE(MAX(CASE WHEN ca.is_break = 1 THEN 1 ELSE 0 END), 0)       AS is_break,
-                COALESCE(MAX(CASE WHEN ca.is_holiday = 1 THEN 1 ELSE 0 END), 0)     AS is_holiday
-            FROM eventos_asistencia ea
-            LEFT JOIN calendario_academico ca ON CAST(ea.time AS DATE) = ca.fecha
-            WHERE ea.espacio_id = :espacio_id
-            GROUP BY CAST(ea.time AS DATE)
-            ORDER BY fecha ASC
-        """)
-    else:
-        sql = text("""
-            SELECT
-                CAST(ev.time AS DATE) AS fecha,
-                SUM(CASE WHEN ev.direccion = 'entrada' THEN 1 ELSE 0 END) AS total_demanda,
-                COALESCE(MAX(CASE WHEN ca.is_exam_period = 1 THEN 1 ELSE 0 END), 0) AS is_exam_period,
-                COALESCE(MAX(CASE WHEN ca.is_break = 1 THEN 1 ELSE 0 END), 0)       AS is_break,
-                COALESCE(MAX(CASE WHEN ca.is_holiday = 1 THEN 1 ELSE 0 END), 0)     AS is_holiday
-            FROM eventos_vehiculares ev
-            LEFT JOIN calendario_academico ca ON CAST(ev.time AS DATE) = ca.fecha
-            WHERE ev.espacio_id = :espacio_id
-            GROUP BY CAST(ev.time AS DATE)
-            ORDER BY fecha ASC
-        """)
-
-    rows = (await session.execute(sql, {"espacio_id": espacio_id})).fetchall()
-    if len(rows) < 30:
-        raise ValueError(f"Datos insuficientes para GBR '{clave_modelo}': {len(rows)} días (requiere >= 30).")
-
-    df = pd.DataFrame([
-        {
-            "fecha": r.fecha,
-            "total_demanda": float(r.total_demanda),
-            "is_exam_period": int(bool(r.is_exam_period)),
-            "is_break": int(bool(r.is_break)),
-            "is_holiday": int(bool(r.is_holiday)),
-        }
-        for r in rows
-    ])
-    df["fecha"] = pd.to_datetime(df["fecha"])
-    df["dia_semana"] = df["fecha"].dt.dayofweek
-    df["mes"] = df["fecha"].dt.month
-    df["dia_ano"] = df["fecha"].dt.dayofyear
-
-    X = df[FEATURE_COLS]
-    y = df["total_demanda"]
-
-    x_train, x_test, y_train, y_test = train_test_split(X, y, test_size=0.15, shuffle=False)
-    reg = HistGradientBoostingRegressor(random_state=42, max_iter=200, min_samples_leaf=5)
-    reg.fit(x_train, y_train)
-
-    y_pred = np.clip(reg.predict(x_test), 0, None)
-    denom = np.sum(y_test.values)
-    wape = float(100.0 * np.sum(np.abs(y_test.values - y_pred)) / denom) if denom > 0 else 0.0
-    mae = float(np.mean(np.abs(y_test.values - y_pred)))
-
-    # Evaluación pareada del campeón activo existente sobre el MISMO conjunto de prueba
-    wape_camp_test, mae_camp_test = _evaluar_campeon_existente(
-        clave_modelo=clave_modelo,
-        archivo_activo=f"{clave_modelo}.joblib",
-        familia="HistGradientBoosting",
-        test_features=x_test,
-        y_true=y_test.values,
-    )
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M")
-    ruta_retador = DIRECTORIO_MODELOS / f"{clave_modelo}_retador_v{ts}.joblib"
-    payload = {
-        "model": reg,
-        "features": FEATURE_COLS,
-        "score_r2": float(reg.score(x_test, y_test)),
-        "wape": round(wape, 2),
-        "mae": round(mae, 2),
-        "version": ts,
-    }
-    joblib.dump(payload, ruta_retador)
-
-    return {
-        "objeto_modelo": payload,
-        "ruta_retador": ruta_retador,
-        "wape": round(wape, 2),
-        "mae": round(mae, 2),
-        "wape_campeon_test": wape_camp_test,
-        "mae_campeon_test": mae_camp_test,
-        "filas_train": len(x_train),
-        "filas_test": len(x_test),
-        "version": ts,
-    }
-
-
 async def _entrenar_retador_kmeans(
     session: AsyncSession,
     clave_modelo: str,
@@ -514,34 +407,63 @@ async def _entrenar_retador_kmeans(
         raise ValueError(f"Datos insuficientes para KMeans: {len(df)} perfiles vehiculares (requiere >= 10).")
 
     feats = ['hora_llegada_avg', 'permanencia_avg_min', 'dias_totales', 'tasa_jornada_extrema']
-    X = df[feats].astype(float)
+    X = df[feats].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    n_distinct = max(1, int(X.drop_duplicates().shape[0]))
+    n_clusters = min(3, len(df), n_distinct)
     scaler = StandardScaler()
     x_scaled = scaler.fit_transform(X)
 
-    km = KMeans(n_clusters=3, random_state=42, n_init=10)
-    km.fit(x_scaled)
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    df['cluster_raw'] = km.fit_predict(x_scaled)
     inercia = float(km.inertia_)
+    inercia_media = round(inercia / max(1, len(df)), 4)
 
-    # Inercia de referencia del campeón existente si está disponible
+    cluster_profiles = []
+    for c in sorted(df['cluster_raw'].unique().tolist()):
+        cdf = df[df['cluster_raw'] == c]
+        cluster_profiles.append({
+            "raw_id": int(c),
+            "dias_totales": float(cdf['dias_totales'].mean()),
+            "permanencia_min": float(cdf['permanencia_avg_min'].mean()),
+            "tasa_extrema": float(cdf['tasa_jornada_extrema'].mean()),
+        })
+    cluster_profiles.sort(key=lambda x: (x["tasa_extrema"], x["permanencia_min"]), reverse=True)
+    external_raw = cluster_profiles[0]["raw_id"]
+    remaining = sorted([cp for cp in cluster_profiles if cp["raw_id"] != external_raw], key=lambda x: x["dias_totales"], reverse=True)
+    label_map: Dict[int, str] = {external_raw: "Posible Uso Externo / Prolongado"}
+    if remaining:
+        label_map[remaining[0]["raw_id"]] = "Comunidad Regular / Funcionarios"
+    if len(remaining) > 1:
+        label_map[remaining[1]["raw_id"]] = "Estudiantes / Bloques Acotados"
+
+    # Inercia media por fila del campeón existente si está disponible
     ruta_activo = DIRECTORIO_MODELOS / f"{clave_modelo}.joblib"
     inercia_campeon = None
     if ruta_activo.exists():
         try:
             c_data = joblib.load(ruta_activo)
-            inercia_campeon = c_data.get("inertia") if isinstance(c_data, dict) else None
+            if isinstance(c_data, dict):
+                inercia_campeon = c_data.get("inertia_per_row") or c_data.get("inertia")
         except Exception:
             pass
 
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     ruta_retador = DIRECTORIO_MODELOS / f"{clave_modelo}_retador_v{ts}.joblib"
-    payload = {"model": km, "scaler": scaler, "features": feats, "inertia": inercia}
+    payload = {
+        "model": km,
+        "scaler": scaler,
+        "features": feats,
+        "label_map": label_map,
+        "inertia": inercia,
+        "inertia_per_row": inercia_media,
+    }
     joblib.dump(payload, ruta_retador)
 
     return {
         "objeto_modelo": payload,
         "ruta_retador": ruta_retador,
         "wape": 0.0,
-        "mae": round(inercia, 2),
+        "mae": inercia_media,
         "inercia_campeon": inercia_campeon,
         "filas_train": len(df),
         "filas_test": 0,
@@ -553,10 +475,263 @@ async def _entrenar_retador_kmeans(
 # Verificación de Día Operativo por Módulo (Horario y Calendario Académico)
 # ---------------------------------------------------------------------------
 
+@dataclass
+class ContextoOperativoPrecargado:
+    """Cache en memoria de horarios, calendario y contingencias para evitar tormentas N+1."""
+
+    horarios_por_espacio: Dict[int, List[Any]] = field(default_factory=dict)
+    calendario_por_fecha: Dict[date, Any] = field(default_factory=dict)
+    contingencias: List[Any] = field(default_factory=list)
+
+
+async def precargar_contexto_operativo(
+    session: AsyncSession,
+    fecha_inicio: Optional[date] = None,
+    dias: int = 35,
+) -> ContextoOperativoPrecargado:
+    """Carga horarios, calendario académico y contingencias de cierre total en exactamente 3 consultas SQL."""
+    from zoneinfo import ZoneInfo
+
+    f_ini = fecha_inicio or (datetime.now(ZoneInfo("America/Santiago")).date() - timedelta(days=1))
+    f_fin = f_ini + timedelta(days=dias)
+
+    res_h = await session.execute(
+        text("""
+            SELECT id, espacio_id, anio, descripcion, tipo_horario,
+                   fecha_inicio, fecha_fin, hora_apertura, hora_cierre,
+                   cierre_dia_siguiente, es_continuo_24h, configuracion_dias, activo
+            FROM horarios_operacion
+            WHERE activo = 1
+            ORDER BY id ASC
+        """)
+    )
+    horarios_por_espacio: Dict[int, List[Any]] = {}
+    for row in res_h.fetchall():
+        m = SimpleNamespace(**dict(row._mapping))
+        horarios_por_espacio.setdefault(int(m.espacio_id), []).append(m)
+
+    res_cal = await session.execute(
+        text("""
+            SELECT fecha,
+                   COALESCE(descripcion, tipo_contingencia, 'Sin hito') AS hito,
+                   COALESCE(is_holiday, 0) AS is_holiday,
+                   COALESCE(is_break, 0) AS is_break,
+                   COALESCE(suspension_actividades, 0) AS suspension_actividades,
+                   COALESCE(is_strike_federado, 0) AS is_strike_federado
+            FROM calendario_academico
+            WHERE fecha >= :ini AND fecha <= :fin
+        """),
+        {"ini": f_ini, "fin": f_fin},
+    )
+    calendario_por_fecha: Dict[date, Any] = {}
+    for row in res_cal.fetchall():
+        f_val = row.fecha.date() if isinstance(row.fecha, datetime) else row.fecha
+        calendario_por_fecha[f_val] = SimpleNamespace(
+            hito=row.hito,
+            is_holiday=row.is_holiday,
+            is_break=row.is_break,
+            suspension_actividades=row.suspension_actividades,
+            is_strike_federado=row.is_strike_federado,
+        )
+
+    contingencias: List[Any] = []
+    try:
+        res_cont = await session.execute(
+            text("""
+                SELECT fecha_inicio, fecha_fin, espacio_id, titulo, tipo
+                FROM contingencias_academicas
+                WHERE fecha_inicio <= :fin AND fecha_fin >= :ini
+                  AND implica_cierre_total = 1
+                  AND (subespacio IS NULL OR subespacio IN ('todos', 'todas', 'global'))
+                  AND (hora_inicio IS NULL OR hora_inicio = '')
+            """),
+            {"ini": f_ini, "fin": f_fin},
+        )
+        for row in res_cont.fetchall():
+            fi = row.fecha_inicio.date() if isinstance(row.fecha_inicio, datetime) else row.fecha_inicio
+            ff = row.fecha_fin.date() if isinstance(row.fecha_fin, datetime) else row.fecha_fin
+            contingencias.append(
+                SimpleNamespace(
+                    fecha_inicio=fi,
+                    fecha_fin=ff,
+                    espacio_id=row.espacio_id,
+                    titulo=row.titulo,
+                    tipo=row.tipo,
+                )
+            )
+    except Exception:
+        contingencias = []
+
+    return ContextoOperativoPrecargado(
+        horarios_por_espacio=horarios_por_espacio,
+        calendario_por_fecha=calendario_por_fecha,
+        contingencias=contingencias,
+    )
+
+
+def evaluar_modulo_opera_en_fecha_memoria(
+    ctx: ContextoOperativoPrecargado,
+    espacio_id: int,
+    fecha_consulta: datetime,
+) -> tuple[bool, str]:
+    """Evalúa en memoria si un recinto opera en `fecha_consulta` sin emitir consultas SQL."""
+    from app.services.calendar_scraper import obtener_feriado_oficial_chile
+
+    fecha_dia = fecha_consulta.date()
+    dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+    dia_nombre = dias_map[fecha_dia.weekday()]
+
+    horarios = ctx.horarios_por_espacio.get(int(espacio_id), [])
+    reglas_rango = [
+        h for h in horarios
+        if h.activo and h.fecha_inicio and h.fecha_fin and (h.fecha_inicio.date() <= fecha_dia <= h.fecha_fin.date())
+    ]
+    tiene_campana_24h = any(h.es_continuo_24h for h in reglas_rango)
+
+    feriado_civil = obtener_feriado_oficial_chile(fecha_dia)
+    if feriado_civil and not tiene_campana_24h:
+        return False, f"{feriado_civil} el {fecha_dia.isoformat()}"
+
+    fila_cal = ctx.calendario_por_fecha.get(fecha_dia)
+    if fila_cal and not tiene_campana_24h:
+        if fila_cal.is_holiday:
+            return False, f"Feriado en calendario académico ({fila_cal.hito}) el {fecha_dia.isoformat()}"
+        if fila_cal.suspension_actividades:
+            return False, f"Suspensión de actividades ({fila_cal.hito}) el {fecha_dia.isoformat()}"
+        if fila_cal.is_break:
+            return False, f"Receso académico ({fila_cal.hito}) el {fecha_dia.isoformat()}"
+        if fila_cal.is_strike_federado:
+            return False, f"Contingencia o paro registrado ({fila_cal.hito}) el {fecha_dia.isoformat()}"
+
+    if not tiene_campana_24h:
+        for c in ctx.contingencias:
+            if c.fecha_inicio <= fecha_dia <= c.fecha_fin and (c.espacio_id is None or int(c.espacio_id) == int(espacio_id)):
+                return False, f"Cierre total registrado ({c.titulo}) el {fecha_dia.isoformat()}"
+
+    reglas_a_evaluar = reglas_rango if reglas_rango else [
+        h for h in horarios if h.activo and h.anio == fecha_dia.year
+    ]
+    if not reglas_a_evaluar and horarios:
+        reglas_a_evaluar = [h for h in horarios if h.activo]
+
+    if not reglas_a_evaluar:
+        if dia_nombre == "domingo":
+            return False, f"Día domingo sin horario operativo configurado ({fecha_dia.isoformat()})"
+        return True, f"Día hábil estándar {dia_nombre} ({fecha_dia.isoformat()})"
+
+    for regla in reglas_a_evaluar:
+        if regla.es_continuo_24h:
+            return True, f"Operativo por campaña continua 24h ({getattr(regla, 'descripcion', '24h')})"
+
+        cfg_dias = None
+        if regla.configuracion_dias:
+            if isinstance(regla.configuracion_dias, dict):
+                cfg_dias = regla.configuracion_dias
+            elif isinstance(regla.configuracion_dias, str) and regla.configuracion_dias.strip():
+                try:
+                    cfg_dias = json.loads(regla.configuracion_dias)
+                except Exception:
+                    cfg_dias = None
+
+        if cfg_dias and isinstance(cfg_dias, dict) and dia_nombre in cfg_dias:
+            dia_info = cfg_dias[dia_nombre]
+            if dia_info.get("abierto", True):
+                ap = dia_info.get("apertura", regla.hora_apertura)
+                ci = dia_info.get("cierre", regla.hora_cierre)
+                return True, f"Operativo en {dia_nombre} ({ap} - {ci})"
+        else:
+            if dia_nombre != "domingo" and regla.hora_apertura and regla.hora_cierre:
+                return True, f"Operativo en {dia_nombre} ({regla.hora_apertura} - {regla.hora_cierre})"
+
+    return False, f"Módulo cerrado según horario de operación para {dia_nombre} ({fecha_dia.isoformat()})"
+
+
+def evaluar_hora_operativa_campus_memoria(
+    ctx: ContextoOperativoPrecargado,
+    dt_consulta: datetime,
+    margen_post_cierre_horas: int = 1,
+) -> tuple[bool, str]:
+    """Evalúa en memoria si alguna sede opera a la hora exacta `dt_consulta`."""
+    fecha_dia = dt_consulta.date()
+    hora_actual = dt_consulta.hour
+    dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+    dia_nombre = dias_map[fecha_dia.weekday()]
+
+    motivos_cerrado = []
+    for esp_id in (1, 2):
+        opera_dia, motivo_dia = evaluar_modulo_opera_en_fecha_memoria(ctx, esp_id, dt_consulta)
+        if not opera_dia:
+            motivos_cerrado.append(f"Espacio {esp_id}: {motivo_dia}")
+            continue
+
+        horarios = ctx.horarios_por_espacio.get(esp_id, [])
+        reglas_rango = [
+            h for h in horarios
+            if h.activo and h.fecha_inicio and h.fecha_fin and (h.fecha_inicio.date() <= fecha_dia <= h.fecha_fin.date())
+        ]
+        reglas_a_evaluar = reglas_rango if reglas_rango else [
+            h for h in horarios if h.activo and h.anio == fecha_dia.year
+        ]
+        if not reglas_a_evaluar and horarios:
+            reglas_a_evaluar = [h for h in horarios if h.activo]
+
+        if not reglas_a_evaluar:
+            ap_h = 9 if dia_nombre == "sabado" else 8
+            ci_h = 14 if dia_nombre == "sabado" else 21
+            if ap_h <= hora_actual <= min(23, ci_h + margen_post_cierre_horas):
+                return True, f"Horario hábil estándar espacio {esp_id} ({ap_h:02d}:00-{ci_h:02d}:00)"
+            motivos_cerrado.append(f"Espacio {esp_id} fuera de horario ({ap_h:02d}:00-{ci_h:02d}:00)")
+            continue
+
+        for regla in reglas_a_evaluar:
+            if regla.es_continuo_24h:
+                return True, f"Campaña 24h activa ({getattr(regla, 'descripcion', '24h')})"
+
+            cfg_dias = None
+            if regla.configuracion_dias:
+                if isinstance(regla.configuracion_dias, dict):
+                    cfg_dias = regla.configuracion_dias
+                elif isinstance(regla.configuracion_dias, str) and regla.configuracion_dias.strip():
+                    try:
+                        cfg_dias = json.loads(regla.configuracion_dias)
+                    except Exception:
+                        cfg_dias = None
+
+            ap_str = regla.hora_apertura or "08:00"
+            ci_str = regla.hora_cierre or "21:00"
+            abierto_hoy = dia_nombre != "domingo"
+
+            if cfg_dias and isinstance(cfg_dias, dict) and dia_nombre in cfg_dias:
+                dia_info = cfg_dias[dia_nombre]
+                abierto_hoy = bool(dia_info.get("abierto", True))
+                ap_str = dia_info.get("apertura", ap_str) or ap_str
+                ci_str = dia_info.get("cierre", ci_str) or ci_str
+
+            if not abierto_hoy:
+                continue
+
+            try:
+                ap_h = int(str(ap_str).split(":")[0])
+                ci_h = int(str(ci_str).split(":")[0])
+                if regla.cierre_dia_siguiente or (cfg_dias and cfg_dias.get(dia_nombre, {}).get("cierre_dia_siguiente")):
+                    if hora_actual >= ap_h or hora_actual <= (ci_h + margen_post_cierre_horas):
+                        return True, f"Horario nocturno activo espacio {esp_id}"
+                else:
+                    if ap_h <= hora_actual <= min(23, ci_h + margen_post_cierre_horas):
+                        return True, f"Horario operativo activo espacio {esp_id} ({ap_str}-{ci_str})"
+            except Exception:
+                return True, f"Horario operativo espacio {esp_id}"
+
+        motivos_cerrado.append(f"Espacio {esp_id} fuera de horario de atención a las {hora_actual:02d}:00")
+
+    return False, "; ".join(motivos_cerrado) if motivos_cerrado else "Fuera de horario laboral"
+
+
 async def verificar_modulo_opera_en_fecha(
     session: AsyncSession,
     espacio_id: int,
     fecha_consulta: Optional[datetime] = None,
+    contexto: Optional[ContextoOperativoPrecargado] = None,
 ) -> tuple[bool, str]:
     """
     Verifica si el módulo correspondiente a `espacio_id` (1 = Biblioteca, 2 = Estacionamiento)
@@ -564,10 +739,13 @@ async def verificar_modulo_opera_en_fecha(
     Contingencias de Cierre y los Horarios de Operación activos.
     """
     from zoneinfo import ZoneInfo
-    from app.services.config_service import get_horarios_operacion
-    from app.services.calendar_scraper import obtener_feriado_oficial_chile
 
     dt_eval = fecha_consulta or datetime.now(ZoneInfo("America/Santiago")).replace(tzinfo=None)
+    if contexto is not None:
+        return evaluar_modulo_opera_en_fecha_memoria(contexto, espacio_id, dt_eval)
+
+    from app.services.config_service import get_horarios_operacion
+    from app.services.calendar_scraper import obtener_feriado_oficial_chile
     fecha_dia = dt_eval.date()
     dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
     dia_nombre = dias_map[fecha_dia.weekday()]
@@ -670,16 +848,21 @@ async def verificar_hora_operativa_campus(
     session: AsyncSession,
     dt_consulta: Optional[datetime] = None,
     margen_post_cierre_horas: int = 1,
+    contexto: Optional[ContextoOperativoPrecargado] = None,
 ) -> tuple[bool, str]:
     """
     Verifica si en la fecha y hora exacta `dt_consulta` corresponde ejecutar la sincronización
     horaria en vivo (al menos un recinto opera ese día y la hora está dentro de [apertura, cierre + margen]).
     """
-    from datetime import time as dt_time
     from zoneinfo import ZoneInfo
-    from app.services.config_service import get_horarios_operacion
 
     dt_eval = dt_consulta or datetime.now(ZoneInfo("America/Santiago")).replace(tzinfo=None)
+    if contexto is not None:
+        return evaluar_hora_operativa_campus_memoria(
+            contexto, dt_eval, margen_post_cierre_horas=margen_post_cierre_horas
+        )
+
+    from app.services.config_service import get_horarios_operacion
     fecha_dia = dt_eval.date()
     hora_actual = dt_eval.hour
     dias_map = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
@@ -761,12 +944,33 @@ async def verificar_hora_operativa_campus(
 # Orquestación Campeón vs. Retador
 # ---------------------------------------------------------------------------
 
+def _promover_archivo_atomico(src: Path, dst: Path) -> None:
+    """Copia a archivo temporal en el mismo directorio y reemplaza atómicamente con os.replace."""
+    tmp_dst = dst.with_name(f".{dst.name}.tmp.{os.getpid()}")
+    shutil.copyfile(src, tmp_dst)
+    os.replace(tmp_dst, dst)
+
+
+def _podar_versiones_antiguas(clave: str, conservar: int = 5) -> None:
+    """Elimina snapshots versionados antiguos conservando únicamente los últimos N."""
+    versiones = sorted(
+        DIRECTORIO_MODELOS.glob(f"{clave}_v*.joblib"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for obsoleto in versiones[conservar:]:
+        try:
+            obsoleto.unlink(missing_ok=True)
+        except Exception as exc_poda:
+            logger.warning(f"[orquestador] No se pudo podar versión antigua {obsoleto.name}: {exc_poda}")
+
+
 async def entrenar_todos_los_modelos(
     db: Optional[AsyncSession] = None,
     solo_modulos_operativos_hoy: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Entrena modelos retadores para Prophet, GBR y KMeans.
+    Entrena modelos retadores para Prophet y KMeans.
     Si `solo_modulos_operativos_hoy=True` (ejecución automática matutina), verifica primero
     si cada módulo (`biblioteca` = 1, `vehicular` = 2) trabaja en la fecha actual según su
     horario de operación y el calendario académico.
@@ -815,8 +1019,6 @@ async def entrenar_todos_los_modelos(
             try:
                 if config_m["familia"] == "Prophet":
                     retador = await _entrenar_retador_prophet(session, clave, config_m["recinto"], config_m["sala"])
-                elif config_m["familia"] == "HistGradientBoosting":
-                    retador = await _entrenar_retador_gbr(session, clave, config_m["espacio_id"])
                 elif config_m["familia"] == "KMeans":
                     retador = await _entrenar_retador_kmeans(session, clave)
                 else:
@@ -856,16 +1058,15 @@ async def entrenar_todos_los_modelos(
                 )
 
                 if debe_promover:
-                    # Promover retador a campeón activo de forma atómica
+                    # Promover retador a campeón activo de forma atómica con os.replace
                     ruta_activa = DIRECTORIO_MODELOS / config_m["archivo_activo"]
-                    ruta_activa.unlink(missing_ok=True)
-                    shutil.copyfile(ruta_retador, ruta_activa)
+                    _promover_archivo_atomico(ruta_retador, ruta_activa)
 
-                    # Guardar copia versionada oficial
+                    # Guardar copia versionada oficial y podar históricas antiguas
                     ts = retador["version"]
                     ruta_versionada = DIRECTORIO_MODELOS / f"{clave}_v{ts}.joblib"
-                    ruta_versionada.unlink(missing_ok=True)
-                    shutil.copyfile(ruta_retador, ruta_versionada)
+                    _promover_archivo_atomico(ruta_retador, ruta_versionada)
+                    _podar_versiones_antiguas(clave, conservar=5)
 
                     # Actualizar metadatos del campeón
                     nuevos_meta = {

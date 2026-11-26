@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -11,11 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.core.tiempo import inicio_dia_chile_en_utc_naive
 from app.domain.auth_models import Usuario
 from app.domain.chat_audit_models import ChatAuditLog
 from app.domain.chat_models import ChatConversacion, ChatMensaje
 
 logger = logging.getLogger(__name__)
+_locks_cuota_usuario: Dict[int, asyncio.Lock] = {}
 
 
 def generar_titulo_conversacion(prompt: str) -> str:
@@ -249,7 +253,7 @@ async def obtener_cuota_ia_usuario(
 
     ahora_utc = datetime.now(timezone.utc)
     ahora_naive = ahora_utc.replace(tzinfo=None)
-    inicio_dia = datetime(ahora_utc.year, ahora_utc.month, ahora_utc.day, 0, 0, 0)
+    inicio_dia = inicio_dia_chile_en_utc_naive(ahora_utc)
 
     usadas = 0
     segundos_espera = 0
@@ -259,7 +263,7 @@ async def obtener_cuota_ia_usuario(
             .where(
                 ChatAuditLog.usuario_id == usuario.id,
                 ChatAuditLog.timestamp >= inicio_dia,
-                ChatAuditLog.status == "éxito",
+                ChatAuditLog.status.in_(("éxito", "en_curso")),
             )
         )
         res = await db.execute(query)
@@ -267,8 +271,12 @@ async def obtener_cuota_ia_usuario(
 
         query_last = (
             select(ChatAuditLog.timestamp)
-            .where(ChatAuditLog.usuario_id == usuario.id)
+            .where(
+                ChatAuditLog.usuario_id == usuario.id,
+                ChatAuditLog.status.in_(("éxito", "en_curso")),
+            )
             .order_by(ChatAuditLog.timestamp.desc())
+            .limit(1)
         )
         res_last = await db.execute(query_last)
         last_time = res_last.scalars().first()
@@ -280,8 +288,14 @@ async def obtener_cuota_ia_usuario(
                 diff = (ahora_naive - last_time).total_seconds()
             if 0 <= diff < min_cooldown:
                 segundos_espera = min(min_cooldown, int(min_cooldown - diff))
+    except HTTPException:
+        raise
     except Exception as exc_cuota:
-        logger.warning(f"Aviso calculando cuota IA para usuario {usuario.id}: {exc_cuota}")
+        logger.error(f"Error crítico verificando cuota IA para usuario {usuario.id}: {exc_cuota}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo verificar la cuota diaria de IA en este momento.",
+        )
 
     if limite is None:
         return {
@@ -326,6 +340,77 @@ async def validar_cuota_ia_usuario(
             status_code=429,
             detail=f"Cuota diaria de consultas analíticas excedida ({limite} consultas permitidas por día para tu rol).",
         )
+
+
+async def reservar_cuota_ia_usuario(
+    db: AsyncSession,
+    usuario: Usuario,
+    prompt_text: str,
+    dataset_tipo: Optional[str] = None,
+    modelo_utilizado: Optional[str] = None,
+    origen: str = "dashboard",
+    reporte_codigo: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Valida y reserva atómicamente el cupo IA del usuario ANTES de invocar al LLM.
+    Inserta un registro ChatAuditLog en estado 'en_curso' bajo bloqueo por usuario.
+    """
+    uid = int(usuario.id)
+    lock = _locks_cuota_usuario.get(uid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks_cuota_usuario[uid] = lock
+
+    async with lock:
+        await validar_cuota_ia_usuario(db, usuario)
+        if not (hasattr(db, "add") and hasattr(db, "commit")):
+            return None
+        audit = ChatAuditLog(
+            usuario_id=uid,
+            prompt_text=(prompt_text or "")[:2000],
+            origen=(origen or "dashboard")[:30],
+            reporte_codigo=reporte_codigo[:32] if reporte_codigo else None,
+            dataset_tipo=dataset_tipo,
+            modelo_utilizado=modelo_utilizado,
+            status="en_curso",
+            response_time_ms=0.0,
+            timestamp=datetime.now(timezone.utc),
+        )
+        db.add(audit)
+        await db.commit()
+        if hasattr(db, "refresh"):
+            await db.refresh(audit)
+        return getattr(audit, "id", None)
+
+
+async def finalizar_reserva_cuota_ia(
+    audit_id: Optional[int],
+    *,
+    status_final: str,
+    response_time_ms: float = 0.0,
+    respuesta_text: Optional[str] = None,
+    modelo_utilizado: Optional[str] = None,
+) -> None:
+    """Actualiza el estado definitivo de una reserva ChatAuditLog previa (éxito/error/cancelado)."""
+    if not audit_id:
+        return
+    estado_limpio = (status_final or "éxito").strip()[:20]
+    try:
+        async with AsyncSessionLocal() as session:
+            valores: Dict[str, Any] = {
+                "status": estado_limpio,
+                "response_time_ms": response_time_ms,
+            }
+            if respuesta_text is not None:
+                valores["respuesta_text"] = respuesta_text
+            if modelo_utilizado is not None:
+                valores["modelo_utilizado"] = modelo_utilizado
+            await session.execute(
+                update(ChatAuditLog).where(ChatAuditLog.id == audit_id).values(**valores)
+            )
+            await session.commit()
+    except Exception as exc_fin:
+        logger.error(f"Error finalizando reserva de cuota IA {audit_id}: {exc_fin}", exc_info=True)
 
 
 async def purgar_conversaciones_eliminadas(

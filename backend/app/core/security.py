@@ -23,6 +23,7 @@ from app.services.auth_service import (
 )
 
 bearer_scheme = HTTPBearer(auto_error=True)
+bearer_scheme_opcional = HTTPBearer(auto_error=False)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,48 @@ async def get_current_user(
             detail="Usuario inactivo",
         )
     return user
+
+
+async def get_optional_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme_opcional),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[Usuario]:
+    """Devuelve el usuario autenticado si existe Bearer válido; si no, retorna None."""
+    if not credentials or not credentials.credentials:
+        return None
+    try:
+        payload = decode_access_token(credentials.credentials)
+        user_id = payload.get("user_id")
+        if user_id is None:
+            return None
+        user = await get_user_by_id(db, user_id=int(user_id))
+        if not user or not user.is_active:
+            return None
+        return user
+    except HTTPException:
+        return None
+
+
+def obtener_espacios_autorizados(current_user: Usuario) -> Optional[List[int]]:
+    """Retorna None si Admin_Sistema (acceso global) o la lista de espacio_id autorizados."""
+    user_roles = {normalizar_rol(r.nombre) for r in (getattr(current_user, "roles", None) or [])}
+    if "Admin_Sistema" in user_roles:
+        return None
+    if user_roles == {"Consultor_Reporte"}:
+        return []
+
+    modulo_por_espacio = {1: "biblioteca", 2: "estacionamiento"}
+    autorizados: List[int] = []
+    for esp_id, dataset_nombre in modulo_por_espacio.items():
+        if ("Director_Recinto" in user_roles or "Guardia_Seguridad" in user_roles) and current_user.espacio_id is not None:
+            if int(current_user.espacio_id) != esp_id:
+                continue
+        if current_user.allowed_datasets is not None:
+            permitidos = [str(d).strip().lower() for d in current_user.allowed_datasets]
+            if dataset_nombre not in permitidos:
+                continue
+        autorizados.append(esp_id)
+    return autorizados
 
 
 def require_roles(allowed_roles: Union[List[str], tuple]) -> Callable:

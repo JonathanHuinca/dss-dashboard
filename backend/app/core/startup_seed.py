@@ -171,7 +171,7 @@ async def _ensure_consultores_prueba(db: AsyncSession, role_map: dict[str, Rol])
     rol_consultor = role_map.get("Consultor_Reporte")
     ahora = ahora_chile_naive()
     for cdef in obtener_consultores_prueba():
-        stmt = select(Usuario).where(func.lower(Usuario.email) == cdef["email"].lower())
+        stmt = select(Usuario).where(Usuario.email == cdef["email"].strip().lower())
         user = (await db.execute(stmt)).scalar_one_or_none()
         if not user:
             user = Usuario(
@@ -197,7 +197,7 @@ async def _ensure_consultores_prueba(db: AsyncSession, role_map: dict[str, Rol])
                 db.add(UsuarioRol(usuario_id=user.id, rol_id=rol_consultor.id))
 
         stmt_dest = select(DestinatarioReporte).where(
-            func.lower(DestinatarioReporte.email) == cdef["email"].lower()
+            DestinatarioReporte.email == cdef["email"].strip().lower()
         )
         dest = (await db.execute(stmt_dest)).scalar_one_or_none()
         if not dest:
@@ -230,7 +230,7 @@ async def _ensure_admin_bootstrap_produccion(db: AsyncSession, role_map: dict[st
         logger.warning("[seed] No se pudo crear administrador inicial: falta ADMIN_BOOTSTRAP_PASSWORD.")
         return
 
-    stmt_usr = select(Usuario).where(func.lower(Usuario.email) == email_adm)
+    stmt_usr = select(Usuario).where(Usuario.email == email_adm)
     user = (await db.execute(stmt_usr)).scalar_one_or_none()
     if not user:
         user = Usuario(

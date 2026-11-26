@@ -95,10 +95,18 @@ class SmartCampusAdapter(IngestionAdapter):
         url = f"{self.base_url}{endpoint}"
         cabeceras = self._obtener_cabeceras()
 
+        from app.core.recursos_http import obtener_http_client
+
         for intento in range(1, intentos_maximos + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_segundos) as cliente:
-                    respuesta = await cliente.get(url, headers=cabeceras, params=parametros)
+                cliente_comp = obtener_http_client()
+                if cliente_comp is not None:
+                    respuesta = await cliente_comp.get(
+                        url, headers=cabeceras, params=parametros, timeout=self.timeout_segundos
+                    )
+                else:
+                    async with httpx.AsyncClient(timeout=self.timeout_segundos) as cliente:
+                        respuesta = await cliente.get(url, headers=cabeceras, params=parametros)
 
                 if respuesta.status_code == 200:
                     datos = respuesta.json()
@@ -128,7 +136,14 @@ class SmartCampusAdapter(IngestionAdapter):
 
     async def obtener_puntos(self) -> Dict[str, Any]:
         """Consulta el catálogo de puertas y cámaras ANPR disponibles."""
+        from app.core.recursos_http import obtener_http_client
+
         url = f"{self.base_url}/puntos"
+        cliente_comp = obtener_http_client()
+        if cliente_comp is not None:
+            resp = await cliente_comp.get(url, headers=self._obtener_cabeceras(), timeout=30.0)
+            resp.raise_for_status()
+            return resp.json()
         async with httpx.AsyncClient(timeout=30.0) as cliente:
             resp = await cliente.get(url, headers=self._obtener_cabeceras())
             resp.raise_for_status()

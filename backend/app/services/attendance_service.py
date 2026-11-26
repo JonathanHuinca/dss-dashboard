@@ -1806,7 +1806,7 @@ class AttendanceService:
     ) -> list[dict]:
         if fecha_inicio is None or fecha_fin is None:
             sql_max = text("""
-                SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+                SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
                 FROM aforo_horario_biblioteca WITH (NOEXPAND)
                 WHERE espacio_id = :espacio_id
             """)
@@ -1895,7 +1895,7 @@ class AttendanceService:
     ) -> list[dict]:
         if aplicar_default_7d and (fecha_inicio is None or fecha_fin is None):
             sql_max = text("""
-                SELECT COALESCE(MAX(CAST(bucket AS DATE)), CAST(GETDATE() AS DATE))
+                SELECT COALESCE(CAST(MAX(bucket) AS DATE), CAST(GETDATE() AS DATE))
                 FROM aforo_horario_biblioteca WITH (NOEXPAND)
                 WHERE espacio_id = :espacio_id
             """)
@@ -2155,17 +2155,23 @@ class AttendanceService:
         if not usar_cache:
             return await _ejecutar()
 
-        lock = _locks_curva_presencia.setdefault(clave_curva, asyncio.Lock())
-        async with lock:
-            if clave_curva in _cache_curva_presencia:
-                return _cache_curva_presencia[clave_curva]
-            curva = await _ejecutar()
-            _cache_curva_presencia[clave_curva] = curva
-            if len(_locks_curva_presencia) > 256:
-                inactivos = [k for k, lk in _locks_curva_presencia.items() if k != clave_curva and not lk.locked()]
-                for k in inactivos[:128]:
-                    _locks_curva_presencia.pop(k, None)
-            return curva
+        entrada_lock = _locks_curva_presencia.get(clave_curva)
+        if entrada_lock is None:
+            entrada_lock = [asyncio.Lock(), 0]
+            _locks_curva_presencia[clave_curva] = entrada_lock
+        entrada_lock[1] += 1
+        lock = entrada_lock[0]
+        try:
+            async with lock:
+                if clave_curva in _cache_curva_presencia:
+                    return list(_cache_curva_presencia[clave_curva])
+                curva = await _ejecutar()
+                _cache_curva_presencia[clave_curva] = list(curva)
+                return list(curva)
+        finally:
+            entrada_lock[1] -= 1
+            if entrada_lock[1] <= 0 and _locks_curva_presencia.get(clave_curva) is entrada_lock:
+                _locks_curva_presencia.pop(clave_curva, None)
 
 
     # ------------------------------------------------------------------
@@ -2225,13 +2231,13 @@ class AttendanceService:
             where_sql = " AND ".join(where_clauses)
             sql = text(f"""
                 SELECT
-                    DATEPART(WEEKDAY, bucket) AS dia_semana,
+                    ((DATEPART(WEEKDAY, bucket) + @@DATEFIRST - 2) % 7 + 1) AS dia_semana_iso,
                     DATEPART(HOUR, bucket)    AS hora,
                     ROUND(CAST(AVG(CAST(ingresos AS FLOAT)) AS DECIMAL(10,2)), 2) AS ingresos_promedio
                 FROM aforo_horario_biblioteca WITH (NOEXPAND)
                 WHERE {where_sql}
-                GROUP BY DATEPART(WEEKDAY, bucket), DATEPART(HOUR, bucket)
-                ORDER BY dia_semana, hora
+                GROUP BY ((DATEPART(WEEKDAY, bucket) + @@DATEFIRST - 2) % 7 + 1), DATEPART(HOUR, bucket)
+                ORDER BY dia_semana_iso, hora
             """)
             rows = (await session.execute(sql, params)).fetchall()
         else:
@@ -2299,25 +2305,27 @@ class AttendanceService:
         fecha_inicio: Optional[date] = None,
         fecha_fin: Optional[date] = None,
     ) -> list[dict]:
-        fin_exclusive = fecha_fin + timedelta(days=1) if fecha_fin else None
-        sql = text("""
+        where_clauses = ["espacio_id = :espacio_id"]
+        params: dict = {"espacio_id": espacio_id}
+        if fecha_inicio:
+            where_clauses.append("bucket >= :inicio")
+            params["inicio"] = fecha_inicio
+        if fecha_fin:
+            where_clauses.append("bucket < :fin")
+            params["fin"] = fecha_fin + timedelta(days=1)
+        where_sql = " AND ".join(where_clauses)
+        sql = text(f"""
             SELECT 
                 DATEPART(HOUR, bucket) AS hora,
                 ROUND(CAST(AVG(CAST(ingresos AS FLOAT)) AS DECIMAL(10,1)), 1) AS promedio_ingresos,
                 MAX(ingresos) AS max_ingresos,
                 SUM(ingresos) AS total_ingresos
             FROM aforo_horario_biblioteca WITH (NOEXPAND)
-            WHERE espacio_id = :espacio_id
-              AND (:inicio IS NULL OR bucket >= :inicio)
-              AND (:fin IS NULL OR bucket < :fin)
+            WHERE {where_sql}
             GROUP BY DATEPART(HOUR, bucket)
             ORDER BY hora ASC
         """)
-        rows = (await session.execute(sql, {
-            "espacio_id": espacio_id,
-            "inicio": fecha_inicio,
-            "fin": fin_exclusive,
-        })).fetchall()
+        rows = (await session.execute(sql, params)).fetchall()
         max_avg = max([float(r.promedio_ingresos or 0) for r in rows], default=1.0)
         result = []
         for r in rows:
@@ -3182,16 +3190,23 @@ class AttendanceService:
                 SELECT person_id_hash, time
                 FROM eventos_asistencia
                 WHERE {where_sql}
+            ),
+            dec_unica AS (
+                SELECT
+                    person_id_hash,
+                    anho_ingreso,
+                    ROW_NUMBER() OVER (PARTITION BY person_id_hash ORDER BY id DESC) AS rn
+                FROM dim_estudiante_carrera
             )
             SELECT 
                 dec.anho_ingreso AS cohorte,
                 COUNT(DISTINCT dec.person_id_hash) AS total_estudiantes,
                 COUNT(DISTINCT ea.person_id_hash) AS estudiantes_asistentes,
                 COUNT(ea.time) AS eventos_asistencia
-            FROM dim_estudiante_carrera dec
+            FROM dec_unica dec
             LEFT JOIN ea_filtrada ea 
                 ON dec.person_id_hash = ea.person_id_hash
-            WHERE dec.anho_ingreso IS NOT NULL
+            WHERE dec.rn = 1 AND dec.anho_ingreso IS NOT NULL
             GROUP BY dec.anho_ingreso
             ORDER BY dec.anho_ingreso DESC
         """)
@@ -3780,74 +3795,238 @@ class AttendanceService:
 
         horarios = await get_horarios_operacion(session, espacio_id=espacio_id)
 
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "Fecha",
-            "Hora",
-            "Identificador_Seudonimizado",
-            "Torniquete_Entrada",
-            "Torniquete_Salida",
-            "Primera_Entrada",
-            "Ultima_Salida",
-            "Permanencia_Minutos",
-            "Total_Marcajes",
-            "Salida_Imputada",
-            "Entrada_Imputada",
-            "Hora_Invertida",
-            "Categorias_Calidad",
-            "Nivel_Integridad",
-        ])
-
-        for r in rows:
-            categorias_row = []
-            sub_fila = _detectar_subespacio_fila(r.door_entrada, r.door_salida)
-            es_sal_fila = bool(r.door_salida or r.ultima_salida or r.salida_imputada)
-            if r.time and not es_horario_conforme(
-                r.time,
-                horarios,
-                subespacio=sub_fila,
-                es_salida=es_sal_fila,
-                tolerancia_salida_min=TOLERANCIA_SALIDA_POST_CIERRE_MIN,
-            ):
-                categorias_row.append("Fuera de Horario")
-            if r.alerta_coherencia_fechas:
-                categorias_row.append("Hora Invertida")
-            if r.salida_imputada:
-                categorias_row.append("Sin Salida")
-            if getattr(r, "entrada_imputada", False) or r.primera_entrada is None:
-                categorias_row.append("Sin Entrada")
-            if r.person_id_hash and r.person_id_hash.startswith("e8f17a68"):
-                categorias_row.append("Sin Credencial")
-            if r.marcajes_totales and int(r.marcajes_totales) >= 5:
-                categorias_row.append("Marcaje Excesivo")
-
-            if not categorias_row:
-                categorias_row = ["Conforme"]
-                nivel = "conforme"
-            elif "Hora Invertida" in categorias_row or len(categorias_row) >= 2:
-                nivel = "critico"
-            else:
-                nivel = "observado"
-
+        with io.StringIO() as output:
+            writer = csv.writer(output)
             writer.writerow([
-                r.time.strftime("%Y-%m-%d") if r.time else "",
-                r.time.strftime("%H:%M:%S") if r.time else "",
-                "SIN-CREDENCIAL" if r.person_id_hash.startswith("e8f17a68") else f"USR-{r.person_id_hash[:8]}",
-                str(r.door_entrada).replace(".0", "") if r.door_entrada and str(r.door_entrada) != "nan" else "—",
-                str(r.door_salida).replace(".0", "") if r.door_salida and str(r.door_salida) != "nan" else "—",
-                r.primera_entrada.strftime("%H:%M:%S") if r.primera_entrada else "—",
-                r.ultima_salida.strftime("%H:%M:%S") if r.ultima_salida else "—",
-                round(float(r.permanencia_min), 1) if r.permanencia_min is not None else 0.0,
-                int(r.marcajes_totales) if r.marcajes_totales is not None else 1,
-                "Si" if r.salida_imputada else "No",
-                "Si" if getattr(r, "entrada_imputada", False) else "No",
-                "Si" if r.alerta_coherencia_fechas else "No",
-                " | ".join(categorias_row),
-                nivel,
+                "Fecha",
+                "Hora",
+                "Identificador_Seudonimizado",
+                "Torniquete_Entrada",
+                "Torniquete_Salida",
+                "Primera_Entrada",
+                "Ultima_Salida",
+                "Permanencia_Minutos",
+                "Total_Marcajes",
+                "Salida_Imputada",
+                "Entrada_Imputada",
+                "Hora_Invertida",
+                "Categorias_Calidad",
+                "Nivel_Integridad",
             ])
 
-        return output.getvalue(), len(rows)
+            for r in rows:
+                categorias_row = []
+                sub_fila = _detectar_subespacio_fila(r.door_entrada, r.door_salida)
+                es_sal_fila = bool(r.door_salida or r.ultima_salida or r.salida_imputada)
+                if r.time and not es_horario_conforme(
+                    r.time,
+                    horarios,
+                    subespacio=sub_fila,
+                    es_salida=es_sal_fila,
+                    tolerancia_salida_min=TOLERANCIA_SALIDA_POST_CIERRE_MIN,
+                ):
+                    categorias_row.append("Fuera de Horario")
+                if r.alerta_coherencia_fechas:
+                    categorias_row.append("Hora Invertida")
+                if r.salida_imputada:
+                    categorias_row.append("Sin Salida")
+                if getattr(r, "entrada_imputada", False) or r.primera_entrada is None:
+                    categorias_row.append("Sin Entrada")
+                if r.person_id_hash and r.person_id_hash.startswith("e8f17a68"):
+                    categorias_row.append("Sin Credencial")
+                if r.marcajes_totales and int(r.marcajes_totales) >= 5:
+                    categorias_row.append("Marcaje Excesivo")
+
+                if not categorias_row:
+                    categorias_row = ["Conforme"]
+                    nivel = "conforme"
+                elif "Hora Invertida" in categorias_row or len(categorias_row) >= 2:
+                    nivel = "critico"
+                else:
+                    nivel = "observado"
+
+                from app.services.csv_utils import sanitizar_celda_csv
+
+                writer.writerow([
+                    r.time.strftime("%Y-%m-%d") if r.time else "",
+                    r.time.strftime("%H:%M:%S") if r.time else "",
+                    sanitizar_celda_csv("SIN-CREDENCIAL" if r.person_id_hash.startswith("e8f17a68") else f"USR-{r.person_id_hash[:8]}"),
+                    sanitizar_celda_csv(str(r.door_entrada).replace(".0", "") if r.door_entrada and str(r.door_entrada) != "nan" else "—"),
+                    sanitizar_celda_csv(str(r.door_salida).replace(".0", "") if r.door_salida and str(r.door_salida) != "nan" else "—"),
+                    r.primera_entrada.strftime("%H:%M:%S") if r.primera_entrada else "—",
+                    r.ultima_salida.strftime("%H:%M:%S") if r.ultima_salida else "—",
+                    round(float(r.permanencia_min), 1) if r.permanencia_min is not None else 0.0,
+                    int(r.marcajes_totales) if r.marcajes_totales is not None else 1,
+                    "Si" if r.salida_imputada else "No",
+                    "Si" if getattr(r, "entrada_imputada", False) else "No",
+                    "Si" if r.alerta_coherencia_fechas else "No",
+                    sanitizar_celda_csv(" | ".join(categorias_row)),
+                    nivel,
+                ])
+
+            return output.getvalue(), len(rows)
+
+    @staticmethod
+    async def stream_raw_csv(
+        espacio_id: int = 1,
+        fecha_inicio: Optional[date] = None,
+        fecha_fin: Optional[date] = None,
+        door: Optional[str] = None,
+        search_hash: Optional[str] = None,
+        categoria: Optional[str] = None,
+        alcance: Optional[str] = "todos",
+        regimen_horario: Optional[str] = "todos",
+        direccion: Optional[str] = "todos",
+        dias_semana: Optional[str] = None,
+        perfil_visita: Optional[str] = "todos",
+        marcajes: Optional[str] = "todos",
+        sala: Optional[str] = None,
+        carrera: Optional[str] = None,
+        facultad: Optional[str] = None,
+        cohorte: Optional[str] = None,
+        limit: int = 100000,
+        incluir_pausas_bano: bool = True,
+        desduplicar_rafagas: bool = True,
+        incluir_funcionarios: bool = True,
+        incluir_sin_identificar: bool = True,
+        conteo_ref: Optional[list[int]] = None,
+    ):
+        """Genera el CSV de asistencia por lotes para StreamingResponse sin cargar 100k filas en RAM."""
+        import csv
+        import io
+        from app.core.database import AsyncSessionLocal
+        from app.services.config_service import get_horarios_operacion, es_horario_conforme
+
+        async with AsyncSessionLocal() as s_stream:
+            where_sql, params = await AttendanceService._build_attendance_filters(
+                session=s_stream,
+                espacio_id=espacio_id,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                alcance=alcance,
+                regimen_horario=regimen_horario,
+                direccion=direccion,
+                dias_semana=dias_semana,
+                door=door,
+                perfil_visita=perfil_visita,
+                marcajes=marcajes,
+                sala=sala,
+                carrera=carrera,
+                facultad=facultad,
+                cohorte=cohorte,
+                incluir_pausas_bano=incluir_pausas_bano,
+                desduplicar_rafagas=desduplicar_rafagas,
+                incluir_funcionarios=incluir_funcionarios,
+                incluir_sin_identificar=incluir_sin_identificar,
+            )
+            params["limit"] = limit
+
+            conditions = [where_sql]
+            if search_hash:
+                conditions.append("person_id_hash LIKE :search_hash")
+                params["search_hash"] = f"%{search_hash}%"
+            if categoria:
+                cat_lower = categoria.lower()
+                if cat_lower == "fuera_de_horario":
+                    conditions.append(await _construir_sql_fuera_de_horario_categoria(
+                        s_stream, espacio_id, fecha_inicio, fecha_fin, params
+                    ))
+                elif cat_lower == "sin_salida":
+                    conditions.append("salida_imputada = 1")
+                elif cat_lower == "sin_entrada":
+                    conditions.append("(entrada_imputada = 1 OR primera_entrada IS NULL)")
+                elif cat_lower == "hora_invertida":
+                    conditions.append("alerta_coherencia_fechas = 1")
+                elif cat_lower == "sin_credencial":
+                    conditions.append(f"person_id_hash LIKE '{PREFIJO_HASH_PRUEBA_EXCLUIDO}'")
+                elif cat_lower == "marcaje_excesivo":
+                    conditions.append("marcajes_totales >= 5")
+                elif cat_lower == "conforme":
+                    conditions.append(
+                        f"alerta_coherencia_fechas = 0 AND salida_imputada = 0 AND entrada_imputada = 0 "
+                        f"AND primera_entrada IS NOT NULL AND person_id_hash NOT LIKE '{PREFIJO_HASH_PRUEBA_EXCLUIDO}' "
+                        f"AND marcajes_totales < 5"
+                    )
+
+            where_clause = " AND ".join(conditions)
+            data_sql = text(f"""
+                SELECT TOP (:limit)
+                    time, person_id_hash, door_entrada, door_salida,
+                    primera_entrada, ultima_salida, permanencia_min,
+                    marcajes_totales, salida_imputada, entrada_imputada, alerta_coherencia_fechas
+                FROM eventos_asistencia
+                WHERE {where_clause}
+                ORDER BY time DESC
+            """)
+            horarios = await get_horarios_operacion(s_stream, espacio_id=espacio_id)
+
+            with io.StringIO() as buf:
+                writer = csv.writer(buf)
+                writer.writerow([
+                    "Fecha", "Hora", "Identificador_Seudonimizado", "Torniquete_Entrada", "Torniquete_Salida",
+                    "Primera_Entrada", "Ultima_Salida", "Permanencia_Minutos", "Total_Marcajes",
+                    "Salida_Imputada", "Entrada_Imputada", "Hora_Invertida", "Categorias_Calidad", "Nivel_Integridad",
+                ])
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate(0)
+
+                total_emitidas = 0
+                stream_res = await s_stream.stream(data_sql, params)
+                async for partition in stream_res.partitions(2000):
+                    for r in partition:
+                        total_emitidas += 1
+                        categorias_row = []
+                        sub_fila = _detectar_subespacio_fila(r.door_entrada, r.door_salida)
+                        es_sal_fila = bool(r.door_salida or r.ultima_salida or r.salida_imputada)
+                        if r.time and not es_horario_conforme(
+                            r.time, horarios, subespacio=sub_fila,
+                            es_salida=es_sal_fila, tolerancia_salida_min=TOLERANCIA_SALIDA_POST_CIERRE_MIN,
+                        ):
+                            categorias_row.append("Fuera de Horario")
+                        if r.alerta_coherencia_fechas:
+                            categorias_row.append("Hora Invertida")
+                        if r.salida_imputada:
+                            categorias_row.append("Sin Salida")
+                        if getattr(r, "entrada_imputada", False) or r.primera_entrada is None:
+                            categorias_row.append("Sin Entrada")
+                        if r.person_id_hash and r.person_id_hash.startswith("e8f17a68"):
+                            categorias_row.append("Sin Credencial")
+                        if r.marcajes_totales and int(r.marcajes_totales) >= 5:
+                            categorias_row.append("Marcaje Excesivo")
+
+                        if not categorias_row:
+                            categorias_row = ["Conforme"]
+                            nivel = "conforme"
+                        elif "Hora Invertida" in categorias_row or len(categorias_row) >= 2:
+                            nivel = "critico"
+                        else:
+                            nivel = "observado"
+
+                        from app.services.csv_utils import sanitizar_celda_csv
+
+                        writer.writerow([
+                            r.time.strftime("%Y-%m-%d") if r.time else "",
+                            r.time.strftime("%H:%M:%S") if r.time else "",
+                            sanitizar_celda_csv("SIN-CREDENCIAL" if r.person_id_hash.startswith("e8f17a68") else f"USR-{r.person_id_hash[:8]}"),
+                            sanitizar_celda_csv(str(r.door_entrada).replace(".0", "") if r.door_entrada and str(r.door_entrada) != "nan" else "—"),
+                            sanitizar_celda_csv(str(r.door_salida).replace(".0", "") if r.door_salida and str(r.door_salida) != "nan" else "—"),
+                            r.primera_entrada.strftime("%H:%M:%S") if r.primera_entrada else "—",
+                            r.ultima_salida.strftime("%H:%M:%S") if r.ultima_salida else "—",
+                            round(float(r.permanencia_min), 1) if r.permanencia_min is not None else 0.0,
+                            int(r.marcajes_totales) if r.marcajes_totales is not None else 1,
+                            "Si" if r.salida_imputada else "No",
+                            "Si" if getattr(r, "entrada_imputada", False) else "No",
+                            "Si" if r.alerta_coherencia_fechas else "No",
+                            sanitizar_celda_csv(" | ".join(categorias_row)),
+                            nivel,
+                        ])
+                    if total_emitidas:
+                        yield buf.getvalue()
+                        buf.seek(0)
+                        buf.truncate(0)
+                if conteo_ref is not None:
+                    conteo_ref[0] = total_emitidas
 
     @staticmethod
     async def obtener_anomalias_marcajes(
@@ -3919,7 +4098,7 @@ class AttendanceService:
         existing_keys = set()
         if modo_solapamiento == "merge":
             min_ts = fecha_min or min(d.time for d in dtos)
-            max_ts = fecha_max or max(d.time for d in dtos)
+            max_ts = (fecha_max or max(d.time for d in dtos)) + timedelta(seconds=60)
             stmt_keys = (
                 select(EventoAsistencia.time, EventoAsistencia.espacio_id, EventoAsistencia.person_id_hash)
                 .where(
@@ -4010,7 +4189,7 @@ class AttendanceService:
     async def get_latest_year(session: AsyncSession, espacio_id: int = 1) -> int:
         """Obtiene el año más reciente registrado en aforo_horario_biblioteca."""
         try:
-            sql = text("SELECT YEAR(MAX(bucket)) FROM aforo_horario_biblioteca WHERE espacio_id = :espacio_id")
+            sql = text("SELECT YEAR(MAX(bucket)) FROM aforo_horario_biblioteca WITH (NOEXPAND) WHERE espacio_id = :espacio_id")
             res = await session.execute(sql, {"espacio_id": espacio_id})
             anio = res.scalar()
             if anio:
@@ -4033,8 +4212,8 @@ class AttendanceService:
             where_conds.append("bucket >= :inicio")
             params["inicio"] = fecha_inicio
         if fecha_fin:
-            where_conds.append("bucket < DATEADD(day, 1, CAST(:fin AS DATETIME))")
-            params["fin"] = fecha_fin
+            where_conds.append("bucket < :fin_exclusivo")
+            params["fin_exclusivo"] = fecha_fin + timedelta(days=1)
         where_clause = " AND ".join(where_conds)
         sql = text(f"""
             SELECT CAST(bucket AS DATE) as fecha,
@@ -4042,7 +4221,7 @@ class AttendanceService:
                    SUM(ingresos) as ingresos,
                    SUM(salidas) as salidas,
                    SUM(personas_unicas) as personas_unicas
-            FROM aforo_horario_biblioteca
+            FROM aforo_horario_biblioteca WITH (NOEXPAND)
             WHERE {where_clause}
             GROUP BY CAST(bucket AS DATE), DATENAME(weekday, CAST(bucket AS DATE))
             ORDER BY fecha ASC

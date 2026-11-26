@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -89,12 +90,13 @@ def _construir_plantilla_base(contenido_cuerpo: str, titulo: str) -> str:
     """
     Estructura HTML base con identidad institucional de la Universidad Católica de Temuco.
     """
+    titulo_html = html.escape(titulo or "", quote=True)
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{titulo}</title>
+    <title>{titulo_html}</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; padding: 30px 10px;">
@@ -247,13 +249,16 @@ async def enviar_correo_despacho(
 async def probar_envio_smtp(smtp_cfg: Dict[str, Any], destinatario: str) -> Tuple[bool, str]:
     """Envía un correo de verificación técnica para validar credenciales SMTP sin guardar logs secretos."""
     asunto = "Verificación de Servidor SMTP — Plataforma DSS UCT"
+    nombre_perfil = html.escape(str(smtp_cfg.get("nombre", "Configurado")), quote=True)
+    host_seguro = html.escape(str(smtp_cfg.get("host", "")), quote=True)
+    port_seguro = html.escape(str(smtp_cfg.get("port", "")), quote=True)
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #002855; font-size: 18px; font-weight: 700;">
             Prueba de Conectividad SMTP Exitosa
         </h2>
         <p style="color: #334155; font-size: 14px;">
-            Este mensaje confirma que el perfil SMTP <strong>{smtp_cfg.get('nombre', 'Configurado')}</strong>
-            (<code>{smtp_cfg.get('host')}:{smtp_cfg.get('port')}</code>) está operativo y autorizado para
+            Este mensaje confirma que el perfil SMTP <strong>{nombre_perfil}</strong>
+            (<code>{host_seguro}:{port_seguro}</code>) está operativo y autorizado para
             despachar notificaciones de activación y reportes ejecutivos desde el DSS UCT.
         </p>
     """
@@ -276,11 +281,12 @@ async def enviar_correo_activacion(
     """
     Genera y despacha el correo de invitación y activación de cuenta inicial.
     """
-    enlace_activacion = _normalizar_enlace_frontend(enlace_activacion)
+    enlace_activacion = html.escape(_normalizar_enlace_frontend(enlace_activacion), quote=True)
+    nombre_seguro = html.escape(nombre_destinatario or destinatario, quote=True)
     asunto = "Activación de Cuenta — Plataforma DSS Campus San Francisco UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #002855; font-size: 18px; font-weight: 700;">
-            Estimado/a {nombre_destinatario or destinatario}:
+            Estimado/a {nombre_seguro}:
         </h2>
         <p style="color: #334155; font-size: 14px;">
             Ha sido registrado como usuario en el <strong>Sistema de Apoyo a la Toma de Decisiones (DSS)</strong> del Campus San Francisco de la Universidad Católica de Temuco.
@@ -313,11 +319,12 @@ async def enviar_correo_recuperacion(
     """
     Genera y despacha el correo de recuperación y desbloqueo de contraseña.
     """
-    enlace_recuperacion = _normalizar_enlace_frontend(enlace_recuperacion)
+    enlace_recuperacion = html.escape(_normalizar_enlace_frontend(enlace_recuperacion), quote=True)
+    nombre_seguro = html.escape(nombre_destinatario or destinatario, quote=True)
     asunto = "Recuperación de Contraseña — Plataforma DSS Campus San Francisco UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #002855; font-size: 18px; font-weight: 700;">
-            Estimado/a {nombre_destinatario or destinatario}:
+            Estimado/a {nombre_seguro}:
         </h2>
         <p style="color: #334155; font-size: 14px;">
             Hemos recibido una solicitud para restablecer la contraseña de su cuenta en la plataforma <strong>DSS UCT</strong>.
@@ -352,14 +359,15 @@ async def enviar_correo_bloqueo_login(
     intentos: int = 5,
 ) -> bool:
     """Notifica bloqueo preventivo tras intentos fallidos consecutivos con enlace de restablecimiento."""
-    enlace_recuperacion = _normalizar_enlace_frontend(enlace_recuperacion)
+    enlace_recuperacion = html.escape(_normalizar_enlace_frontend(enlace_recuperacion), quote=True)
+    nombre_seguro = html.escape(nombre_destinatario or destinatario, quote=True)
     asunto = "Alerta de Seguridad: Cuenta Bloqueada — Plataforma DSS Campus San Francisco UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #991b1b; font-size: 18px; font-weight: 700;">
-            Estimado/a {nombre_destinatario or destinatario}:
+            Estimado/a {nombre_seguro}:
         </h2>
         <p style="color: #334155; font-size: 14px;">
-            Se detectaron <strong>{intentos} intentos fallidos consecutivos</strong> al ingresar la contraseña de su cuenta en el <strong>Sistema DSS Campus San Francisco UCT</strong>.
+            Se detectaron <strong>{int(intentos)} intentos fallidos consecutivos</strong> al ingresar la contraseña de su cuenta en el <strong>Sistema DSS Campus San Francisco UCT</strong>.
         </p>
         <p style="color: #334155; font-size: 14px;">
             Como medida preventiva de seguridad, su cuenta fue bloqueada temporalmente por <strong>15 minutos</strong>. Si necesita recuperar el acceso de inmediato o no reconoce estos intentos, puede restablecer su contraseña y desbloquear su cuenta desde el siguiente botón:
@@ -393,12 +401,16 @@ async def enviar_correo_activacion_consultor(
     Despacha el correo institucional UCT para que el nuevo usuario Consultor_Reporte
     active su cuenta y defina su contraseña de acceso a su bandeja de reportes ejecutivos.
     """
-    enlace_activacion = _normalizar_enlace_frontend(enlace_activacion)
-    enlace_portal = _normalizar_enlace_frontend(enlace_portal)
+    enlace_activacion = html.escape(_normalizar_enlace_frontend(enlace_activacion), quote=True)
+    enlace_portal = html.escape(_normalizar_enlace_frontend(enlace_portal), quote=True)
+    nombre_seguro = html.escape(nombre_destinatario or destinatario, quote=True)
+    titular_seguro = html.escape(nombre_destinatario or "", quote=True)
+    cargo_seguro = html.escape(cargo or "", quote=True)
+    unidad_segura = html.escape(unidad_academica or "", quote=True)
     asunto = "Alta de Cuenta Consultor de Reportes Ejecutivos — DSS UCT"
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #003865; font-size: 18px; font-weight: 700;">
-            Estimado/a {nombre_destinatario or destinatario}:
+            Estimado/a {nombre_seguro}:
         </h2>
         <p style="color: #334155; font-size: 14px;">
             Se ha habilitado su perfil de <strong>Consultor de Reportes Ejecutivos</strong> en el Sistema de Apoyo a la Toma de Decisiones (DSS) del Campus San Francisco — Universidad Católica de Temuco.
@@ -406,9 +418,9 @@ async def enviar_correo_activacion_consultor(
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border-left: 4px solid #C59B27; border-radius: 6px; padding: 14px 18px; margin: 18px 0;">
             <tr>
                 <td style="font-size: 13px; color: #1e293b; line-height: 1.5;">
-                    <strong>Titular:</strong> {nombre_destinatario}<br>
-                    <strong>Cargo:</strong> {cargo}<br>
-                    <strong>Unidad / Carrera:</strong> {unidad_academica}<br>
+                    <strong>Titular:</strong> {titular_seguro}<br>
+                    <strong>Cargo:</strong> {cargo_seguro}<br>
+                    <strong>Unidad / Carrera:</strong> {unidad_segura}<br>
                     <strong>Rol Asignado:</strong> Consultor de Reportes Ejecutivos (Acceso confinado a reportes emitidos)
                 </td>
             </tr>
@@ -448,17 +460,29 @@ async def enviar_correo_reporte_ejecutivo(
     """
     Despacha el correo institucional UCT notificando la emisión o habilitación de un Reporte Ejecutivo Compartido.
     """
-    enlace_reporte = _normalizar_enlace_frontend(enlace_reporte)
-    enlace_portal = _normalizar_enlace_frontend(enlace_portal)
+    enlace_reporte = html.escape(_normalizar_enlace_frontend(enlace_reporte), quote=True)
+    enlace_portal = html.escape(_normalizar_enlace_frontend(enlace_portal), quote=True)
     if enlace_activacion_pendiente:
-        enlace_activacion_pendiente = _normalizar_enlace_frontend(enlace_activacion_pendiente)
+        enlace_activacion_pendiente = html.escape(_normalizar_enlace_frontend(enlace_activacion_pendiente), quote=True)
+
+    nombre_seguro = html.escape(nombre_destinatario or destinatario, quote=True)
+    titular_seguro = html.escape(nombre_destinatario or "", quote=True)
+    cargo_seguro = html.escape(cargo or "", quote=True)
+    unidad_segura = html.escape(unidad_academica or "", quote=True)
+    titulo_seguro = html.escape(titulo_reporte or "", quote=True)
+    codigo_seguro = html.escape(codigo_corto or "", quote=True)
+    espacio_seguro = html.escape(espacio_nombre or "", quote=True)
+    periodo_seguro = html.escape(periodo_texto or "", quote=True)
+    finalidad_segura = html.escape(finalidad_reporte or "", quote=True)
+
     asunto = f"Reporte Ejecutivo Disponible ({codigo_corto}) — {titulo_reporte}"
     bloque_nota = ""
     if nota_general and nota_general.strip():
+        nota_segura = html.escape(nota_general.strip(), quote=True).replace("\n", "<br>")
         bloque_nota = f"""
         <div style="background-color: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #C59B27; border-radius: 6px; padding: 12px 16px; margin: 16px 0; font-size: 13px; color: #1e293b;">
             <strong style="color: #92400e; display: block; margin-bottom: 4px;">Nota Ejecutiva del Emisor:</strong>
-            {nota_general}
+            {nota_segura}
         </div>
         """
 
@@ -478,7 +502,7 @@ async def enviar_correo_reporte_ejecutivo(
 
     cuerpo_interno = f"""
         <h2 style="margin-top: 0; color: #003865; font-size: 18px; font-weight: 700;">
-            Estimado/a {nombre_destinatario or destinatario}:
+            Estimado/a {nombre_seguro}:
         </h2>
         <p style="color: #334155; font-size: 14px;">
             Se ha habilitado y puesto a su disposición un nuevo <strong>Reporte Ejecutivo Institucional</strong> en el Sistema DSS del Campus San Francisco — Universidad Católica de Temuco.
@@ -486,12 +510,12 @@ async def enviar_correo_reporte_ejecutivo(
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #003865; border-radius: 6px; padding: 16px 18px; margin: 18px 0;">
             <tr>
                 <td style="font-size: 13px; color: #1e293b; line-height: 1.6;">
-                    <strong>Código Oficial:</strong> {codigo_corto}<br>
-                    <strong>Título del Reporte:</strong> {titulo_reporte}<br>
-                    <strong>Módulo / Recinto:</strong> {espacio_nombre}<br>
-                    <strong>Período Analizado:</strong> {periodo_texto}<br>
-                    <strong>Destinatario:</strong> {nombre_destinatario} ({cargo} — {unidad_academica})<br>
-                    <strong>Finalidad:</strong> {finalidad_reporte}
+                    <strong>Código Oficial:</strong> {codigo_seguro}<br>
+                    <strong>Título del Reporte:</strong> {titulo_seguro}<br>
+                    <strong>Módulo / Recinto:</strong> {espacio_seguro}<br>
+                    <strong>Período Analizado:</strong> {periodo_seguro}<br>
+                    <strong>Destinatario:</strong> {titular_seguro} ({cargo_seguro} — {unidad_segura})<br>
+                    <strong>Finalidad:</strong> {finalidad_segura}
                 </td>
             </tr>
         </table>

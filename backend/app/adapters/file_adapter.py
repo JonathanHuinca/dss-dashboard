@@ -161,10 +161,10 @@ class FileIngestionAdapter(IngestionAdapter):
                 col_map[c] = "door_salida"
             elif "dif" in c_low and "salida" in c_low:
                 col_map[c] = "dif_salida"
-        df.rename(columns=col_map, inplace=True)
+        df = df.rename(columns=col_map)
         
         # PRIVACIDAD ESTRICTA: Supresión inmediata
-        df.drop(columns=["Persona", "persona", "nombre", "correo", "email", "telefono"], errors="ignore", inplace=True)
+        df = df.drop(columns=["Persona", "persona", "nombre", "correo", "email", "telefono"], errors="ignore")
         
         # Vectorizar parseo de fechas para alto rendimiento
         df["pe_dt"] = pd.to_datetime(df["primera_entrada"], errors="coerce")

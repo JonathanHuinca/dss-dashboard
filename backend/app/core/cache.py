@@ -136,6 +136,11 @@ class CacheEnMemoria(CacheInterface):
             cache[key] = value
             if tags:
                 self._key_tags[key] = set(tags)
+            if len(self._key_tags) > max(cache.maxsize * 2, 100):
+                particiones = (self._cache_vivo, self._cache_kpis, self._cache_historicos, self._cache_general)
+                for k_tag in list(self._key_tags.keys()):
+                    if not any(k_tag in p for p in particiones):
+                        self._key_tags.pop(k_tag, None)
 
     async def delete(self, key: str) -> bool:
         async with self._lock:
@@ -148,28 +153,35 @@ class CacheEnMemoria(CacheInterface):
             return eliminado
 
     async def invalidate_prefix(self, prefix: str) -> int:
-        """Invalida todas las claves que comiencen con el prefijo o que contengan la etiqueta."""
+        """Invalida todas las claves que coincidan por prefijo directo o etiqueta exacta."""
         async with self._lock:
             claves_a_borrar: Set[str] = set()
+            particiones = (self._cache_vivo, self._cache_kpis, self._cache_historicos, self._cache_general)
 
             # Revisar coincidencia de prefijo directo
-            for cache in (self._cache_vivo, self._cache_kpis, self._cache_historicos, self._cache_general):
+            for cache in particiones:
                 for k in list(cache.keys()):
-                    if k.startswith(prefix) or prefix in k:
+                    if k.startswith(prefix):
                         claves_a_borrar.add(k)
 
-            # Revisar coincidencia de etiquetas
+            # Revisar coincidencia exacta de etiquetas y podar claves expiradas
             for k, tags in list(self._key_tags.items()):
-                if any(prefix in tag for tag in tags):
+                if not any(k in cache for cache in particiones):
+                    self._key_tags.pop(k, None)
+                    continue
+                if prefix in tags:
                     claves_a_borrar.add(k)
 
             conteo = 0
             for k in claves_a_borrar:
-                for cache in (self._cache_vivo, self._cache_kpis, self._cache_historicos, self._cache_general):
+                presente = False
+                for cache in particiones:
                     if k in cache:
                         del cache[k]
+                        presente = True
                 self._key_tags.pop(k, None)
-                conteo += 1
+                if presente:
+                    conteo += 1
 
             return conteo
 
@@ -248,8 +260,10 @@ async def invalidar_cache_por_espacio(espacio_id: int) -> int:
     try:
         from app.services.attendance_service import invalidar_cache_horarios as inv_att
         from app.services.vehicle_service import invalidar_cache_horarios as inv_veh
+        from app.services.chat.ejecutor_herramientas import limpiar_cache_herramientas_chat
         inv_att(espacio_id)
         inv_veh(espacio_id)
+        limpiar_cache_herramientas_chat()
     except Exception:
         pass
     prefijo = f"espacio:{espacio_id}"
@@ -263,8 +277,10 @@ async def limpiar_toda_la_cache() -> int:
     try:
         from app.services.attendance_service import invalidar_cache_horarios as inv_att
         from app.services.vehicle_service import invalidar_cache_horarios as inv_veh
+        from app.services.chat.ejecutor_herramientas import limpiar_cache_herramientas_chat
         inv_att(None)
         inv_veh(None)
+        limpiar_cache_herramientas_chat()
     except Exception:
         pass
     cantidad = await _cache_global.clear()
@@ -371,8 +387,8 @@ def _generar_clave_cache(
     return clave, tags
 
 
-# Bloqueos de cómputo por clave (single-flight) para evitar estampida ante ráfagas concurrentes
-_bloqueos_computo: Dict[str, asyncio.Lock] = {}
+# Bloqueos de cómputo por clave (single-flight con refcount) para evitar estampida y fugas
+_bloqueos_computo: Dict[str, List[Any]] = {}
 
 
 def cachear_respuesta(
@@ -428,8 +444,13 @@ def cachear_respuesta(
                 _marcar("HIT")
                 return valor_en_cache
 
-            # 2. Single-flight: un solo cómputo por clave; los demás esperan y reutilizan
-            bloqueo = _bloqueos_computo.setdefault(clave, asyncio.Lock())
+            # 2. Single-flight con refcount: un solo cómputo por clave; los demás esperan y reutilizan
+            entrada_lock = _bloqueos_computo.get(clave)
+            if entrada_lock is None:
+                entrada_lock = [asyncio.Lock(), 0]
+                _bloqueos_computo[clave] = entrada_lock
+            entrada_lock[1] += 1
+            bloqueo = entrada_lock[0]
             try:
                 async with bloqueo:
                     valor_en_cache = _cache_global.get_nowait(clave)
@@ -443,7 +464,8 @@ def cachear_respuesta(
                     _marcar("MISS")
                     return resultado
             finally:
-                if not bloqueo.locked():
+                entrada_lock[1] -= 1
+                if entrada_lock[1] <= 0 and _bloqueos_computo.get(clave) is entrada_lock:
                     _bloqueos_computo.pop(clave, None)
 
         return envoltura
@@ -523,7 +545,10 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
                     ini_ex_bib = r_ex.fi if isinstance(r_ex.fi, date) else date.fromisoformat(str(r_ex.fi)[:10])
                     fin_ex_bib = r_ex.ff if isinstance(r_ex.ff, date) else date.fromisoformat(str(r_ex.ff)[:10])
             except Exception:
-                pass
+                try:
+                    await sesion.rollback()
+                except Exception:
+                    pass
 
             # Filtros por defecto del Frontend en Biblioteca (App.tsx)
             f_bib_ui = {
@@ -571,7 +596,6 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
                 lambda: attendance.get_peak_valley(response=respuesta_ficticia, fecha_inicio=ini_bib, fecha_fin=fin_bib, espacio_id=1, current_user=usr_admin, db=sesion),
                 lambda: predictions.get_forecast_presence_endpoint(response=respuesta_ficticia, sala="todas", db=sesion, current_user=usr_admin),
                 lambda: predictions.get_forecast_attendance(response=respuesta_ficticia, sala="todas", db=sesion, current_user=usr_admin),
-                lambda: predictions.get_forecast_14days_endpoint(response=respuesta_ficticia, espacio_id=1, db=sesion, current_user=usr_admin),
                 lambda: predictions.get_alerts(response=respuesta_ficticia, db=sesion, current_user=usr_admin),
                 # Estacionamiento (Filtros UI por defecto)
                 lambda: metrics.get_kpi_summary(response=respuesta_ficticia, espacio_id=2, fecha_inicio=ini_veh, fecha_fin=fin_veh, current_user=usr_admin, db=sesion),
@@ -594,6 +618,10 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
                     conteo_ejecutadas += 1
                 except Exception as exc_i:
                     conteo_omitidas += 1
+                    try:
+                        await sesion.rollback()
+                    except Exception:
+                        pass
                     logger.debug(f"[cache] Precalentamiento inicial omitido: {exc_i}")
 
             # 3. Precalentar el resto de Hitos Académicos del Selector de Períodos (Biblioteca y Estacionamiento)
@@ -615,6 +643,10 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
                         conteo_ejecutadas += 1
                     except Exception:
                         conteo_omitidas += 1
+                        try:
+                            await sesion.rollback()
+                        except Exception:
+                            pass
 
             for r_ini, r_fin in rangos_veh[1:]:
                 tareas_rango_veh = [
@@ -631,6 +663,10 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
                         conteo_ejecutadas += 1
                     except Exception:
                         conteo_omitidas += 1
+                        try:
+                            await sesion.rollback()
+                        except Exception:
+                            pass
 
         tiempo_total_s = round(time.perf_counter() - t_inicio, 3)
         cache_stats = _cache_global.stats()
@@ -647,83 +683,6 @@ async def precalentar_cache_modulos() -> Dict[str, Any]:
         logger.info(f"[cache] Tiempo total de inicio invertido: {tiempo_total_s} segundos")
         logger.info(f"[cache] Huella en memoria RAM de TTLCache: {memoria_kb} KB (~{memoria_mb} MB)")
         logger.info("[cache] " + "=" * 65)
-
-        # Exportar evidencia en Markdown para la tesis de grado
-        try:
-            reporte_md = f"""# Evidencia Experimental de Precalentamiento de Caché en Arranque (Startup Cache Warming)
-
-**Sistema:** Plataforma de Apoyo a la Toma de Decisiones (DSS UCT)  
-**Módulo:** Gestor de Caché en Memoria (`backend/app/core/cache.py`)  
-**Fecha de Ejecución:** {date.today().isoformat()}  
-**Estado:** Exitoso  
-
----
-
-## 1. Resumen Ejecutivo
-
-Para eliminar por completo las latencias de arranque en frío (*Cold Start / First Request Latency*) percibidas por los usuarios directivos y administradores institucionales de la Universidad Católica de Temuco, la función `precalentar_cache_modulos()` fue extendida para pre-computar en el evento de inicio del servidor ASGI (FastAPI) las consultas analíticas y predictivas correspondientes a la última semana registrada.
-
-Se implementó el aislamiento estricto de seguridad conforme a la Ley N° 21.719 y el modelo RBAC/RLS, generando entradas independientes y deterministas para tres roles y recintos operativos:
-1. **Admin_Sistema (Global):** Acceso integral a Biblioteca (Recinto 1) y Estacionamiento (Recinto 2).
-2. **Director_Recinto (Biblioteca):** Acceso restringido al Recinto 1.
-3. **Director_Recinto (Estacionamiento):** Acceso restringido al Recinto 2.
-
----
-
-## 2. Métricas Cuantitativas de Arranque
-
-| Métrica de Rendimiento | Valor Registrado en Arranque | Unidad de Medida |
-|---|---|---|
-| **Cantidad Total de Claves Precalentadas** | {total_claves} | Claves activas en TTLCache |
-| **Tareas Analíticas Ejecutadas con Éxito** | {conteo_ejecutadas} | Peticiones internas pre-computadas |
-| **Tareas Omitidas / Errores Tolerados** | {conteo_omitidas} | Fallos no bloqueantes |
-| **Tiempo Total Invertido en el Arranque** | {tiempo_total_s} | Segundos |
-| **Huella de Memoria RAM Ocupada** | {memoria_kb} KB (~{memoria_mb} MB) | Bytes en proceso Python |
-| **Entradas en Partición KPIs Día (TTL 300s)** | {cache_stats['kpis_dia_items']} | Claves |
-| **Entradas en Partición Históricos (TTL 900s)**| {cache_stats['historicos_items']} | Claves |
-| **Entradas en Partición Aforo Vivo (TTL 60s)** | {cache_stats['aforo_vivo_items']} | Claves |
-| **Entradas en Partición General (TTL 300s)**  | {cache_stats['general_items']} | Claves |
-
----
-
-## 3. Desglose de Consultas Precalentadas por Perfil
-
-### 3.1 Admin_Sistema (Global) — 29 Claves
-- **Biblioteca CSF (18 consultas):** Resumen KPIs, Aforo en vivo, Flujo horario, Mapa de calor, Franjas pico/valle, Evolución semanal, Volumen mensual, Hitos académicos, Uso de torniquetes, Comparativa de salas, Promedio diario por día de semana, Distribución curricular, Frecuencia de marcajes, Perfiles de permanencia, Pronóstico Prophet asistencia, Proyección 14 días y Alertas preventivas.
-- **Estacionamiento CSF (11 consultas):** Resumen KPIs vehicular, Ocupación vehicular en vivo, Flujo horario vehicular, Composición de flota, Estadísticas de cámaras ANPR, Evolución diaria de accesos, Hitos vehiculares, Movilidad inter-campus, Segmentación K-Means y Pronóstico Prophet vehicular.
-
-### 3.2 Director_Recinto (Recinto 1 - Biblioteca) — 18 Claves
-- Las 18 consultas analíticas acotadas al Recinto 1, con contexto de seguridad `{{'roles': ['Director_Recinto'], 'espacio': 1, 'datasets': ['biblioteca']}}`.
-
-### 3.3 Director_Recinto (Recinto 2 - Estacionamiento) — 11 Claves
-- Las 11 consultas analíticas acotadas al Recinto 2, con contexto de seguridad `{{'roles': ['Director_Recinto'], 'espacio': 2, 'datasets': ['estacionamiento']}}`.
-
----
-
-## 4. Análisis de Eficiencia y Conclusiones para la Tesis
-
-1. **Eliminación del Cold Start:** Cualquier usuario con rol de Administrador o Director de Recinto que inicie sesión inmediatamente tras el despliegue del sistema recibe respuestas instantáneas con cabecera `X-Cache: HIT` (<2 ms de tiempo de procesamiento en backend).
-2. **Impacto Despreciable en Memoria RAM:** Una huella de memoria de solo **{memoria_kb} KB** representa menos del **0.1%** de la memoria disponible en el contenedor de FastAPI (habitualmente 512 MB – 1 GB), demostrando la altísima eficiencia de compresión en memoria de TTLCache.
-3. **Sobrecarga Mínima de Arranque:** El precalentamiento se ejecuta en **{tiempo_total_s} segundos** en una corutina asíncrona de fondo durante el ciclo de vida `lifespan` de FastAPI, permitiendo que el servidor acepte conexiones HTTP inmediatamente mientras la caché termina de poblarse.
-"""
-            # Guardar en rutas posibles según entorno local o Docker
-            candidatos_dir = [
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "local", "ReporteAntigravity", "evidencia_tesis")),
-                os.path.abspath(os.path.join(os.getcwd(), "local", "ReporteAntigravity", "evidencia_tesis")),
-                "/app/local/ReporteAntigravity/evidencia_tesis",
-            ]
-            for d in candidatos_dir:
-                try:
-                    os.makedirs(d, exist_ok=True)
-                    ruta_archivo = os.path.join(d, "precalentamiento_cache_startup.md")
-                    with open(ruta_archivo, "w", encoding="utf-8") as rf:
-                        rf.write(reporte_md)
-                    logger.info(f"[cache] Reporte de precalentamiento exportado exitosamente a: {ruta_archivo}")
-                    break
-                except Exception:
-                    continue
-        except Exception as exc_rep:
-            logger.warning(f"[cache] No se pudo exportar el reporte markdown: {exc_rep}")
 
         return cache_stats
     except Exception as exc:

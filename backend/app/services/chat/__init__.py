@@ -18,12 +18,12 @@ from app.services.chat.generadores_grafico import (
     generate_exams_impact_chart,
     generate_peak_hours_chart,
     generate_cameras_chart,
-    generate_stay_profiles_chart,
     generate_monthly_trend_chart,
 )
 from app.services.chat.ejecutor_herramientas import (
     ejecutar_consulta_tool,
     resolver_datos_grafico_contexto,
+    limpiar_cache_herramientas_chat,
     _cache_resultados_herramientas,
 )
 from app.services.chat.exportacion_pdf import (
@@ -49,10 +49,10 @@ __all__ = [
     "generate_exams_impact_chart",
     "generate_peak_hours_chart",
     "generate_cameras_chart",
-    "generate_stay_profiles_chart",
     "generate_monthly_trend_chart",
     "ejecutar_consulta_tool",
     "resolver_datos_grafico_contexto",
+    "limpiar_cache_herramientas_chat",
     "_cache_resultados_herramientas",
     "generar_pdf_conversacion",
     "procesar_consulta_analitica",

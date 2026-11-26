@@ -8,13 +8,13 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException, status
-from sqlalchemy import desc, func, or_, select, text
+from fastapi import BackgroundTasks, HTTPException, status
+from sqlalchemy import case, desc, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from app.core.config import settings, obtener_url_frontend
-from app.core.tiempo import ahora_chile_naive, marcar_chile
+from app.core.tiempo import ZONA_CHILE, ahora_chile_naive, marcar_chile
 from app.domain.auth_models import Rol, TokenActivacion, Usuario, UsuarioRol
 from app.domain.models import Espacio
 from app.domain.reportes_compartidos_models import (
@@ -24,7 +24,7 @@ from app.domain.reportes_compartidos_models import (
     ReporteCompartido,
 )
 from app.services.attendance_service import AttendanceService
-from app.services.auth_service import generar_token_activacion, normalizar_rol
+from app.services.auth_service import generar_token_activacion, limpiar_cache_usuario, normalizar_rol
 from app.services.chat.auditoria_chat import registrar_auditoria_chat
 from app.services.email_service import (
     enviar_correo_activacion_consultor,
@@ -849,6 +849,7 @@ class ServicioReportesCompartidos:
         session: AsyncSession,
         usuario_actual: Usuario,
         payload: Dict[str, Any],
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> Dict[str, Any]:
         """
         Registra o actualiza una cuenta de usuario tipo Consultor_Reporte junto con su perfil
@@ -898,6 +899,7 @@ class ServicioReportesCompartidos:
         )
 
         await session.commit()
+        limpiar_cache_usuario(usuario_dest.id)
         await session.refresh(destinatario)
 
         base_url = obtener_url_frontend()
@@ -906,7 +908,7 @@ class ServicioReportesCompartidos:
 
         correo_enviado = False
         if enlace_activacion:
-            correo_enviado = await enviar_correo_activacion_consultor(
+            kwargs_correo = dict(
                 destinatario=destinatario.email,
                 nombre_destinatario=destinatario.nombre_completo,
                 cargo=destinatario.cargo,
@@ -914,6 +916,11 @@ class ServicioReportesCompartidos:
                 enlace_activacion=enlace_activacion,
                 enlace_portal=enlace_portal,
             )
+            if background_tasks is not None:
+                background_tasks.add_task(enviar_correo_activacion_consultor, **kwargs_correo)
+                correo_enviado = True
+            else:
+                correo_enviado = await enviar_correo_activacion_consultor(**kwargs_correo)
 
         cuenta_activada = bool(
             usuario_dest.is_active
@@ -939,11 +946,20 @@ class ServicioReportesCompartidos:
     async def obtener_usuarios_candidatos_consultor(
         cls,
         session: AsyncSession,
+        usuario_actual: Optional[Usuario] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retorna la lista de usuarios institucionales activos que pueden ser vinculados
-        al rol Consultor_Reporte sin necesidad de forzar cambio ni asignación de contraseña.
+        al rol Consultor_Reporte, filtrada según la jerarquía RBAC/RLS del solicitante.
         """
+        es_admin_req = cls._es_admin(usuario_actual) if usuario_actual else True
+        espacios_req = cls._espacios_autorizados(usuario_actual) if usuario_actual else None
+        if usuario_actual and not es_admin_req and not cls._es_directivo(usuario_actual):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo Administración o Dirección de Recinto pueden listar usuarios candidatos.",
+            )
+
         stmt_users = (
             select(Usuario)
             .options(selectinload(Usuario.roles))
@@ -960,7 +976,16 @@ class ServicioReportesCompartidos:
         for u in usuarios:
             email_norm = u.email.strip().lower()
             roles_nombres = [r.nombre for r in (u.roles or [])]
-            es_consultor = any(normalizar_rol(r) == "Consultor_Reporte" for r in roles_nombres)
+            roles_norm = {normalizar_rol(r) for r in roles_nombres}
+            if not es_admin_req:
+                # Un director no puede enumerar administradores ni usuarios fuera de sus recintos
+                if "Admin_Sistema" in roles_norm:
+                    continue
+                espacios_cand = cls._espacios_autorizados(u)
+                if espacios_req is not None and espacios_cand:
+                    if not set(espacios_cand).intersection(set(espacios_req)):
+                        continue
+            es_consultor = "Consultor_Reporte" in roles_norm
             dest_asociado = dest_por_email.get(email_norm)
 
             cargo_sugerido = "Consultor/a Institucional"
@@ -1020,6 +1045,13 @@ class ServicioReportesCompartidos:
                 detail="Debe indicar cargo y carrera o unidad académica del destinatario.",
             )
 
+        es_admin_req = cls._es_admin(usuario_actual)
+        if not es_admin_req and not cls._es_directivo(usuario_actual):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo Administración o Dirección de Recinto pueden vincular usuarios existentes.",
+            )
+
         stmt_usr = select(Usuario).options(selectinload(Usuario.roles)).where(Usuario.id == usuario_id)
         usuario = (await session.execute(stmt_usr)).scalar_one_or_none()
         if not usuario or not usuario.is_active:
@@ -1027,6 +1059,21 @@ class ServicioReportesCompartidos:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="El usuario seleccionado no existe o se encuentra inactivo.",
             )
+
+        if not es_admin_req:
+            roles_obj_norm = {normalizar_rol(r.nombre) for r in (usuario.roles or [])}
+            if "Admin_Sistema" in roles_obj_norm:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No puede modificar ni vincular roles de una cuenta Admin_Sistema.",
+                )
+            espacios_req = cls._espacios_autorizados(usuario_actual) or []
+            espacios_obj = cls._espacios_autorizados(usuario) or []
+            if espacios_obj and not set(espacios_obj).intersection(set(espacios_req)):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="El usuario seleccionado pertenece a un recinto fuera de su jurisdicción.",
+                )
 
         stmt_rol = select(Rol).where(Rol.nombre == "Consultor_Reporte")
         rol_consultor = (await session.execute(stmt_rol)).scalar_one_or_none()
@@ -1070,6 +1117,7 @@ class ServicioReportesCompartidos:
             destinatario.actualizado_en = ahora
 
         await session.commit()
+        limpiar_cache_usuario(usuario.id)
         await session.refresh(destinatario)
 
         cuenta_activada = bool(
@@ -1098,6 +1146,7 @@ class ServicioReportesCompartidos:
         session: AsyncSession,
         usuario_actual: Usuario,
         payload: Dict[str, Any],
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> Dict[str, Any]:
         """Crea un reporte compartido, registra/actualiza el perfil Consultor_Reporte y despacha el correo."""
         email_dest = str(payload.get("destinatario_email") or "").strip().lower()
@@ -1187,11 +1236,7 @@ class ServicioReportesCompartidos:
         )
         datos_instantanea_str = _serializar_json_seguro(datos_ensamblados)
 
-        expira_en = payload.get("expira_en")
-        if isinstance(expira_en, str) and expira_en.strip():
-            expira_en = datetime.fromisoformat(expira_en.replace("Z", ""))
-        elif not isinstance(expira_en, datetime):
-            expira_en = None
+        expira_en = cls._normalizar_expira_en(payload.get("expira_en"))
 
         token_acceso = secrets.token_urlsafe(32)
         codigo_corto = f"UCT-{ahora.year}-{secrets.token_hex(3).upper()}"
@@ -1224,6 +1269,7 @@ class ServicioReportesCompartidos:
 
         session.add(nuevo_reporte)
         await session.commit()
+        limpiar_cache_usuario(usuario_dest.id)
         await session.refresh(nuevo_reporte)
         await session.refresh(destinatario)
 
@@ -1234,7 +1280,7 @@ class ServicioReportesCompartidos:
             f"{base_url}/activar-cuenta?token={token_activacion_plano}" if token_activacion_plano else None
         )
 
-        correo_enviado = await enviar_correo_reporte_ejecutivo(
+        kwargs_correo = dict(
             destinatario=destinatario.email,
             nombre_destinatario=destinatario.nombre_completo,
             cargo=destinatario.cargo,
@@ -1249,19 +1295,47 @@ class ServicioReportesCompartidos:
             enlace_portal=enlace_portal,
             enlace_activacion_pendiente=enlace_activacion,
         )
+        if background_tasks is not None:
+            background_tasks.add_task(enviar_correo_reporte_ejecutivo, **kwargs_correo)
+            correo_enviado = True
+        else:
+            correo_enviado = await enviar_correo_reporte_ejecutivo(**kwargs_correo)
 
-        resumen = cls._formatear_resumen_reporte(nuevo_reporte, destinatario)
+        roles_actual = [normalizar_rol(r.nombre) for r in (getattr(usuario_actual, "roles", None) or [])]
+        rol_actual = (
+            "Admin_Sistema"
+            if "Admin_Sistema" in roles_actual
+            else ("Director_Recinto" if "Director_Recinto" in roles_actual else (roles_actual[0] if roles_actual else "Analista_Consulta"))
+        )
+        emisor_actual_info = {
+            "id": usuario_actual.id,
+            "nombre_completo": usuario_actual.nombre_completo,
+            "email": usuario_actual.email,
+            "rol": rol_actual,
+        }
+        resumen = cls._formatear_resumen_reporte(nuevo_reporte, destinatario, emisor_info=emisor_actual_info)
         resumen["correo_enviado"] = correo_enviado
         resumen["enlace_activacion"] = enlace_activacion
         return resumen
+
+    @staticmethod
+    def _normalizar_expira_en(valor: Any) -> Optional[datetime]:
+        if not valor:
+            return None
+        if isinstance(valor, datetime):
+            return valor.astimezone(ZONA_CHILE).replace(tzinfo=None) if valor.tzinfo is not None else valor
+        if isinstance(valor, str) and valor.strip():
+            dt = datetime.fromisoformat(valor.strip().replace("Z", "+00:00"))
+            return dt.astimezone(ZONA_CHILE).replace(tzinfo=None) if dt.tzinfo is not None else dt
+        return None
 
     @staticmethod
     def _es_expirado(expira_en: Optional[datetime]) -> bool:
         if not expira_en:
             return False
         if getattr(expira_en, "tzinfo", None) is not None:
-            return expira_en.astimezone(timezone.utc) < datetime.now(timezone.utc)
-        return expira_en < datetime.now()
+            return expira_en.astimezone(ZONA_CHILE).replace(tzinfo=None) < ahora_chile_naive()
+        return expira_en < ahora_chile_naive()
 
     @staticmethod
     def _formatear_resumen_reporte(
@@ -1271,6 +1345,7 @@ class ServicioReportesCompartidos:
         emisor_info: Optional[Dict[str, Any]] = None,
         espacio_nombre: Optional[str] = None,
         tiene_campana_24h: Optional[bool] = None,
+        incluir_token_portal: bool = False,
     ) -> Dict[str, Any]:
         dest = destinatario or reporte.destinatario
         expirado = ServicioReportesCompartidos._es_expirado(reporte.expira_en)
@@ -1353,7 +1428,7 @@ class ServicioReportesCompartidos:
                 "email": dest.email if dest else "",
                 "cargo": dest.cargo if dest else "",
                 "unidad_academica": dest.unidad_academica if dest else "",
-                "token_portal": dest.token_portal if dest else "",
+                "token_portal": (dest.token_portal if (incluir_token_portal and dest) else ""),
                 "activo": dest.activo if dest else True,
             },
             "creador": creador_data,
@@ -1374,6 +1449,7 @@ class ServicioReportesCompartidos:
         stmt = (
             select(ReporteCompartido)
             .options(
+                defer(ReporteCompartido.datos_instantanea_json),
                 selectinload(ReporteCompartido.destinatario),
                 selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
             )
@@ -1403,8 +1479,33 @@ class ServicioReportesCompartidos:
                 for c in campanas_24h
             )
 
-        stmt_dest = select(DestinatarioReporte).order_by(desc(DestinatarioReporte.actualizado_en))
-        filas_dest = (await session.execute(stmt_dest)).scalars().all()
+        es_admin_list = cls._es_admin(usuario_actual)
+        reportes_por_dest: Dict[int, int] = {}
+        if es_admin_list:
+            stmt_dest = select(DestinatarioReporte).order_by(desc(DestinatarioReporte.actualizado_en))
+            filas_dest = (await session.execute(stmt_dest)).scalars().all()
+            res_cnt = await session.execute(
+                select(ReporteCompartido.destinatario_id, func.count(ReporteCompartido.id)).group_by(
+                    ReporteCompartido.destinatario_id
+                )
+            )
+            for d_id, cnt in res_cnt.all():
+                if d_id is not None:
+                    reportes_por_dest[int(d_id)] = int(cnt or 0)
+        else:
+            dest_ids_visibles = {r.destinatario_id for r in filas_reportes if r.destinatario_id is not None}
+            if dest_ids_visibles:
+                stmt_dest = (
+                    select(DestinatarioReporte)
+                    .where(DestinatarioReporte.id.in_(dest_ids_visibles))
+                    .order_by(desc(DestinatarioReporte.actualizado_en))
+                )
+                filas_dest = (await session.execute(stmt_dest)).scalars().all()
+            else:
+                filas_dest = []
+            for r in filas_reportes:
+                if r.destinatario_id is not None:
+                    reportes_por_dest[r.destinatario_id] = reportes_por_dest.get(r.destinatario_id, 0) + 1
 
         emails_dest = [d.email for d in filas_dest if d.email]
         mapa_usuarios: Dict[str, Usuario] = {}
@@ -1425,7 +1526,7 @@ class ServicioReportesCompartidos:
                     "email": d.email,
                     "cargo": d.cargo,
                     "unidad_academica": d.unidad_academica,
-                    "token_portal": d.token_portal,
+                    "token_portal": "",
                     "activo": d.activo,
                     "cuenta_activada": bool(
                         d.email.lower() in mapa_usuarios
@@ -1433,7 +1534,7 @@ class ServicioReportesCompartidos:
                         and mapa_usuarios[d.email.lower()].hashed_password != "PENDIENTE_ACTIVACION"
                         and mapa_usuarios[d.email.lower()].hashed_password.startswith("$2")
                     ),
-                    "total_reportes": len(d.reportes or []),
+                    "total_reportes": reportes_por_dest.get(d.id, 0),
                     "actualizado_en": d.actualizado_en.isoformat() if d.actualizado_en else None,
                 }
                 for d in filas_dest
@@ -1457,6 +1558,7 @@ class ServicioReportesCompartidos:
         usuario_actual: Usuario,
         reporte_id: str,
         payload: Dict[str, Any],
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> Dict[str, Any]:
         """Permite habilitar/deshabilitar el link, habilitar/deshabilitar IA, editar vigencia, notas y gráficos."""
         try:
@@ -1548,33 +1650,29 @@ class ServicioReportesCompartidos:
             reporte.datos_instantanea_json = _serializar_json_seguro(datos_inst)
 
         if "expira_en" in payload:
-            val_exp = payload["expira_en"]
-            if not val_exp:
-                reporte.expira_en = None
-            elif isinstance(val_exp, str):
-                reporte.expira_en = datetime.fromisoformat(val_exp.replace("Z", ""))
+            reporte.expira_en = cls._normalizar_expira_en(payload["expira_en"])
 
         await session.commit()
-        await session.refresh(reporte)
 
         correo_enviado = False
         reenviar_correo = bool(payload.get("reenviar_correo", False))
         dest = reporte.destinatario
         if (se_habilito_ahora or reenviar_correo) and reporte.activo and dest:
-            _, token_act_plano = await cls._asegurar_usuario_consultor_reporte(
+            usr_dest, token_act_plano = await cls._asegurar_usuario_consultor_reporte(
                 session=session,
                 email_dest=dest.email,
                 nombre_dest=dest.nombre_completo,
                 creador_id=usuario_actual.id,
             )
             await session.commit()
+            limpiar_cache_usuario(usr_dest.id)
             base_url = obtener_url_frontend()
             enlace_reporte = f"{base_url}/reporte-compartido/{reporte.token_acceso}"
             enlace_portal = f"{base_url}/mis-reportes/{dest.token_portal}"
             enlace_activacion = (
                 f"{base_url}/activar-cuenta?token={token_act_plano}" if token_act_plano else None
             )
-            correo_enviado = await enviar_correo_reporte_ejecutivo(
+            kwargs_correo = dict(
                 destinatario=dest.email,
                 nombre_destinatario=dest.nombre_completo,
                 cargo=dest.cargo,
@@ -1589,6 +1687,11 @@ class ServicioReportesCompartidos:
                 enlace_portal=enlace_portal,
                 enlace_activacion_pendiente=enlace_activacion,
             )
+            if background_tasks is not None:
+                background_tasks.add_task(enviar_correo_reporte_ejecutivo, **kwargs_correo)
+                correo_enviado = True
+            else:
+                correo_enviado = await enviar_correo_reporte_ejecutivo(**kwargs_correo)
 
         resumen = cls._formatear_resumen_reporte(
             reporte, reporte.destinatario, tiene_campana_24h=tiene_24h_rango
@@ -1603,11 +1706,7 @@ class ServicioReportesCompartidos:
         usuario_actual: Usuario,
     ) -> Dict[str, Any]:
         """Devuelve la bandeja histórica de reportes para el usuario Consultor_Reporte autenticado."""
-        stmt = (
-            select(DestinatarioReporte)
-            .options(selectinload(DestinatarioReporte.reportes))
-            .where(DestinatarioReporte.email == usuario_actual.email.lower())
-        )
+        stmt = select(DestinatarioReporte).where(DestinatarioReporte.email == usuario_actual.email.lower())
         dest = (await session.execute(stmt)).scalar_one_or_none()
         if not dest:
             return {
@@ -1621,7 +1720,11 @@ class ServicioReportesCompartidos:
                 },
                 "reportes": [],
             }
-        return await cls.obtener_portal_destinatario_por_token(session=session, token_portal=dest.token_portal)
+        return await cls.obtener_portal_destinatario_por_token(
+            session=session,
+            token_portal=dest.token_portal,
+            usuario_actual=usuario_actual,
+        )
 
     @classmethod
     def _roles_normalizados(cls, usuario: Optional[Usuario]) -> set[str]:
@@ -1661,6 +1764,26 @@ class ServicioReportesCompartidos:
         if not roles_emisor or "Admin_Sistema" in roles_emisor:
             return False
         return bool(roles_emisor.intersection({"Director_Recinto", "Analista_Consulta"}))
+
+    @classmethod
+    def _verificar_acceso_usuario_a_reporte(
+        cls,
+        usuario_actual: Usuario,
+        reporte: ReporteCompartido,
+    ) -> None:
+        """Verifica que el usuario autenticado sea el destinatario titular, emisor autorizado o Admin_Sistema."""
+        if cls._es_admin(usuario_actual):
+            return
+        email_usr = str(getattr(usuario_actual, "email", "") or "").strip().lower()
+        email_dest = str(getattr(reporte.destinatario, "email", "") or "").strip().lower() if reporte.destinatario else ""
+        if email_usr and email_dest and email_usr == email_dest:
+            return
+        if cls._puede_ver_o_gestionar_reporte(usuario_actual, reporte, getattr(reporte, "creador", None)):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No cuenta con autorización para acceder a este reporte compartido.",
+        )
 
     @classmethod
     def _puede_ver_o_gestionar_reporte(
@@ -1807,17 +1930,17 @@ class ServicioReportesCompartidos:
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
-        stmt = (
-            select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario))
-            .order_by(desc(ReporteCompartido.creado_en))
+        base_stmt = select(
+            ReporteCompartido.id.label("rep_id"),
+            ReporteCompartido.total_accesos.label("total_accesos"),
+            ReporteCompartido.creado_en.label("creado_en"),
         )
-        stmt = cls._aplicar_filtro_rls_reportes(stmt, usuario_actual)
+        base_stmt = cls._aplicar_filtro_rls_reportes(base_stmt, usuario_actual)
 
         if espacio_id is not None:
-            stmt = stmt.where(ReporteCompartido.espacio_id == espacio_id)
+            base_stmt = base_stmt.where(ReporteCompartido.espacio_id == espacio_id)
         if solo_activos is not None:
-            stmt = stmt.where(ReporteCompartido.activo == solo_activos)
+            base_stmt = base_stmt.where(ReporteCompartido.activo == solo_activos)
 
         emisor_norm = (emisor_rol or "").strip().lower()
         if emisor_norm == "directivo":
@@ -1826,25 +1949,27 @@ class ServicioReportesCompartidos:
                 .join(Rol, Rol.id == UsuarioRol.rol_id)
                 .where(Rol.nombre.in_(("Director_Recinto", "Directivo", "Directora_Recinto")))
             )
-            stmt = stmt.where(ReporteCompartido.creado_por_id.in_(subq_dir))
+            base_stmt = base_stmt.where(ReporteCompartido.creado_por_id.in_(subq_dir))
         elif emisor_norm == "analista":
             subq_ana = (
                 select(UsuarioRol.usuario_id)
                 .join(Rol, Rol.id == UsuarioRol.rol_id)
                 .where(Rol.nombre.in_(("Analista_Consulta", "Analista")))
             )
-            stmt = stmt.where(ReporteCompartido.creado_por_id.in_(subq_ana))
+            base_stmt = base_stmt.where(ReporteCompartido.creado_por_id.in_(subq_ana))
         elif emisor_norm == "admin":
             subq_adm = (
                 select(UsuarioRol.usuario_id)
                 .join(Rol, Rol.id == UsuarioRol.rol_id)
                 .where(Rol.nombre.in_(("Admin_Sistema", "SuperAdmin")))
             )
-            stmt = stmt.where(ReporteCompartido.creado_por_id.in_(subq_adm))
+            base_stmt = base_stmt.where(ReporteCompartido.creado_por_id.in_(subq_adm))
 
         if search and search.strip():
             termino = f"%{search.strip()}%"
-            stmt = stmt.outerjoin(DestinatarioReporte, ReporteCompartido.destinatario_id == DestinatarioReporte.id).where(
+            base_stmt = base_stmt.outerjoin(
+                DestinatarioReporte, ReporteCompartido.destinatario_id == DestinatarioReporte.id
+            ).where(
                 or_(
                     ReporteCompartido.titulo_reporte.ilike(termino),
                     ReporteCompartido.codigo_corto.ilike(termino),
@@ -1853,46 +1978,99 @@ class ServicioReportesCompartidos:
                 )
             )
 
-        reportes = (await session.execute(stmt)).scalars().all()
-        metricas_map, emisores_map, espacios_map = await cls._cargar_contexto_resumen_reportes(session, reportes)
-
-        resumenes: List[Dict[str, Any]] = []
-        revisados_total = 0
-        aperturas_total = 0
-        descargas_total = 0
-        consultas_ia_total = 0
-
-        for rep in reportes:
-            m = metricas_map.get(rep.id)
-            item = cls._formatear_resumen_reporte(
-                rep,
-                metricas=m,
-                emisor_info=emisores_map.get(int(rep.creado_por_id)),
-                espacio_nombre=espacios_map.get(int(rep.espacio_id)),
+        base_subq = base_stmt.subquery("base_rep")
+        ev_agg_subq = (
+            select(
+                AuditoriaAccesoReporte.reporte_id.label("reporte_id"),
+                func.sum(case((AuditoriaAccesoReporte.accion == "apertura_reporte", 1), else_=0)).label("ap_ev"),
+                func.sum(
+                    case(
+                        (
+                            AuditoriaAccesoReporte.accion.in_(
+                                ("descarga_excel", "descarga_csv", "descarga_pdf", "descarga_imagen")
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("desc_ev"),
+                func.sum(case((AuditoriaAccesoReporte.accion == "consulta_ia_confinada", 1), else_=0)).label("ia_ev"),
             )
-            if item["revisado"]:
-                revisados_total += 1
-            aperturas_total += item["total_aperturas"]
-            descargas_total += item["total_descargas"]
-            consultas_ia_total += item["total_consultas_ia"]
-            resumenes.append(item)
+            .group_by(AuditoriaAccesoReporte.reporte_id)
+            .subquery("ev_agg")
+        )
+
+        ap_ev_expr = func.coalesce(ev_agg_subq.c.ap_ev, 0)
+        tot_acc_expr = func.coalesce(base_subq.c.total_accesos, 0)
+        total_ap_expr = case((ap_ev_expr > tot_acc_expr, ap_ev_expr), else_=tot_acc_expr)
+
+        agg_stmt = select(
+            func.count(base_subq.c.rep_id).label("total_universo"),
+            func.coalesce(func.sum(case((total_ap_expr > 0, 1), else_=0)), 0).label("revisados_total"),
+            func.coalesce(func.sum(total_ap_expr), 0).label("aperturas_total"),
+            func.coalesce(func.sum(func.coalesce(ev_agg_subq.c.desc_ev, 0)), 0).label("descargas_total"),
+            func.coalesce(func.sum(func.coalesce(ev_agg_subq.c.ia_ev, 0)), 0).label("consultas_ia_total"),
+        ).select_from(base_subq.outerjoin(ev_agg_subq, base_subq.c.rep_id == ev_agg_subq.c.reporte_id))
+
+        kpi_row = (await session.execute(agg_stmt)).one()
+        total_universo = int(kpi_row.total_universo or 0)
+        revisados_total = int(kpi_row.revisados_total or 0)
+        aperturas_total = int(kpi_row.aperturas_total or 0)
+        descargas_total = int(kpi_row.descargas_total or 0)
+        consultas_ia_total = int(kpi_row.consultas_ia_total or 0)
 
         rev_norm = (estado_revision or "").strip().lower()
         if rev_norm == "revisado":
-            filtrados = [it for it in resumenes if it["revisado"]]
+            total_items = revisados_total
         elif rev_norm == "sin_revisar":
-            filtrados = [it for it in resumenes if not it["revisado"]]
+            total_items = max(0, total_universo - revisados_total)
         else:
-            filtrados = resumenes
+            total_items = total_universo
 
-        total_items = len(filtrados)
         page_safe = max(1, int(page))
         size_safe = max(1, min(100, int(page_size)))
         total_pages = max(1, (total_items + size_safe - 1) // size_safe)
         offset = (page_safe - 1) * size_safe
-        paginados = filtrados[offset : offset + size_safe]
 
-        total_universo = len(resumenes)
+        page_stmt = (
+            select(base_subq.c.rep_id)
+            .select_from(base_subq.outerjoin(ev_agg_subq, base_subq.c.rep_id == ev_agg_subq.c.reporte_id))
+            .order_by(desc(base_subq.c.creado_en))
+        )
+        if rev_norm == "revisado":
+            page_stmt = page_stmt.where(total_ap_expr > 0)
+        elif rev_norm == "sin_revisar":
+            page_stmt = page_stmt.where(total_ap_expr == 0)
+
+        page_ids = list((await session.execute(page_stmt.offset(offset).limit(size_safe))).scalars().all())
+
+        paginados: List[Dict[str, Any]] = []
+        if page_ids:
+            stmt_page_reps = (
+                select(ReporteCompartido)
+                .options(
+                    defer(ReporteCompartido.datos_instantanea_json),
+                    selectinload(ReporteCompartido.destinatario),
+                )
+                .where(ReporteCompartido.id.in_(page_ids))
+            )
+            reps_by_id = {r.id: r for r in (await session.execute(stmt_page_reps)).scalars().all()}
+            reportes_ordenados = [reps_by_id[rid] for rid in page_ids if rid in reps_by_id]
+            metricas_map, emisores_map, espacios_map = await cls._cargar_contexto_resumen_reportes(
+                session, reportes_ordenados
+            )
+            for rep in reportes_ordenados:
+                m = metricas_map.get(rep.id)
+                emisor_info = emisores_map.get(int(rep.creado_por_id)) if rep.creado_por_id is not None else None
+                paginados.append(
+                    cls._formatear_resumen_reporte(
+                        rep,
+                        metricas=m,
+                        emisor_info=emisor_info,
+                        espacio_nombre=espacios_map.get(int(rep.espacio_id)),
+                    )
+                )
+
         return {
             "rol_auditor": (
                 "Admin_Sistema"
@@ -1933,7 +2111,10 @@ class ServicioReportesCompartidos:
         reporte = (
             await session.execute(
                 select(ReporteCompartido)
-                .options(selectinload(ReporteCompartido.destinatario))
+                .options(
+                    defer(ReporteCompartido.datos_instantanea_json),
+                    selectinload(ReporteCompartido.destinatario),
+                )
                 .where(ReporteCompartido.id == uuid_obj)
             )
         ).scalar_one_or_none()
@@ -1988,6 +2169,7 @@ class ServicioReportesCompartidos:
         detalle: Optional[str] = None,
         ip_origen: Optional[str] = None,
         user_agent: Optional[str] = None,
+        usuario_actual: Optional[Usuario] = None,
     ) -> Dict[str, Any]:
         acciones_permitidas = {"descarga_excel", "descarga_csv", "descarga_pdf", "descarga_imagen"}
         if accion not in acciones_permitidas:
@@ -1995,12 +2177,19 @@ class ServicioReportesCompartidos:
 
         stmt = (
             select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario))
+            .options(
+                defer(ReporteCompartido.datos_instantanea_json),
+                selectinload(ReporteCompartido.destinatario),
+                selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
+            )
             .where(ReporteCompartido.token_acceso == token_acceso)
         )
         reporte = (await session.execute(stmt)).scalar_one_or_none()
         if not reporte:
             raise HTTPException(status_code=404, detail="El enlace de reporte solicitado no existe.")
+
+        if usuario_actual is not None:
+            cls._verificar_acceso_usuario_a_reporte(usuario_actual, reporte)
 
         dest = reporte.destinatario
         if not reporte.activo or (dest and not dest.activo):
@@ -2035,11 +2224,29 @@ class ServicioReportesCompartidos:
         session: AsyncSession,
         destinatario_id: int,
         activo: bool,
+        usuario_actual: Optional[Usuario] = None,
     ) -> Dict[str, Any]:
-        stmt = select(DestinatarioReporte).where(DestinatarioReporte.id == destinatario_id)
+        stmt = (
+            select(DestinatarioReporte)
+            .options(selectinload(DestinatarioReporte.reportes).defer(ReporteCompartido.datos_instantanea_json))
+            .where(DestinatarioReporte.id == destinatario_id)
+        )
         dest = (await session.execute(stmt)).scalar_one_or_none()
         if not dest:
             raise HTTPException(status_code=404, detail="Destinatario no encontrado.")
+        if usuario_actual is not None and not cls._es_admin(usuario_actual):
+            if not cls._es_directivo(usuario_actual):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No está autorizado para modificar destinatarios de reportes.",
+                )
+            espacios_dir = set(cls._espacios_autorizados(usuario_actual) or [])
+            espacios_dest = {int(r.espacio_id) for r in (dest.reportes or [])}
+            if not espacios_dest or not espacios_dest.issubset(espacios_dir):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="El destinatario tiene reportes fuera de su recinto autorizado.",
+                )
         dest.activo = bool(activo)
         dest.actualizado_en = datetime.now()
         await session.commit()
@@ -2059,11 +2266,17 @@ class ServicioReportesCompartidos:
         destinatario_id: int,
     ) -> Dict[str, Any]:
         """
-        Elimina el registro del usuario Consultor de Reportes (DestinatarioReporte y sus reportes asociados)
-        y elimina también su cuenta Usuario en el sistema.
+        Elimina el registro del usuario Consultor de Reportes (exclusivo para Admin_Sistema).
         """
-        from sqlalchemy import delete as sql_delete
+        from sqlalchemy import delete as sql_delete, update as sql_update
+        from app.domain.models import IngestionJob
         from app.services.auth_service import limpiar_cache_usuario
+
+        if not cls._es_admin(usuario_actual):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo Admin_Sistema puede eliminar cuentas consultoras y su historial de auditoría.",
+            )
 
         stmt = select(DestinatarioReporte).where(DestinatarioReporte.id == destinatario_id)
         dest = (await session.execute(stmt)).scalar_one_or_none()
@@ -2089,7 +2302,7 @@ class ServicioReportesCompartidos:
         stmt_usr = (
             select(Usuario)
             .options(selectinload(Usuario.roles))
-            .where(func.lower(Usuario.email) == email_dest)
+            .where(Usuario.email == email_dest)
         )
         usr = (await session.execute(stmt_usr)).scalar_one_or_none()
         if usr:
@@ -2097,6 +2310,12 @@ class ServicioReportesCompartidos:
             tiene_otros_roles = bool(roles_usr - {"Consultor_Reporte"})
             limpiar_cache_usuario(usr.id)
             if usr.id != usuario_actual.id and not tiene_otros_roles:
+                await session.execute(
+                    sql_update(Usuario).where(Usuario.created_by_user_id == usr.id).values(created_by_user_id=None)
+                )
+                await session.execute(
+                    sql_update(IngestionJob).where(IngestionJob.creado_por == usr.id).values(creado_por=None)
+                )
                 await session.execute(sql_delete(TokenActivacion).where(TokenActivacion.usuario_id == usr.id))
                 await session.execute(sql_delete(UsuarioRol).where(UsuarioRol.usuario_id == usr.id))
                 await session.execute(sql_delete(Usuario).where(Usuario.id == usr.id))
@@ -2127,7 +2346,11 @@ class ServicioReportesCompartidos:
         except ValueError:
             raise HTTPException(status_code=400, detail="Identificador inválido.")
 
-        stmt = select(ReporteCompartido).where(ReporteCompartido.id == uuid_obj)
+        stmt = (
+            select(ReporteCompartido)
+            .options(defer(ReporteCompartido.datos_instantanea_json))
+            .where(ReporteCompartido.id == uuid_obj)
+        )
         reporte = (await session.execute(stmt)).scalar_one_or_none()
         if not reporte:
             raise HTTPException(status_code=404, detail="Reporte no encontrado.")
@@ -2148,15 +2371,17 @@ class ServicioReportesCompartidos:
         token_acceso: str,
         ip_origen: Optional[str] = None,
         user_agent: Optional[str] = None,
+        usuario_actual: Optional[Usuario] = None,
     ) -> Dict[str, Any]:
         """
-        Resuelve un reporte público confinado por su token_acceso.
-        Verifica estado activo y expiración, registra auditoría y devuelve el historial del destinatario.
+        Resuelve un reporte compartido por su token_acceso.
+        Sin JWT devuelve únicamente metadatos mínimos (requiere_login=True).
+        Con JWT verifica pertenencia antes de entregar datos y nunca expone token_activacion ni token_portal.
         """
         stmt = (
             select(ReporteCompartido)
             .options(
-                selectinload(ReporteCompartido.destinatario).selectinload(DestinatarioReporte.reportes),
+                selectinload(ReporteCompartido.destinatario),
                 selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
             )
             .where(ReporteCompartido.token_acceso == token_acceso)
@@ -2182,7 +2407,40 @@ class ServicioReportesCompartidos:
                 detail=f"El plazo de vigencia de este reporte expiró el {reporte.expira_en.strftime('%d-%m-%Y %H:%M')}.",
             )
 
-        # Registrar acceso en auditoría
+        # Sin autenticación JWT: retorna solo metadatos no sensibles y bloquea datos/tokens
+        if usuario_actual is None:
+            return {
+                "requiere_login": True,
+                "reporte": {
+                    "codigo_corto": reporte.codigo_corto,
+                    "titulo_reporte": reporte.titulo_reporte,
+                    "espacio_id": reporte.espacio_id,
+                    "espacio_nombre": "Biblioteca CSF" if reporte.espacio_id == 1 else "Estacionamiento CSF",
+                    "fecha_inicio": reporte.fecha_inicio.isoformat(),
+                    "fecha_fin": reporte.fecha_fin.isoformat(),
+                    "activo": reporte.activo,
+                    "expirado": False,
+                    "vigente": True,
+                },
+                "datos": None,
+                "historial_destinatario": [],
+                "destinatario_puede_ia": False,
+                "cuota_ia": None,
+                "mensajes_ia": [],
+            }
+
+        cls._verificar_acceso_usuario_a_reporte(usuario_actual, reporte)
+
+        # Registrar acceso en auditoría con incremento atómico SQL solo tras autenticación verificada
+        if hasattr(session, "execute"):
+            await session.execute(
+                update(ReporteCompartido)
+                .where(ReporteCompartido.id == reporte.id)
+                .values(
+                    total_accesos=func.coalesce(ReporteCompartido.total_accesos, 0) + 1,
+                    ultimo_acceso_en=ahora,
+                )
+            )
         reporte.total_accesos = int(reporte.total_accesos or 0) + 1
         reporte.ultimo_acceso_en = ahora
         session.add(
@@ -2191,7 +2449,7 @@ class ServicioReportesCompartidos:
                 fecha_hora=ahora,
                 ip_origen=ip_origen,
                 accion="apertura_reporte",
-                detalle=f"Apertura del reporte {reporte.codigo_corto}",
+                detalle=f"Apertura autenticada del reporte {reporte.codigo_corto}",
                 user_agent=(user_agent or "")[:255] or None,
             )
         )
@@ -2218,8 +2476,10 @@ class ServicioReportesCompartidos:
                 cls._normalizar_clave_grafico_snapshot(g) not in graficos_guardados
                 for g in graficos_visibles
             )
+            es_dinamico = (reporte.modo_datos or "dinamico_acotado") == "dinamico_acotado"
             if (
-                "dias_operativos" not in ind_ej_guardados
+                es_dinamico
+                or "dias_operativos" not in ind_ej_guardados
                 or not any(i in ids_cat_actual for i in ind_vis_guardados)
                 or faltan_graficos
             ):
@@ -2250,55 +2510,16 @@ class ServicioReportesCompartidos:
             reporte.datos_instantanea_json = _serializar_json_seguro(datos_confinados)
             await session.commit()
 
-        # Historial de todos los reportes enviados al mismo destinatario
-        historial_destinatario = []
-        if dest and dest.reportes:
-            for rep_hist in sorted(dest.reportes, key=lambda x: (x.creado_en.replace(tzinfo=None) if getattr(x.creado_en, "tzinfo", None) else x.creado_en) or ahora, reverse=True):
-                exp_h = cls._es_expirado(rep_hist.expira_en)
-                historial_destinatario.append(
-                    {
-                        "id": str(rep_hist.id),
-                        "codigo_corto": rep_hist.codigo_corto,
-                        "token_acceso": rep_hist.token_acceso,
-                        "titulo_reporte": rep_hist.titulo_reporte,
-                        "finalidad_reporte": rep_hist.finalidad_reporte,
-                        "espacio_id": rep_hist.espacio_id,
-                        "espacio_nombre": "Biblioteca CSF" if rep_hist.espacio_id == 1 else "Estacionamiento CSF",
-                        "fecha_inicio": rep_hist.fecha_inicio.isoformat(),
-                        "fecha_fin": rep_hist.fecha_fin.isoformat(),
-                        "creado_en": rep_hist.creado_en.isoformat() if rep_hist.creado_en else None,
-                        "vigente": bool(rep_hist.activo and not exp_h),
-                        "activo": rep_hist.activo,
-                        "expirado": exp_h,
-                        "es_actual": rep_hist.id == reporte.id,
-                    }
-                )
-
-        # Verificar si el usuario Consultor_Reporte ya creó su contraseña o si es nuevo y debe definirla
-        requiere_crear_password = False
-        token_activacion_pendiente: Optional[str] = None
-        destinatario_puede_ia = True
-        usr_dest: Optional[Usuario] = None
-        if dest:
-            usr_dest, token_act = await cls._asegurar_usuario_consultor_reporte(
-                session=session,
-                email_dest=dest.email,
-                nombre_dest=dest.nombre_completo,
-                creador_id=reporte.creado_por_id,
-            )
-            await session.commit()
-            destinatario_puede_ia = bool(getattr(usr_dest, "can_use_ai", True))
-            if (
-                usr_dest.hashed_password == "PENDIENTE_ACTIVACION"
-                or not usr_dest.hashed_password.startswith("$2")
-            ):
-                requiere_crear_password = True
-                token_activacion_pendiente = token_act
+        usr_dest = await cls._obtener_usuario_destinatario_con_roles(session, reporte)
+        usuario_ia_ref = usuario_actual or usr_dest
+        destinatario_puede_ia = bool(
+            cls._es_admin(usuario_actual) or getattr(usuario_ia_ref, "can_use_ai", True)
+        )
 
         cuota_ia: Optional[Dict[str, Any]] = None
         mensajes_ia_resp: List[Dict[str, Any]] = []
         if reporte.permitir_ia and destinatario_puede_ia:
-            cuota_ia = await cls._obtener_cuota_ia_reporte(session, reporte, usr_dest)
+            cuota_ia = await cls._obtener_cuota_ia_reporte(session, reporte, usuario_ia_ref)
             stmt_msg = (
                 select(MensajeIAReporte)
                 .where(MensajeIAReporte.reporte_id == reporte.id)
@@ -2319,14 +2540,13 @@ class ServicioReportesCompartidos:
             ]
 
         return {
-            "reporte": cls._formatear_resumen_reporte(reporte, dest),
+            "requiere_login": False,
+            "reporte": cls._formatear_resumen_reporte(reporte, dest, incluir_token_portal=False),
             "datos": datos_confinados,
-            "historial_destinatario": historial_destinatario,
+            "historial_destinatario": [],
             "destinatario_puede_ia": destinatario_puede_ia,
             "cuota_ia": cuota_ia,
             "mensajes_ia": mensajes_ia_resp,
-            "requiere_crear_password": requiere_crear_password,
-            "token_activacion": token_activacion_pendiente,
             "catalogos": {
                 "graficos": (
                     CATALOGO_GRAFICOS_BIBLIOTECA
@@ -2346,11 +2566,14 @@ class ServicioReportesCompartidos:
         cls,
         session: AsyncSession,
         token_portal: str,
+        usuario_actual: Optional[Usuario] = None,
     ) -> Dict[str, Any]:
-        """Devuelve la bandeja histórica completa de reportes de un destinatario."""
+        """Devuelve la bandeja histórica completa de reportes de un destinatario autenticado."""
         stmt = (
             select(DestinatarioReporte)
-            .options(selectinload(DestinatarioReporte.reportes))
+            .options(
+                selectinload(DestinatarioReporte.reportes).defer(ReporteCompartido.datos_instantanea_json)
+            )
             .where(DestinatarioReporte.token_portal == token_portal)
         )
         dest = (await session.execute(stmt)).scalar_one_or_none()
@@ -2358,6 +2581,13 @@ class ServicioReportesCompartidos:
             raise HTTPException(status_code=404, detail="Bandeja de destinatario no encontrada.")
         if not dest.activo:
             raise HTTPException(status_code=403, detail="La cuenta de destinatario se encuentra deshabilitada.")
+        if usuario_actual is not None and not cls._es_admin(usuario_actual):
+            email_usr = str(getattr(usuario_actual, "email", "") or "").strip().lower()
+            if email_usr != str(dest.email or "").strip().lower():
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No tiene autorización para consultar el portal histórico de otro destinatario.",
+                )
 
         ahora = datetime.now()
         reportes_lista = []
@@ -2481,16 +2711,23 @@ class ServicioReportesCompartidos:
         cls,
         session: AsyncSession,
         token_acceso: str,
+        usuario_actual: Optional[Usuario] = None,
     ) -> Dict[str, Any]:
         """Devuelve el historial persistido de conversaciones IA y cuota diaria para un reporte autorizado."""
         stmt = (
             select(ReporteCompartido)
-            .options(selectinload(ReporteCompartido.destinatario))
+            .options(
+                defer(ReporteCompartido.datos_instantanea_json),
+                selectinload(ReporteCompartido.destinatario),
+                selectinload(ReporteCompartido.creador).selectinload(Usuario.roles),
+            )
             .where(ReporteCompartido.token_acceso == token_acceso)
         )
         reporte = (await session.execute(stmt)).scalar_one_or_none()
         if not reporte:
             raise HTTPException(status_code=404, detail="Reporte no encontrado.")
+        if usuario_actual is not None:
+            cls._verificar_acceso_usuario_a_reporte(usuario_actual, reporte)
         if not reporte.activo or (reporte.destinatario and not reporte.destinatario.activo):
             raise HTTPException(status_code=403, detail="Este reporte se encuentra deshabilitado.")
         if cls._es_expirado(reporte.expira_en):
@@ -2502,13 +2739,14 @@ class ServicioReportesCompartidos:
             )
 
         usr_dest = await cls._obtener_usuario_destinatario_con_roles(session, reporte)
-        if usr_dest is not None and not getattr(usr_dest, "can_use_ai", True):
+        usuario_ia_ref = usuario_actual or usr_dest
+        if usuario_ia_ref is not None and not cls._es_admin(usuario_ia_ref) and not getattr(usuario_ia_ref, "can_use_ai", True):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="El acceso al Asistente IA ha sido deshabilitado para su cuenta por el administrador.",
             )
 
-        cuota = await cls._obtener_cuota_ia_reporte(session, reporte, usr_dest)
+        cuota = await cls._obtener_cuota_ia_reporte(session, reporte, usuario_ia_ref)
         stmt_msg = (
             select(MensajeIAReporte)
             .where(MensajeIAReporte.reporte_id == reporte.id)
@@ -2540,6 +2778,7 @@ class ServicioReportesCompartidos:
         sesion_id: str = "principal",
         ip_origen: Optional[str] = None,
         user_agent: Optional[str] = None,
+        usuario_actual: Optional[Usuario] = None,
     ) -> Dict[str, Any]:
         """
         Ejecuta una consulta al asistente IA estrictamente confinada a los datos del reporte compartido.
@@ -2557,6 +2796,9 @@ class ServicioReportesCompartidos:
         if not reporte:
             raise HTTPException(status_code=404, detail="Reporte no encontrado.")
 
+        if usuario_actual is not None:
+            cls._verificar_acceso_usuario_a_reporte(usuario_actual, reporte)
+
         if not reporte.activo or (reporte.destinatario and not reporte.destinatario.activo):
             raise HTTPException(status_code=403, detail="Este reporte se encuentra deshabilitado.")
 
@@ -2570,13 +2812,14 @@ class ServicioReportesCompartidos:
             )
 
         usr_dest = await cls._obtener_usuario_destinatario_con_roles(session, reporte)
-        if usr_dest is not None and not getattr(usr_dest, "can_use_ai", True):
+        usuario_ia_ref = usuario_actual or usr_dest
+        if usuario_ia_ref is not None and not cls._es_admin(usuario_ia_ref) and not getattr(usuario_ia_ref, "can_use_ai", True):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="El acceso al Asistente IA ha sido deshabilitado para su cuenta por el administrador.",
             )
 
-        cuota_previa = await cls._obtener_cuota_ia_reporte(session, reporte, usr_dest)
+        cuota_previa = await cls._obtener_cuota_ia_reporte(session, reporte, usuario_ia_ref)
         if not cuota_previa["ilimitado"] and (cuota_previa["restantes"] or 0) <= 0:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -2607,8 +2850,10 @@ class ServicioReportesCompartidos:
                 cls._normalizar_clave_grafico_snapshot(g) not in graficos_guardados
                 for g in graficos_visibles
             )
+            es_dinamico = (reporte.modo_datos or "dinamico_acotado") == "dinamico_acotado"
             if (
-                "dias_operativos" not in ind_ej_guardados
+                es_dinamico
+                or "dias_operativos" not in ind_ej_guardados
                 or not any(i in ids_cat_actual for i in ind_vis_guardados)
                 or faltan_graficos
             ):
@@ -2697,10 +2942,17 @@ class ServicioReportesCompartidos:
         )
         sesion_limpia = (sesion_id or "principal").strip()[:64] or "principal"
 
-        # Resolver ID del usuario Consultor_Reporte ya cargado (o creador como respaldo)
-        usuario_auditoria_id = usr_dest.id if usr_dest else getattr(reporte.destinatario, "usuario_id", None)
+        # Resolver ID del usuario autenticado o Consultor_Reporte sin atribuir accesos anónimos al creador
+        usuario_auditoria_id = (
+            usuario_actual.id
+            if usuario_actual is not None and getattr(usuario_actual, "id", None) is not None
+            else (usr_dest.id if usr_dest else getattr(reporte.destinatario, "usuario_id", None))
+        )
         if not usuario_auditoria_id:
-            usuario_auditoria_id = reporte.creado_por_id
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Se requiere una cuenta autenticada para consultar el Asistente IA.",
+            )
 
         # Cargar últimos 6 turnos de esta sesión como contexto conversacional
         stmt_hist = (
@@ -2721,6 +2973,12 @@ class ServicioReportesCompartidos:
             if m.respuesta:
                 historial_llm.append({"role": "assistant", "content": m.respuesta})
 
+        reporte_id_val = reporte.id
+        reporte_codigo_val = reporte.codigo_corto
+        es_sesion_real = isinstance(session, AsyncSession)
+        if es_sesion_real:
+            await session.close()
+
         estado_chat = "éxito"
         try:
             respuesta_texto = await cliente_llm.generate_response(
@@ -2736,14 +2994,14 @@ class ServicioReportesCompartidos:
             try:
                 await registrar_auditoria_chat(
                     usuario_id=usuario_auditoria_id,
-                    prompt_text=f"[Reporte {reporte.codigo_corto}] {pregunta[:400]}",
+                    prompt_text=f"[Reporte {reporte_codigo_val}] {pregunta[:400]}",
                     dataset_tipo=dataset_tipo,
                     modelo_utilizado=str(modelo_usado),
                     status=estado_chat,
                     response_time_ms=elapsed_err_ms,
                     respuesta_text=f"Error: {str(err_llm)[:300]}",
                     origen="reporte_compartido",
-                    reporte_codigo=reporte.codigo_corto,
+                    reporte_codigo=reporte_codigo_val,
                 )
             except Exception as err_aud:
                 logger.warning("No se pudo registrar auditoría de error IA en reporte compartido: %s", err_aud)
@@ -2752,7 +3010,7 @@ class ServicioReportesCompartidos:
         elapsed_ms = round((time.perf_counter() - t_inicio) * 1000, 2)
         ahora_msg = ahora_chile_naive()
         nuevo_msg = MensajeIAReporte(
-            reporte_id=reporte.id,
+            reporte_id=reporte_id_val,
             sesion_id=sesion_limpia,
             usuario_id=usuario_auditoria_id,
             pregunta=pregunta,
@@ -2761,21 +3019,28 @@ class ServicioReportesCompartidos:
             tiempo_respuesta_ms=elapsed_ms,
             creado_en=ahora_msg,
         )
-        session.add(nuevo_msg)
-        await session.commit()
-        await session.refresh(nuevo_msg)
+        if es_sesion_real:
+            from app.core.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as s_msg:
+                s_msg.add(nuevo_msg)
+                await s_msg.commit()
+                await s_msg.refresh(nuevo_msg)
+        else:
+            session.add(nuevo_msg)
+            await session.commit()
+            await session.refresh(nuevo_msg)
 
         try:
             await registrar_auditoria_chat(
                 usuario_id=usuario_auditoria_id,
-                prompt_text=f"[Reporte {reporte.codigo_corto}] {pregunta[:400]}",
+                prompt_text=f"[Reporte {reporte_codigo_val}] {pregunta[:400]}",
                 dataset_tipo=dataset_tipo,
                 modelo_utilizado=str(modelo_usado),
                 status=estado_chat,
                 response_time_ms=elapsed_ms,
                 respuesta_text=respuesta_texto,
                 origen="reporte_compartido",
-                reporte_codigo=reporte.codigo_corto,
+                reporte_codigo=reporte_codigo_val,
             )
         except Exception as err_aud:
             logger.warning("No se pudo registrar telemetría IA de reporte compartido: %s", err_aud)

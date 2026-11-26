@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, desc, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -19,6 +19,7 @@ from app.core.tiempo import (
 from app.domain.auth_models import NotificacionAdmin, Usuario
 from app.domain.chat_audit_models import ChatAuditLog
 from app.domain.ejecucion_tarea_models import EjecucionTarea
+from app.schemas.auth_schemas import RolQuotaUpdate
 from app.schemas.tarea_schemas import (
     EjecucionTareaResponse,
     TareaCatalogoItem,
@@ -320,13 +321,18 @@ def _serializar_ejecucion(e: EjecucionTarea) -> EjecucionTareaResponse:
     )
 
 
-async def _obtener_proxima_ejecucion_tarea(db: AsyncSession, nombre: str, info: dict) -> Optional[datetime]:
+async def _obtener_proxima_ejecucion_tarea(
+    db: AsyncSession,
+    nombre: str,
+    info: dict,
+    contexto: Any = None,
+) -> Optional[datetime]:
     """Calcula la próxima ejecución hábil o programada para una tarea dada."""
     if info.get("cron_trigger") is not None:
         try:
             from app.core.planificador import ZONA_HORARIA_CHILE, calcular_proxima_ejecucion_habil
             ahora_cl = datetime.now(ZONA_HORARIA_CHILE)
-            return await calcular_proxima_ejecucion_habil(db, nombre, ahora_cl)
+            return await calcular_proxima_ejecucion_habil(db, nombre, ahora_cl, contexto=contexto)
         except Exception:
             pass
     sched = obtener_planificador()
@@ -337,43 +343,6 @@ async def _obtener_proxima_ejecucion_tarea(db: AsyncSession, nombre: str, info: 
     return None
 
 
-async def _construir_item_tarea_catalogo(
-    db: AsyncSession,
-    nombre: str,
-    info: dict,
-    limite_latido: datetime,
-) -> TareaCatalogoItem:
-    """Construye un TareaCatalogoItem con su estado en curso y última ejecución."""
-    stmt_ult = (
-        select(EjecucionTarea)
-        .where(EjecucionTarea.tarea == nombre)
-        .order_by(desc(EjecucionTarea.inicio_en))
-        .limit(1)
-    )
-    ult_ej = (await db.execute(stmt_ult)).scalars().first()
-
-    stmt_activa = (
-        select(EjecucionTarea)
-        .where(
-            EjecucionTarea.tarea == nombre,
-            EjecucionTarea.estado == "en_curso",
-            EjecucionTarea.latido_en >= limite_latido,
-        )
-        .limit(1)
-    )
-    en_curso = (await db.execute(stmt_activa)).scalars().first() is not None
-    proxima = await _obtener_proxima_ejecucion_tarea(db, nombre, info)
-
-    return TareaCatalogoItem(
-        nombre=nombre,
-        descripcion=info["descripcion"],
-        cron_expresion=info["cron_str"],
-        en_curso=en_curso,
-        proxima_ejecucion=proxima,
-        ultima_ejecucion=_serializar_ejecucion(ult_ej) if ult_ej else None,
-    )
-
-
 @router.get("/tareas", response_model=ResumenTareasResponse, summary="Listar catálogo y estado de tareas programadas")
 @router.get("/tareas/resumen", response_model=ResumenTareasResponse, include_in_schema=False)
 async def listar_tareas_admin(
@@ -381,13 +350,59 @@ async def listar_tareas_admin(
     db: AsyncSession = Depends(get_db),
 ):
     from app.core.planificador import _ahora_chile_naive
+    from app.ml.orquestador_entrenamiento import precargar_contexto_operativo
+
     ahora = _ahora_chile_naive()
     limite_latido = ahora - timedelta(minutes=15)
 
-    catalogo_items = [
-        await _construir_item_tarea_catalogo(db, nombre, info, limite_latido)
-        for nombre, info in CATALOGO_TAREAS.items()
-    ]
+    # 1. Última ejecución de cada tarea en 1 query con ROW_NUMBER() OVER (PARTITION BY tarea ...)
+    subq_rn = (
+        select(
+            EjecucionTarea,
+            func.row_number()
+            .over(partition_by=EjecucionTarea.tarea, order_by=desc(EjecucionTarea.inicio_en))
+            .label("rn"),
+        )
+        .subquery("ej_rn")
+    )
+    ultimas_rows = (
+        await db.execute(select(EjecucionTarea).join(subq_rn, EjecucionTarea.id == subq_rn.c.id).where(subq_rn.c.rn == 1))
+    ).scalars().all()
+    ultimas_por_tarea = {e.tarea: e for e in ultimas_rows}
+
+    # 2. Tareas activas en 1 query
+    tareas_activas = set(
+        (
+            await db.execute(
+                select(EjecucionTarea.tarea)
+                .where(
+                    EjecucionTarea.estado == "en_curso",
+                    EjecucionTarea.latido_en >= limite_latido,
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # 3. Precarga única de horarios, calendario y contingencias (3 queries para todo el catálogo)
+    ctx_operativo = await precargar_contexto_operativo(db, fecha_inicio=ahora.date() - timedelta(days=1), dias=35)
+
+    catalogo_items = []
+    for nombre, info in CATALOGO_TAREAS.items():
+        ult_ej = ultimas_por_tarea.get(nombre)
+        proxima = await _obtener_proxima_ejecucion_tarea(db, nombre, info, contexto=ctx_operativo)
+        catalogo_items.append(
+            TareaCatalogoItem(
+                nombre=nombre,
+                descripcion=info["descripcion"],
+                cron_expresion=info["cron_str"],
+                en_curso=nombre in tareas_activas,
+                proxima_ejecucion=proxima,
+                ultima_ejecucion=_serializar_ejecucion(ult_ej) if ult_ej else None,
+            )
+        )
 
     stmt_hist = (
         select(EjecucionTarea)
@@ -436,7 +451,7 @@ async def actualizar_modelos_admin(
     current_user: Usuario = Depends(require_role("Admin_Sistema")),
 ):
     """
-    Despacha el proceso de reentrenamiento de modelos (Prophet, GBR, KMeans)
+    Despacha el proceso de reentrenamiento de modelos (Prophet y KMeans)
     mediante el planificador interno de tareas.
     Exclusivo para rol Admin_Sistema. Retorna HTTP 202 Accepted.
     """
@@ -536,7 +551,6 @@ async def _purgar_modulo_asistencia(db: AsyncSession, espacio_id: Optional[int],
     """Elimina eventos de asistencia y sus rollups correspondientes."""
     from sqlalchemy import delete
     from app.domain.models import EventoAsistencia, RollupHistoricoDiario
-    from app.services.ingestion_service import invalidar_caches_recinto_y_actualizar_predicciones
 
     stmt = delete(EventoAsistencia)
     stmt_rollup = delete(RollupHistoricoDiario)
@@ -548,7 +562,6 @@ async def _purgar_modulo_asistencia(db: AsyncSession, espacio_id: Optional[int],
 
     res = await db.execute(stmt)
     await db.execute(stmt_rollup)
-    await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id or 1)
     return res.rowcount
 
 
@@ -556,7 +569,6 @@ async def _purgar_modulo_vehicular(db: AsyncSession, espacio_id: Optional[int], 
     """Elimina eventos vehiculares y sus rollups correspondientes."""
     from sqlalchemy import delete
     from app.domain.models import EventoVehicular, RollupHistoricoDiario
-    from app.services.ingestion_service import invalidar_caches_recinto_y_actualizar_predicciones
 
     stmt_veh = delete(EventoVehicular)
     if espacio_id and not es_todo:
@@ -566,7 +578,6 @@ async def _purgar_modulo_vehicular(db: AsyncSession, espacio_id: Optional[int], 
         await db.execute(delete(RollupHistoricoDiario).where(RollupHistoricoDiario.espacio_id == 2))
 
     res_v = await db.execute(stmt_veh)
-    await invalidar_caches_recinto_y_actualizar_predicciones(espacio_id or 2)
     return res_v.rowcount
 
 
@@ -666,6 +677,19 @@ async def purgar_datos_admin(
         )
 
     await db.commit()
+
+    # Invalidar cachés siempre DESPUÉS del commit para no repoblar con datos viejos
+    from app.services.ingestion_service import invalidar_caches_recinto_y_actualizar_predicciones
+    espacios_a_invalidar = set()
+    if alcance in ("asistencia", "todo"):
+        espacios_a_invalidar.add(espacio_id or 1)
+    if alcance in ("vehicular", "todo"):
+        espacios_a_invalidar.add(espacio_id or 2)
+    if alcance in ("institucional_estudiantes", "todo"):
+        espacios_a_invalidar.update((1, 2))
+    for eid in sorted(espacios_a_invalidar):
+        await invalidar_caches_recinto_y_actualizar_predicciones(eid)
+
     return {
         "status": "ok",
         "mensaje": f"Purga de datos con alcance '{alcance}' completada exitosamente.",
@@ -693,8 +717,7 @@ class SectorEstacionamientoResponse(BaseModel):
     camaras_salida: Optional[str] = None
     activo: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SmartCampusSincronizarRequest(BaseModel):
@@ -740,15 +763,18 @@ async def _ejecutar_pipeline_smart_campus(
         consolidar_dia_cerrado,
     )
 
+    fuente_norm = (req.fuente or "todas").strip().lower()
     if req.tipo_pipeline == "cierre_diario":
         nombre_tarea = "consolidar_smart_campus_nocturno"
         fecha_obj = _parsear_fecha_iso(req.desde)
-        resultado = await consolidar_dia_cerrado(db, fecha_objetivo=fecha_obj)
+        resultado = await consolidar_dia_cerrado(db, fecha_objetivo=fecha_obj, fuente=fuente_norm)
     else:
         nombre_tarea = "sincronizar_smart_campus_en_vivo"
         desde_dt = _parsear_fecha_iso(req.desde)
         hasta_dt = _parsear_fecha_iso(req.hasta)
-        resultado = await sincronizar_aforo_vivo_horario(db, desde_manual=desde_dt, hasta_manual=hasta_dt)
+        resultado = await sincronizar_aforo_vivo_horario(
+            db, desde_manual=desde_dt, hasta_manual=hasta_dt, fuente=fuente_norm
+        )
 
     return nombre_tarea, resultado
 
@@ -793,36 +819,80 @@ async def sincronizar_smart_campus_admin(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Ejecuta bajo demanda la ingesta de la API Smart Campus.
+    Ejecuta bajo demanda la ingesta de la API Smart Campus canalizada por el lock del planificador.
     Permite seleccionar entre Pipeline 1 (Aforo en Vivo del día) o Pipeline 2 (Consolidación de Día Cerrado).
     """
-    from app.core.planificador import _ahora_chile_naive
+    from app.core.planificador import _ahora_utc_naive, obtener_bloqueo_tarea
 
     req = payload or SmartCampusSincronizarRequest()
-    inicio_sinc = _ahora_chile_naive()
-    nombre_tarea_asociada, resultado = await _ejecutar_pipeline_smart_campus(db, req)
-    fin_sinc = _ahora_chile_naive()
+    fuente_norm = (req.fuente or "todas").strip().lower()
+    if fuente_norm not in ("todas", "torniquetes", "estacionamientos"):
+        raise HTTPException(
+            status_code=400,
+            detail="Parámetro 'fuente' inválido. Valores permitidos: 'todas', 'torniquetes', 'estacionamientos'.",
+        )
+
+    nombre_tarea_lock = (
+        "consolidar_smart_campus_nocturno" if req.tipo_pipeline == "cierre_diario" else "sincronizar_smart_campus_en_vivo"
+    )
+    lock_tarea = obtener_bloqueo_tarea(nombre_tarea_lock)
+    if lock_tarea.locked():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Ya existe una sincronización '{nombre_tarea_lock}' en curso. Espere a que finalice.",
+        )
+
+    async with lock_tarea:
+        inicio_sinc = _ahora_utc_naive()
+        nombre_tarea_asociada, resultado = await _ejecutar_pipeline_smart_campus(db, req)
+        fin_sinc = _ahora_utc_naive()
 
     errores_sinc = resultado.get("errores") or []
-    t_ins = resultado.get("torniquetes", {}).get("insertados", 0)
-    e_ins = resultado.get("estacionamientos", {}).get("insertados", 0)
-    t_lei = resultado.get("torniquetes", {}).get("leidos", 0)
-    e_lei = resultado.get("estacionamientos", {}).get("leidos", 0)
-    hubo_fallo_total = bool(errores_sinc and t_lei == 0 and e_lei == 0)
+    if req.tipo_pipeline == "cierre_diario":
+        r_att = resultado.get("rollup_asistencia")
+        r_veh = resultado.get("rollup_vehicular")
+        fallo_att = fuente_norm in ("todas", "torniquetes") and not r_att
+        fallo_veh = fuente_norm in ("todas", "estacionamientos") and not r_veh
+        hubo_fallo_total = bool(errores_sinc and fallo_att and fallo_veh)
+        if hubo_fallo_total:
+            mensaje_resp = f"Sincronización finalizada con observaciones: {'; '.join(errores_sinc)}"
+        else:
+            mensaje_resp = f"Consolidación diaria completada para {resultado.get('fecha_objetivo', '')}."
+    else:
+        t_dict = resultado.get("torniquetes", {})
+        e_dict = resultado.get("estacionamientos", {})
+        t_ins = t_dict.get("insertados", 0)
+        e_ins = e_dict.get("insertados", 0)
+        t_lei = t_dict.get("leidos", 0)
+        e_lei = e_dict.get("leidos", 0)
+        if fuente_norm == "torniquetes":
+            hubo_fallo_total = bool(errores_sinc and t_lei == 0)
+            mensaje_resp = (
+                f"Sincronización torniquetes completada: +{t_ins} registros ({resultado.get('rango_torniquetes', '')})."
+                if not hubo_fallo_total
+                else f"Sincronización finalizada con observaciones: {'; '.join(errores_sinc)}"
+            )
+        elif fuente_norm == "estacionamientos":
+            hubo_fallo_total = bool(errores_sinc and e_lei == 0)
+            mensaje_resp = (
+                f"Sincronización estacionamientos completada: +{e_ins} registros ({resultado.get('rango_estacionamientos', '')})."
+                if not hubo_fallo_total
+                else f"Sincronización finalizada con observaciones: {'; '.join(errores_sinc)}"
+            )
+        else:
+            hubo_fallo_total = bool(errores_sinc and t_lei == 0 and e_lei == 0)
+            mensaje_resp = (
+                f"Sincronización completada: +{t_ins} registros en Biblioteca "
+                f"({resultado.get('rango_torniquetes', '')}) y +{e_ins} en Estacionamientos "
+                f"({resultado.get('rango_estacionamientos', '')})."
+                if not hubo_fallo_total
+                else f"Sincronización finalizada con observaciones: {'; '.join(errores_sinc)}"
+            )
 
     u_id = current_user.id if current_user else None
     await _registrar_ejecucion_sincronizacion(
         db, nombre_tarea_asociada, inicio_sinc, fin_sinc, u_id, resultado, hubo_fallo_total, errores_sinc
     )
-
-    if hubo_fallo_total:
-        mensaje_resp = f"Sincronización finalizada con observaciones: {'; '.join(errores_sinc)}"
-    else:
-        mensaje_resp = (
-            f"Sincronización completada: +{t_ins} registros en Biblioteca "
-            f"({resultado.get('rango_torniquetes', '')}) y +{e_ins} en Estacionamientos "
-            f"({resultado.get('rango_estacionamientos', '')})."
-        )
 
     return {
         "status": "error" if hubo_fallo_total else "ok",
@@ -879,20 +949,27 @@ async def actualizar_capacidad_sector_admin(
 
 @router.post(
     "/cache/limpiar",
-    summary="Limpiar y purgar la totalidad de la memoria de caché en el sistema",
+    summary="Limpiar y purgar la memoria de caché en el sistema (total o por recinto)",
 )
 async def limpiar_cache_admin(
+    espacio_id: Optional[int] = Query(None, description="ID del recinto a invalidar o vacío para purgar todo"),
     current_user: Usuario = Depends(require_role("SuperAdmin", "Admin_Sistema")),
 ):
     """
-    Purga de forma inmediata todas las particiones de la caché en memoria (aforo vivo, KPIs e históricos).
+    Purga las particiones de la caché en memoria para un recinto específico o globalmente.
     """
-    from app.core.cache import limpiar_toda_la_cache, obtener_cache
-    conteo = await limpiar_toda_la_cache()
+    from app.core.cache import invalidar_cache_por_espacio, limpiar_toda_la_cache, obtener_cache
+    if espacio_id is not None:
+        conteo = await invalidar_cache_por_espacio(espacio_id)
+        alcance_txt = f"recinto {espacio_id}"
+    else:
+        conteo = await limpiar_toda_la_cache()
+        alcance_txt = "todo el sistema"
     stats = obtener_cache().stats()
     return {
         "status": "ok",
-        "mensaje": f"Caché en memoria purgada exitosamente. {conteo} entradas eliminadas.",
+        "espacio_id": espacio_id,
+        "mensaje": f"Caché en memoria purgada para {alcance_txt}. {conteo} entradas eliminadas.",
         "entradas_eliminadas": conteo,
         "estadisticas_actuales": stats,
     }
@@ -912,6 +989,24 @@ async def obtener_stats_cache_admin(
     return obtener_cache().stats()
 
 
+def _enmascarar_api_key_cifrada(encrypted_key: Optional[str]) -> str:
+    """Desencripta de forma segura antes de enmascarar la clave API."""
+    if not encrypted_key:
+        return ""
+    from app.core.security_cipher import decrypt_api_key, mask_api_key
+    try:
+        plain = decrypt_api_key(encrypted_key)
+    except Exception:
+        plain = encrypted_key
+    return mask_api_key(plain) if plain else ""
+
+
+class ConfiguracionLLMUpdateRequest(BaseModel):
+    active_provider: str = Field(default="gemini", min_length=2, max_length=50)
+    default_model: str = Field(default="gemini-3.1-flash-lite", min_length=2, max_length=120)
+    api_key: Optional[str] = Field(default=None, max_length=500)
+
+
 # =============================================================================
 # ENDPOINTS DE CONFIGURACIÓN GLOBAL E INTERRUPTOR MAESTRO DE IA
 # =============================================================================
@@ -924,7 +1019,6 @@ async def obtener_config_global_admin(
     db: AsyncSession = Depends(get_db),
     current_user: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
 ):
-    from app.core.security_cipher import mask_api_key
     from app.services.config_service import get_configuracion_espacio
     config = await get_configuracion_espacio(db, espacio_id=1)
     if not config:
@@ -938,7 +1032,7 @@ async def obtener_config_global_admin(
             "updated_at": None,
         }
     has_key = bool(config.encrypted_api_key)
-    masked = mask_api_key(config.encrypted_api_key) if has_key else ""
+    masked = _enmascarar_api_key_cifrada(config.encrypted_api_key) if has_key else ""
     return {
         "id": config.id,
         "espacio_id": config.espacio_id,
@@ -963,7 +1057,6 @@ async def alternar_ia_global_admin(
     db: AsyncSession = Depends(get_db),
     current_user: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
 ):
-    from app.core.security_cipher import mask_api_key
     from app.services.config_service import get_configuracion_espacio
     from sqlalchemy import text
 
@@ -976,7 +1069,7 @@ async def alternar_ia_global_admin(
     await db.refresh(c1)
 
     has_key = bool(c1.encrypted_api_key)
-    masked = mask_api_key(c1.encrypted_api_key) if has_key else ""
+    masked = _enmascarar_api_key_cifrada(c1.encrypted_api_key) if has_key else ""
     return {
         "id": c1.id,
         "espacio_id": c1.espacio_id,
@@ -995,7 +1088,7 @@ async def alternar_ia_global_admin(
 )
 async def actualizar_cuota_ia_rol(
     rol_id: int,
-    payload: dict,
+    payload: RolQuotaUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
 ):
@@ -1005,15 +1098,15 @@ async def actualizar_cuota_ia_rol(
     if not rol:
         raise HTTPException(status_code=404, detail="Rol no encontrado")
     
-    quota_raw = str(payload.get("rate_limit_quota", "30/día")).strip().replace("/day", "/día")
-    cooldown_val = int(payload.get("cooldown_segundos", 10))
-    if cooldown_val < 0:
-        cooldown_val = 0
+    quota_raw = payload.rate_limit_quota.strip().replace("/day", "/día")
+    cooldown_val = max(0, int(payload.cooldown_segundos))
 
     rol.rate_limit_quota = quota_raw
     rol.cooldown_segundos = cooldown_val
     await db.commit()
     await db.refresh(rol)
+    from app.services.auth_service import limpiar_cache_usuario
+    limpiar_cache_usuario()
 
     return {
         "id": rol.id,
@@ -1029,24 +1122,20 @@ async def actualizar_cuota_ia_rol(
     summary="Actualizar proveedor y credenciales globales de IA",
 )
 async def actualizar_config_global_admin(
-    payload: dict,
+    payload: ConfiguracionLLMUpdateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: Usuario = Depends(require_role("Admin_Sistema", "SuperAdmin")),
 ):
-    from app.core.security_cipher import mask_api_key
     from app.services.config_service import update_llm_provider
-    provider = payload.get("active_provider", "gemini")
-    model = payload.get("default_model", "gemini-3.1-flash-lite")
-    api_key = payload.get("api_key")
     config = await update_llm_provider(
         db=db,
         espacio_id=1,
-        provider=provider,
-        default_model=model,
-        api_key=api_key,
+        provider=payload.active_provider,
+        default_model=payload.default_model,
+        api_key=payload.api_key,
     )
     has_key = bool(config.encrypted_api_key)
-    masked = mask_api_key(config.encrypted_api_key) if has_key else ""
+    masked = _enmascarar_api_key_cifrada(config.encrypted_api_key) if has_key else ""
     return {
         "id": config.id,
         "espacio_id": config.espacio_id,
@@ -1159,6 +1248,7 @@ async def marcar_notificaciones_vistas(
         )
     )
     await db.commit()
+
     return {"marcadas": int(res.rowcount or 0), "no_leidas": 0}
 
 
@@ -1177,6 +1267,7 @@ async def eliminar_notificacion_admin_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notificación no encontrada")
     await db.delete(notif)
     await db.commit()
+
     return {"eliminada": True, "id": notif_id}
 
 

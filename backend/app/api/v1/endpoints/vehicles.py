@@ -7,6 +7,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -321,7 +322,6 @@ async def get_raw_vehicle_events(
 
 @router.get("/export-raw-csv", summary="Exportar microdatos vehiculares a CSV con registro de auditoría")
 async def export_raw_vehicle_csv(
-    background_tasks: BackgroundTasks,
     request: Request,
     fecha_inicio:    Optional[date] = Query(None, description="YYYY-MM-DD"),
     fecha_fin:       Optional[date] = Query(None, description="YYYY-MM-DD"),
@@ -336,44 +336,72 @@ async def export_raw_vehicle_csv(
     door:            Optional[str]  = Query(None),
     espacio_id:      int            = Query(2),
     current_user:    Usuario        = Depends(require_permission("can_export")),
-    db:              AsyncSession   = Depends(get_db),
 ):
     validar_acceso_espacio(espacio_id, current_user)
-    csv_content, total_count = await VehicleService.export_raw_csv(
-        session=db,
-        espacio_id=espacio_id,
-        fecha_inicio=fecha_inicio,
-        fecha_fin=fecha_fin,
-        camara=camara,
-        direccion=direccion,
-        tipo_vehiculo=tipo_vehiculo,
-        search_hash=search_hash,
-        categoria=categoria,
-        alcance=alcance or "todos",
-        regimen_horario=regimen_horario or "todos",
-        dias_semana=dias_semana,
-        door=door,
-    )
-
     client_ip = request.client.host if request.client else "127.0.0.1"
     detalle = f"Filtros: camara={camara or 'todas'}, dir={direccion or 'ambas'}, tipo={tipo_vehiculo or 'todos'}, categoria={categoria or 'todas'}, alcance={alcance or 'todos'}"
-
-    from app.services.audit_service import record_download_audit
-    background_tasks.add_task(
-        record_download_audit,
-        usuario_id=current_user.id,
-        modulo="estacionamiento",
-        formato="csv",
-        filtro_fecha_inicio=str(fecha_inicio) if fecha_inicio else None,
-        filtro_fecha_fin=str(fecha_fin) if fecha_fin else None,
-        filtro_detalle=detalle,
-        total_registros=total_count,
-        ip_origen=client_ip,
-    )
-
     filename = f"microdatos_estacionamiento_{fecha_inicio or 'inicio'}_{fecha_fin or 'fin'}.csv"
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
+
+    async def _generar_csv_con_auditoria():
+        conteo_ref = [0]
+        try:
+            async for chunk in VehicleService.stream_raw_csv(
+                espacio_id=espacio_id,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                camara=camara,
+                direccion=direccion,
+                tipo_vehiculo=tipo_vehiculo,
+                search_hash=search_hash,
+                categoria=categoria,
+                alcance=alcance or "todos",
+                regimen_horario=regimen_horario or "todos",
+                dias_semana=dias_semana,
+                door=door,
+                conteo_ref=conteo_ref,
+            ):
+                yield chunk
+        finally:
+            try:
+                from app.services.audit_service import record_download_audit
+                await record_download_audit(
+                    usuario_id=current_user.id,
+                    modulo="estacionamiento",
+                    formato="csv",
+                    filtro_fecha_inicio=str(fecha_inicio) if fecha_inicio else None,
+                    filtro_fecha_fin=str(fecha_fin) if fecha_fin else None,
+                    filtro_detalle=detalle,
+                    total_registros=conteo_ref[0],
+                    ip_origen=client_ip,
+                )
+            except Exception as exc_aud:
+                logger.warning("Error registrando auditoría CSV vehicular: %s", exc_aud)
+
+    return StreamingResponse(
+        _generar_csv_con_auditoria(),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/sectores", summary="Listar los sectores de estacionamiento catalogados y sus capacidades")
+async def listar_sectores_vehiculares(
+    current_user: Usuario = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    validar_acceso_espacio(2, current_user)
+    from app.services.servicio_smart_campus import listar_sectores_estacionamiento
+    sectores = await listar_sectores_estacionamiento(db)
+    return [
+        {
+            "id": s.id,
+            "codigo": s.codigo,
+            "nombre": s.nombre,
+            "capacidad_max": s.capacidad_max,
+            "camaras_entrada": s.camaras_entrada,
+            "camaras_salida": s.camaras_salida,
+            "activo": s.activo,
+            "espacio_id": getattr(s, "espacio_id", 2),
+        }
+        for s in sectores
+    ]
