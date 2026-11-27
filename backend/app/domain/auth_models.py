@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.mssql import DATETIME2
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -31,6 +32,7 @@ class Rol(Base):
     nombre: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     descripcion: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     rate_limit_quota: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="10/day")
+    cooldown_segundos: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
 
     usuario_roles: Mapped[List[UsuarioRol]] = relationship(
         "UsuarioRol", back_populates="rol", cascade="all, delete-orphan"
@@ -44,7 +46,7 @@ class Rol(Base):
     )
 
 
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import JSON
 
 class Usuario(Base):
     __tablename__ = "usuarios"
@@ -55,14 +57,27 @@ class Usuario(Base):
     nombre_completo: Mapped[str] = mapped_column(String(150), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     allowed_datasets: Mapped[List[str]] = mapped_column(
-        JSONB, default=lambda: ["biblioteca", "estacionamiento"], nullable=False
+        JSON, default=lambda: ["biblioteca", "estacionamiento"], nullable=False
+    )
+    can_use_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_export: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    can_ingest: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    espacio_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("espacios.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True
+    )
+    intentos_fallidos_login: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    bloqueado_hasta: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     usuario_roles: Mapped[List[UsuarioRol]] = relationship(
-        "UsuarioRol", back_populates="usuario", cascade="all, delete-orphan", lazy="selectin"
+        "UsuarioRol", back_populates="usuario", cascade="all, delete-orphan", lazy="raise_on_sql"
     )
     roles: Mapped[List[Rol]] = relationship(
         "Rol",
@@ -71,9 +86,73 @@ class Usuario(Base):
         lazy="selectin",
         overlaps="rol,usuario,usuario_roles",
     )
+    created_by_user: Mapped[Optional["Usuario"]] = relationship(
+        "Usuario", remote_side="Usuario.id", foreign_keys=[created_by_user_id]
+    )
+    tokens_activacion: Mapped[List["TokenActivacion"]] = relationship(
+        "TokenActivacion", back_populates="usuario", cascade="all, delete-orphan", lazy="raise_on_sql"
+    )
 
     @property
     def primary_role(self) -> str:
         if self.roles:
+            role_names = [r.nombre for r in self.roles]
+            for priority_role in [
+                "Admin_Sistema",
+                "SuperAdmin",
+                "Director_Recinto",
+                "Directivo",
+                "Analista_Consulta",
+                "Guardia_Seguridad",
+                "Consultor_Reporte",
+            ]:
+                if priority_role in role_names:
+                    return priority_role
             return self.roles[0].nombre
         return "Guardia_Seguridad"
+
+
+class TokenActivacion(Base):
+    __tablename__ = "tokens_activacion"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    usuario_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tipo_token: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVACION_INICIAL")
+    expira_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    utilizado: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    fecha_utilizacion: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ip_solicitante: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    usuario: Mapped["Usuario"] = relationship("Usuario", back_populates="tokens_activacion")
+
+
+class NotificacionAdmin(Base):
+    """Alertas de seguridad administrativas (bloqueos de acceso por fuerza bruta)."""
+
+    __tablename__ = "notificaciones_admin"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tipo: Mapped[str] = mapped_column(String(50), default="bloqueo_login", nullable=False, index=True)
+    titulo: Mapped[str] = mapped_column(String(150), nullable=False)
+    mensaje: Mapped[str] = mapped_column(String(500), nullable=False)
+    usuario_afectado_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("usuarios.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    usuario_afectado_email: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    usuario_afectado_nombre: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    intentos_fallidos: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    ip_origen: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    leida: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    leida_en: Mapped[Optional[datetime]] = mapped_column(DATETIME2, nullable=True)
+    # Sin FK en cascada para evitar múltiples rutas en cascada hacia usuarios en SQL Server
+    leida_por_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DATETIME2, server_default=func.now(), nullable=False
+    )
+

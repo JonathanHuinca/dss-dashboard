@@ -11,8 +11,14 @@ from app.schemas.auth_schemas import (
 )
 
 from app.schemas.config_schemas import (
-    ConfiguracionGlobalResponse,
-    ConfiguracionGlobalUpdate,
+    ConfiguracionEspaciosResponse,
+    ConfiguracionEspaciosUpdate,
+)
+
+from app.schemas.ingestion_schemas import (
+    SchemaFieldMapping,
+    FileInspectionResponse,
+    JobStatusResponse,
 )
 
 __all__ = [
@@ -25,6 +31,9 @@ __all__ = [
     "UsuarioBase",
     "UsuarioCreate",
     "UsuarioResponse",
-    "ConfiguracionGlobalResponse",
-    "ConfiguracionGlobalUpdate",
+    "ConfiguracionEspaciosResponse",
+    "ConfiguracionEspaciosUpdate",
+    "SchemaFieldMapping",
+    "FileInspectionResponse",
+    "JobStatusResponse",
 ]

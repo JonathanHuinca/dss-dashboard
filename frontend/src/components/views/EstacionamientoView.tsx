@@ -1,32 +1,133 @@
-import { Car, ParkingCircle, RotateCcw, Wifi, BarChart2, Flame, TrendingUp, AlertTriangle, ArrowRightLeft, ShieldAlert } from 'lucide-react'
-import { KpiCard } from '../ui/KpiCard'
+import React, { Suspense, lazy, memo, useState, useEffect, useMemo } from 'react'
+import {
+  Car,
+  ParkingCircle,
+  BarChart2,
+  Flame,
+  TrendingUp,
+  AlertTriangle,
+  ArrowRightLeft,
+  ShieldAlert,
+  Filter,
+  RotateCw,
+  Clock,
+  Layers,
+  ArrowDownRight,
+  ArrowUpRight,
+  Sparkles,
+  ChevronUp,
+  ChevronDown,
+  SlidersHorizontal,
+  Calendar,
+  Share2,
+  Navigation,
+  BrainCircuit,
+  Building2,
+  CheckCircle2,
+  Eye,
+} from 'lucide-react'
 import { ChartCard } from '../ui/ChartCard'
 import { LiveBadge } from '../ui/LiveBadge'
-import { OccupancyAreaChart } from '../charts/OccupancyAreaChart'
-import { HourlyBarChart } from '../charts/HourlyBarChart'
-import { FleetDonutChart } from '../charts/FleetDonutChart'
-import { ForecastLineChart } from '../charts/ForecastLineChart'
-import { VehicleDailyPlotlyChart } from '../charts/VehicleDailyPlotlyChart'
-import { VehicleMilestonesPlotlyChart } from '../charts/VehicleMilestonesPlotlyChart'
-import { CameraStatsPlotlyChart } from '../charts/CameraStatsPlotlyChart'
-import { IntercampusMobilityPlotlyChart } from '../charts/IntercampusMobilityPlotlyChart'
-import { VehicleBehavioralClustersPlotlyChart } from '../charts/VehicleBehavioralClustersPlotlyChart'
-import { DateRange } from '../../types/dateRange'
+import { BarraLateralSecciones, type SeccionModuloItem } from '../layout/BarraLateralSecciones'
+import { KPIBanner } from '../layout/KPIBanner'
+import { CompartirReporteModal } from '../reports/CompartirReporteModal'
+import { MetricasSeccion, type ItemMetricaSeccion } from '../ui/MetricasSeccion'
+import { useAuth } from '../../context/AuthContext'
+import { buildUserStorageKey } from '../../utils/userStorage'
+import { type DateRange } from '../../types/dateRange'
 import {
   useVehicleKpis,
   useParkingOccupancy,
   useVehicleHourlyFlow,
+  useVehiclePresenceCurve,
   useFleetComposition,
   useForecastParking,
   useCameraStats,
-  useVehicleDailyEvolution,
   useVehicleAcademicMilestones,
   useIntercampusMobility,
   useBehavioralClusters,
 } from '../../hooks/useVehicles'
 import { useAlerts } from '../../hooks/useAttendance'
+import { useAssistant } from '../../context/AssistantContext'
 
-const CAPACIDAD = 180
+const OccupancyAreaChart = memo(lazy(() => import('../charts/OccupancyAreaChart').then(m => ({ default: m.OccupancyAreaChart }))))
+const HourlyBarChart = memo(lazy(() => import('../charts/HourlyBarChart').then(m => ({ default: m.HourlyBarChart }))))
+const FleetDonutChart = memo(lazy(() => import('../charts/FleetDonutChart').then(m => ({ default: m.FleetDonutChart }))))
+const ForecastLineChart = memo(lazy(() => import('../charts/ForecastLineChart').then(m => ({ default: m.ForecastLineChart }))))
+const VehicleMilestonesPlotlyChart = memo(lazy(() => import('../charts/VehicleMilestonesPlotlyChart').then(m => ({ default: m.VehicleMilestonesPlotlyChart }))))
+const CameraStatsPlotlyChart = memo(lazy(() => import('../charts/CameraStatsPlotlyChart').then(m => ({ default: m.CameraStatsPlotlyChart }))))
+const IntercampusMobilityPlotlyChart = memo(lazy(() => import('../charts/IntercampusMobilityPlotlyChart').then(m => ({ default: m.IntercampusMobilityPlotlyChart }))))
+const VehicleBehavioralClustersPlotlyChart = memo(lazy(() => import('../charts/VehicleBehavioralClustersPlotlyChart').then(m => ({ default: m.VehicleBehavioralClustersPlotlyChart }))))
+
+function EsqueletoGraficoVehicular() {
+  return (
+    <div className="h-full min-h-[280px] w-full flex items-center justify-center bg-gray-50/50 rounded-xl animate-pulse border border-gray-100">
+      <div className="flex flex-col items-center gap-3 opacity-50">
+        <BarChart2 className="text-uct-primary" size={32} />
+        <span className="text-sm font-medium text-uct-text-muted">Cargando visualización vehicular...</span>
+      </div>
+    </div>
+  )
+}
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  subtitle,
+  badge,
+}: {
+  icon: React.ElementType
+  title: string
+  subtitle: string
+  badge?: string
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200/80">
+      <div className="flex items-center gap-2.5">
+        <div className="w-8 h-8 rounded-xl bg-uct-blue-primary/10 flex items-center justify-center text-uct-blue-primary shadow-2xs">
+          <Icon size={16} />
+        </div>
+        <div>
+          <h3 className="text-sm font-bold text-slate-800 tracking-tight">{title}</h3>
+          <p className="text-[11px] text-slate-500">{subtitle}</p>
+        </div>
+      </div>
+      {badge && (
+        <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold border border-slate-200">
+          {badge}
+        </span>
+      )}
+    </div>
+  )
+}
+
+const SECCIONES_MODULO_ESTACIONAMIENTO: SeccionModuloItem[] = [
+  { id: 'seccion_1', numero: 1, titulo: '1. Aforo y Pronóstico', subtitulo: 'Concurrencia vs Plazas y Prophet', icono: Layers, cantidadGraficos: 3 },
+  { id: 'seccion_2', numero: 2, titulo: '2. Flujo Horario de Accesos', subtitulo: 'Ingresos vs Salidas por hora', icono: TrendingUp, cantidadGraficos: 1 },
+  { id: 'seccion_3', numero: 3, titulo: '3. Flota y Cámaras ANPR', subtitulo: 'Tipos, Marcas y Control LPR', icono: Car, cantidadGraficos: 3 },
+  { id: 'seccion_4', numero: 4, titulo: '4. Movilidad y Calendario', subtitulo: 'Matriz Inter-Campus e Hitos', icono: Navigation, cantidadGraficos: 2 },
+  { id: 'seccion_5', numero: 5, titulo: '5. Machine Learning (K-Means)', subtitulo: 'Detección de Uso Indebido y Estadía', icono: BrainCircuit, cantidadGraficos: 2 },
+]
+
+const TIPOS_VEHICULOS: string[] = [
+  'SUV/MPV',
+  'Coche de salón',
+  'Camioneta',
+  'Monovolumen',
+  'Camión pequeño',
+  'Camión',
+  'Autobús',
+]
+
+const DIAS_SEMANA_MAP: { id: string; label: string }[] = [
+  { id: 'lunes', label: 'Lun' },
+  { id: 'martes', label: 'Mar' },
+  { id: 'miercoles', label: 'Mié' },
+  { id: 'jueves', label: 'Jue' },
+  { id: 'viernes', label: 'Vie' },
+  { id: 'sabado', label: 'Sáb' },
+  { id: 'domingo', label: 'Dom' },
+]
 
 function fmt(n: number | undefined, dec = 0) {
   if (n === undefined || n === null) return '—'
@@ -35,290 +136,1137 @@ function fmt(n: number | undefined, dec = 0) {
 
 interface Props {
   dateRange?: DateRange
+  onRangeChange?: (range: DateRange) => void
 }
 
 export function EstacionamientoView({ dateRange }: Props) {
-  const kpis       = useVehicleKpis()
-  const live       = useParkingOccupancy()
-  const flow       = useVehicleHourlyFlow(dateRange?.inicio, dateRange?.fin)
-  const fleet      = useFleetComposition()
-  const forecast   = useForecastParking()
-  const alerts     = useAlerts()
-  const camera     = useCameraStats()
-  const daily       = useVehicleDailyEvolution()
-  const milestones  = useVehicleAcademicMilestones()
-  const intercampus = useIntercampusMobility()
-  const clusters    = useBehavioralClusters()
+  const { userRole, roles = [], userId, userEmail } = useAuth()
+  const claveSeccionEst = buildUserStorageKey('uct_seccion_activa_estacionamiento', userId, userEmail)
+  const [modalCompartirAbierto, setModalCompartirAbierto] = useState<boolean>(false)
+  const puedeCompartirReportes =
+    !roles.includes('Guardia_Seguridad') &&
+    userRole !== 'Guardia_Seguridad' &&
+    !(roles.length > 0 && roles.every((r) => r === 'Guardia_Seguridad' || r === 'Consultor_Reporte'))
 
-  const vehAlert = alerts.data?.alertas.find(a => a.recinto === 'vehicular')
+  // Estados de Filtros Múltiples y Barra Lateral de Secciones
+  const [sectorSeleccionado, setSectorSeleccionado] = useState<string>('todos')
+  const [sectorPronosticoVehicular, setSectorPronosticoVehicular] = useState<string>('todos')
+  const [tiposSeleccionados, setTiposSeleccionados] = useState<string[]>([])
+  const [direccionSeleccionada, setDireccionSeleccionada] = useState<string>('todos')
+  const [calidadSeleccionada, setCalidadSeleccionada] = useState<'conformes' | 'todos' | 'anomalias'>('conformes')
+  const [regimenSeleccionado, setRegimenSeleccionado] = useState<string>('todos')
+  const [diasSeleccionados, setDiasSeleccionados] = useState<string[]>([])
+  const [filtrosVisibles, setFiltrosVisibles] = useState<boolean>(true)
+  const [precargaSilenciosaVehicular, setPrecargaSilenciosaVehicular] = useState<boolean>(false)
+  const [barraLateralExpandida, setBarraLateralExpandida] = useState<boolean>(true)
+
+  const [seccionActivaEstacionamiento, setSeccionActivaEstacionamiento] = useState<string | 'todas'>(() => {
+    try {
+      const guardada = localStorage.getItem(claveSeccionEst)
+      if (guardada) return guardada
+    } catch { }
+    return 'seccion_1'
+  })
+
+  // Memoria de secciones visitadas para transiciones 100% instantáneas sin repintado
+  const [seccionesVisitadas, setSeccionesVisitadas] = useState<Set<string>>(() => {
+    try {
+      const guardada = localStorage.getItem(claveSeccionEst) || 'seccion_1'
+      return new Set(['seccion_1', guardada])
+    } catch {
+      return new Set(['seccion_1'])
+    }
+  })
+
+  const cambiarSeccionEstacionamiento = (nuevaSeccion: string | 'todas') => {
+    setSeccionActivaEstacionamiento(nuevaSeccion)
+    setSeccionesVisitadas(prev => {
+      if (nuevaSeccion === 'todas') {
+        return new Set(['seccion_1', 'seccion_2', 'seccion_3', 'seccion_4', 'seccion_5'])
+      }
+      const next = new Set(prev)
+      next.add(nuevaSeccion)
+      return next
+    })
+    try {
+      localStorage.setItem(claveSeccionEst, nuevaSeccion)
+    } catch { }
+  }
+
+  const esSeccionVisible = (idSeccion: string): boolean => {
+    return seccionActivaEstacionamiento === 'todas' || seccionActivaEstacionamiento === idSeccion
+  }
+
+  const seccionMontada = (idSeccion: string): boolean => {
+    return seccionActivaEstacionamiento === 'todas' || seccionesVisitadas.has(idSeccion)
+  }
+
+  const claseSeccion = (idSeccion: string, clasesExtra = '') => {
+    const visible = esSeccionVisible(idSeccion)
+    return `${visible ? 'block' : 'hidden'} ${clasesExtra}`
+  }
+
+  // Objeto de filtros serializado para React Query
+  const filtrosQuery = useMemo(() => {
+    return {
+      sector: sectorSeleccionado !== 'todos' ? sectorSeleccionado : undefined,
+      tipo_vehiculo: tiposSeleccionados.length > 0 ? tiposSeleccionados.join(',') : undefined,
+      direccion: direccionSeleccionada !== 'todos' ? direccionSeleccionada : undefined,
+      alcance: calidadSeleccionada,
+      regimen_horario: regimenSeleccionado !== 'todos' ? regimenSeleccionado : undefined,
+      dias_semana: diasSeleccionados.length > 0 ? diasSeleccionados.join(',') : undefined,
+    }
+  }, [sectorSeleccionado, tiposSeleccionados, direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados])
+
+  useEffect(() => {
+    setPrecargaSilenciosaVehicular(false)
+    const tPrecarga = setTimeout(() => setPrecargaSilenciosaVehicular(true), 550)
+    return () => clearTimeout(tPrecarga)
+  }, [dateRange?.inicio, dateRange?.fin, filtrosQuery])
+
+  // Sincronización continua de filtros vehiculares y período con el asistente IA
+  const { setFiltrosActivos, setPeriodoActivo } = useAssistant()
+  useEffect(() => {
+    if (filtrosQuery) {
+      setFiltrosActivos(filtrosQuery)
+    }
+  }, [filtrosQuery, setFiltrosActivos])
+  useEffect(() => {
+    if (dateRange) {
+      setPeriodoActivo({
+        inicio: dateRange.inicio,
+        fin: dateRange.fin,
+        startDate: dateRange.inicio,
+        endDate: dateRange.fin,
+        label: dateRange.label,
+      })
+    }
+  }, [dateRange, setPeriodoActivo])
+
+  useEffect(() => {
+    setSectorPronosticoVehicular(sectorSeleccionado)
+  }, [sectorSeleccionado])
+
+  // Queries analíticas reactivas a los filtros con precarga silenciosa diferida
+  const kpis = useVehicleKpis(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
+  const live = useParkingOccupancy(sectorSeleccionado)
+  const flow = useVehicleHourlyFlow(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_2') || precargaSilenciosaVehicular })
+  const presenceCurve = useVehiclePresenceCurve(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado)
+  const forecast = useForecastParking(sectorPronosticoVehicular, { enabled: esSeccionVisible('seccion_1') || precargaSilenciosaVehicular })
+  const alerts = useAlerts()
+  const fleet = useFleetComposition(dateRange?.inicio, dateRange?.fin, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
+  const camera = useCameraStats(dateRange?.inicio, dateRange?.fin, filtrosQuery, sectorSeleccionado, { enabled: esSeccionVisible('seccion_3') || precargaSilenciosaVehicular })
+  const milestones = useVehicleAcademicMilestones({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
+  const intercampus = useIntercampusMobility({ enabled: esSeccionVisible('seccion_4') || precargaSilenciosaVehicular })
+  const clusters = useBehavioralClusters({ enabled: esSeccionVisible('seccion_5') || precargaSilenciosaVehicular })
+
+  // Capacidades dinámicas derivadas desde BD (aforo vivo / curva / KPIs) con respaldo calibrado
+  const capCSF11 = live.data?.capacidad_csf11 ?? presenceCurve.data?.[0]?.capacidad_csf11 ?? kpis.data?.capacidad_csf11 ?? 40
+  const capCSF21 = live.data?.capacidad_csf21 ?? presenceCurve.data?.[0]?.capacidad_csf21 ?? kpis.data?.capacidad_csf21 ?? 50
+  const capCHS01 = live.data?.capacidad_chs01 ?? presenceCurve.data?.[0]?.capacidad_chs01 ?? kpis.data?.capacidad_chs01 ?? 35
+  const capTotalDinamica = (sectorSeleccionado === 'todos' ? live.data?.capacidad_maxima : undefined) ?? presenceCurve.data?.[0]?.capacidad_total ?? (capCSF11 + capCSF21 + capCHS01)
+
+  const sectoresDinamicos = useMemo(() => ([
+    { codigo: 'todos', nombre: 'Todos los Sectores', capacidad: capTotalDinamica, descripcion: `Campus CSF y Simulación (${capTotalDinamica} plazas totales calibradas)` },
+    { codigo: 'CSF11', nombre: 'CSF11 — Edificio 11', capacidad: capCSF11, descripcion: `Edificio 11 Campus San Francisco (${capCSF11} plazas)` },
+    { codigo: 'CSF21', nombre: 'CSF21 — Edificio 21', capacidad: capCSF21, descripcion: `Edificio 21 Campus San Francisco (${capCSF21} plazas)` },
+    { codigo: 'CHS01', nombre: 'CHS01 — Hospital Simulación', capacidad: capCHS01, descripcion: `Hospital de Simulación CHS (${capCHS01} plazas - Turno clínico)` },
+  ]), [capTotalDinamica, capCSF11, capCSF21, capCHS01])
+
+  const sectoresPronosticoOrdenados = useMemo(() => {
+    if (sectorSeleccionado === 'todos') {
+      return sectoresDinamicos
+    }
+    const seleccionado = sectoresDinamicos.find((s) => s.codigo === sectorSeleccionado)
+    const restantes = sectoresDinamicos.filter(
+      (s) => s.codigo !== 'todos' && s.codigo !== sectorSeleccionado
+    )
+    const todosObj = sectoresDinamicos.find((s) => s.codigo === 'todos')
+    return [seleccionado, ...restantes, todosObj].filter(
+      (s): s is (typeof sectoresDinamicos)[number] => Boolean(s)
+    )
+  }, [sectorSeleccionado, sectoresDinamicos])
+
+  // Capacidad calibrada según sector activo
+  const capacidadActual = useMemo(() => {
+    if (live.data?.capacidad_maxima) return live.data.capacidad_maxima
+    if (kpis.data?.capacidad_calibrada) return kpis.data.capacidad_calibrada
+    const secEncontrado = sectoresDinamicos.find((s) => s.codigo === sectorSeleccionado)
+    return secEncontrado ? secEncontrado.capacidad : capTotalDinamica
+  }, [live.data?.capacidad_maxima, kpis.data?.capacidad_calibrada, sectorSeleccionado, sectoresDinamicos, capTotalDinamica])
+
+  const sectorActivoObj = useMemo(() => {
+    return sectoresDinamicos.find((s) => s.codigo === sectorSeleccionado) || sectoresDinamicos[0]
+  }, [sectorSeleccionado, sectoresDinamicos])
+
+  const sectorPronosticoObj = useMemo(() => {
+    return sectoresDinamicos.find((s) => s.codigo === sectorPronosticoVehicular) || sectoresDinamicos[0]
+  }, [sectorPronosticoVehicular, sectoresDinamicos])
+
+  const capacidadPronostico = forecast.data?.capacidad_asientos ?? sectorPronosticoObj.capacidad
+
+  const vehAlerts = useMemo(() => {
+    const lista = (alerts.data?.alertas || []).filter((a) => a.recinto === 'vehicular')
+    if (sectorSeleccionado === 'todos') return lista
+    return lista.filter((a) => !a.subespacio || a.subespacio === sectorSeleccionado)
+  }, [alerts.data?.alertas, sectorSeleccionado])
 
   const lastTs = live.data?.timestamp
     ? new Date(live.data.timestamp).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' })
     : undefined
 
+  // Contadores de filtros activos
+  const totalFiltrosActivos =
+    (sectorSeleccionado !== 'todos' ? 1 : 0) +
+    tiposSeleccionados.length +
+    (direccionSeleccionada !== 'todos' ? 1 : 0) +
+    (calidadSeleccionada !== 'conformes' ? 1 : 0) +
+    (regimenSeleccionado !== 'todos' ? 1 : 0) +
+    (diasSeleccionados.length > 0 ? 1 : 0)
+
+  const handleLimpiarFiltros = () => {
+    setSectorSeleccionado('todos')
+    setTiposSeleccionados([])
+    setDireccionSeleccionada('todos')
+    setCalidadSeleccionada('conformes')
+    setRegimenSeleccionado('todos')
+    setDiasSeleccionados([])
+  }
+
+  const toggleTipoVehiculo = (t: string) => {
+    setTiposSeleccionados((prev) =>
+      prev.includes(t) ? prev.filter((item) => item !== t) : [...prev, t]
+    )
+  }
+
+  const toggleDiaSemana = (diaId: string) => {
+    setDiasSeleccionados((prev) =>
+      prev.includes(diaId) ? prev.filter((d) => d !== diaId) : [...prev, diaId]
+    )
+  }
+
+  const alternarPanelFiltros = () => {
+    setFiltrosVisibles((prev) => !prev)
+  }
+
+  const resumenFiltrosActivos = useMemo(() => {
+    const chips: { clave: string; etiqueta: string; valor: string }[] = []
+    if (sectorSeleccionado !== 'todos') {
+      chips.push({ clave: 'sec', etiqueta: 'Sector', valor: sectorActivoObj.nombre })
+    }
+    if (tiposSeleccionados.length > 0) {
+      chips.push({ clave: 'tipos', etiqueta: 'Tipos', valor: `${tiposSeleccionados.length} seleccionados` })
+    }
+    if (direccionSeleccionada !== 'todos') {
+      chips.push({ clave: 'dir', etiqueta: 'Sentido', valor: direccionSeleccionada === 'in' ? 'Entradas' : 'Salidas' })
+    }
+    if (calidadSeleccionada !== 'conformes') {
+      chips.push({ clave: 'alcance', etiqueta: 'Calidad', valor: calidadSeleccionada === 'todos' ? 'Sin depurar' : 'Solo anomalías' })
+    }
+    if (regimenSeleccionado !== 'todos') {
+      chips.push({ clave: 'reg', etiqueta: 'Horario', valor: regimenSeleccionado === 'habil' ? 'Hábil' : 'Extendido' })
+    }
+    if (diasSeleccionados.length > 0) {
+      chips.push({ clave: 'dias', etiqueta: 'Días', valor: `${diasSeleccionados.length} días` })
+    }
+    return chips
+  }, [sectorSeleccionado, sectorActivoObj.nombre, tiposSeleccionados, direccionSeleccionada, calidadSeleccionada, regimenSeleccionado, diasSeleccionados])
+
+  // Métricas dinámicas calculadas desde la curva de presencia real como fuente única de verdad
+  const metricasSec1 = useMemo<ItemMetricaSeccion[]>(() => {
+    const serieCurva = presenceCurve.data ?? []
+    let maxOcupacion = kpis.data?.max_aforo_historico ?? 0
+    let fechaPicoIso = kpis.data?.fecha_pico_ocupacion ?? null
+
+    if (serieCurva.length > 0) {
+      let maxVal = -1
+      let maxBucket: string | null = null
+      for (const p of serieCurva) {
+        const val =
+          sectorSeleccionado === 'CSF11'
+            ? (p.vehiculos_csf11 ?? p.vehiculos_presentes ?? 0)
+            : sectorSeleccionado === 'CSF21'
+              ? (p.vehiculos_csf21 ?? p.vehiculos_presentes ?? 0)
+              : sectorSeleccionado === 'CHS01'
+                ? (p.vehiculos_chs01 ?? p.vehiculos_presentes ?? 0)
+                : (p.vehiculos_presentes ?? 0)
+        if (val > maxVal) {
+          maxVal = val
+          maxBucket = p.bucket
+        }
+      }
+      if (maxVal >= 0) {
+        maxOcupacion = maxVal
+        fechaPicoIso = maxVal > 0 ? maxBucket : null
+      }
+    }
+
+    let subtextoPico = 'pico vehicular concurrente'
+    if (fechaPicoIso && maxOcupacion > 0) {
+      const dtPico = new Date(fechaPicoIso)
+      if (!Number.isNaN(dtPico.getTime())) {
+        const dd = String(dtPico.getDate()).padStart(2, '0')
+        const mm = String(dtPico.getMonth() + 1).padStart(2, '0')
+        const hh = String(dtPico.getHours()).padStart(2, '0')
+        subtextoPico = `Pico ${dd}/${mm} ${hh}:00 hrs`
+      }
+    }
+
+    const modeloFecha = forecast.data?.model_status.status === 'ok'
+      ? `Modelo: ${forecast.data.model_status.model_date}`
+      : 'Modelo en calibración'
+
+    const picoFuturoVeh = forecast.data?.pronostico_7d?.length
+      ? Math.round(Math.max(...forecast.data.pronostico_7d.map(p => p.yhat)))
+      : 0
+
+    const subtextoMaxPeriodo =
+      sectorSeleccionado === 'todos' && kpis.data?.max_aforo_csf11 !== undefined
+        ? `${subtextoPico} · C11:${kpis.data.max_aforo_csf11} | C21:${kpis.data.max_aforo_csf21} | CH:${kpis.data.max_aforo_chs01}`
+        : subtextoPico
+
+    return [
+      {
+        label: 'Plazas Ocupadas en Vivo',
+        valor: live.isLoading ? '…' : `${live.data?.vehiculos_presentes ?? 0} veh`,
+        subtexto:
+          sectorSeleccionado === 'todos' && live.data?.vehiculos_csf11 !== undefined
+            ? `de ${capacidadActual} pl. · C11:${live.data.vehiculos_csf11} | C21:${live.data.vehiculos_csf21} | CH:${live.data.vehiculos_chs01}`
+            : `de ${capacidadActual} plazas calibradas`,
+        icono: Car,
+        color: 'primary',
+        badge: live.data ? `${Math.min(100, Math.round(((live.data.vehiculos_presentes || 0) / capacidadActual) * 100))}%` : undefined,
+      },
+      {
+        label: 'Capacidad del Sector',
+        valor: `${capacidadActual} plazas`,
+        subtexto: sectorActivoObj.nombre,
+        icono: Building2,
+        color: 'neutral',
+      },
+      {
+        label: 'Máximo Ocupación (Período)',
+        valor: !kpis.data && kpis.isLoading && serieCurva.length === 0 ? '…' : `${maxOcupacion} veh`,
+        subtexto: subtextoMaxPeriodo,
+        icono: ParkingCircle,
+        color: 'gold',
+        badge: capacidadActual > 0 ? `${Math.min(100, Math.round((maxOcupacion / capacidadActual) * 100))}%` : undefined,
+      },
+      {
+        label: 'Pico Ocupación Prophet (+7d)',
+        valor: !forecast.data && forecast.isLoading ? '…' : `${picoFuturoVeh} veh`,
+        subtexto: `${sectorPronosticoObj.codigo === 'todos' ? `Todos (${capTotalDinamica} pl.)` : `${sectorPronosticoObj.codigo} (${capacidadPronostico} pl.)`} • ${modeloFecha}`,
+        icono: Sparkles,
+        color: 'gold',
+        badge: capacidadPronostico > 0 ? `${Math.min(100, Math.round((picoFuturoVeh / capacidadPronostico) * 100))}%` : undefined,
+      },
+    ]
+  }, [live.isLoading, live.data, capacidadActual, capTotalDinamica, sectorActivoObj.nombre, sectorSeleccionado, kpis.isLoading, kpis.data, presenceCurve.data, forecast.isLoading, forecast.data, sectorPronosticoObj, capacidadPronostico])
+
+  const metricasSec2 = useMemo<ItemMetricaSeccion[]>(() => {
+    const horaPicoItem = flow.data?.reduce((max, f) => {
+      const entF = f.entradas ?? f.ingresos ?? 0
+      const entMax = max?.entradas ?? max?.ingresos ?? 0
+      return entF > entMax ? f : max
+    }, flow.data[0])
+
+    const horaStr = horaPicoItem?.bucket ? `${String(new Date(horaPicoItem.bucket).getHours()).padStart(2, '0')}:00 hrs` : (kpis.data?.hora_punta || '08:00 hrs')
+    const totalEnt = flow.data?.reduce((acc, f) => acc + (f.entradas ?? f.ingresos ?? 0), 0) ?? kpis.data?.total_accesos ?? 0
+    const totalSal = flow.data?.reduce((acc, f) => acc + (f.salidas ?? 0), 0) ?? kpis.data?.total_salidas ?? 0
+    const promedioDiario = kpis.data?.dias_operativos ? Math.round((kpis.data.total_accesos || 0) / kpis.data.dias_operativos) : 0
+
+    return [
+      {
+        label: 'Total Ingresos Vehiculares',
+        valor: fmt(kpis.data?.total_accesos ?? totalEnt),
+        subtexto: 'registros con lectura de placa',
+        icono: ArrowDownRight,
+        color: 'primary',
+      },
+      {
+        label: 'Total Salidas Vehiculares',
+        valor: fmt(kpis.data?.total_salidas ?? totalSal),
+        subtexto: 'egresos controlados por barrera',
+        icono: ArrowUpRight,
+        color: 'neutral',
+      },
+      {
+        label: 'Hora Punta de Entrada',
+        valor: horaStr,
+        subtexto: horaPicoItem ? `${horaPicoItem.entradas ?? horaPicoItem.ingresos ?? 0} ingresos pico` : 'turno matutino',
+        icono: Clock,
+        color: 'warning',
+      },
+      {
+        label: 'Promedio Diario de Acceso',
+        valor: `${fmt(promedioDiario)} veh/d`,
+        subtexto: 'flujo normalizado por fechas',
+        icono: TrendingUp,
+        color: 'gold',
+      },
+    ]
+  }, [kpis.data, flow.data])
+
+  const metricasSec3 = useMemo<ItemMetricaSeccion[]>(() => {
+    const camaras = camera.data ?? []
+    const totalCapturas = camaras.reduce((acc, c) => acc + (c.entradas || 0) + (c.salidas || 0), 0)
+    const totalFallidas = camaras.reduce((acc, c) => acc + (c.lecturas_fallidas || 0), 0)
+    const tasaEfectiva = totalCapturas > 0
+      ? Math.max(0, Math.round((1 - totalFallidas / totalCapturas) * 1000) / 10)
+      : 100
+
+    return [
+      {
+        label: 'Patentes Únicas Identificadas',
+        valor: fmt(kpis.data?.vehiculos_unicos),
+        subtexto: 'vehículos en flota institucional',
+        icono: Car,
+        color: 'primary',
+      },
+      {
+        label: 'Tipo Predominante',
+        valor: fleet.data?.por_tipo?.[0]?.tipo || 'Coche de salón',
+        subtexto: fleet.data?.por_tipo?.[0] ? `${fleet.data.por_tipo[0].pct}% de la flota` : '',
+        icono: Car,
+        color: 'gold',
+      },
+      {
+        label: 'Efectividad Lectura LPR',
+        valor: `${tasaEfectiva}%`,
+        subtexto: 'precisión de reconocimiento OCR',
+        icono: CheckCircle2,
+        color: 'success',
+      },
+      {
+        label: 'Cámaras ANPR Activas',
+        valor: `${camera.data?.length ?? 4} unidades`,
+        subtexto: 'puntos de control en pórticos',
+        icono: Eye,
+        color: 'neutral',
+      },
+    ]
+  }, [kpis.data, fleet.data, camera.data])
+
+  const metricasSec4 = useMemo<ItemMetricaSeccion[]>(() => [
+    {
+      label: 'Traslados Inter-Campus',
+      valor: fmt(intercampus.data?.total_viajes),
+      subtexto: 'viajes detectados entre CSF y CHS',
+      icono: ArrowRightLeft,
+      color: 'primary',
+    },
+    {
+      label: 'Tiempo Promedio de Traslado',
+      valor: `${intercampus.data?.tiempo_promedio_min ?? 0} min`,
+      subtexto: `Mediana: ${intercampus.data?.tiempo_mediano_min ?? 0} min`,
+      icono: Clock,
+      color: 'gold',
+    },
+    {
+      label: 'Franja de Mayor Migración',
+      valor: intercampus.data?.franja_punta ?? '12:00 - 14:00',
+      subtexto: 'horario de relevo o clases cruzadas',
+      icono: Navigation,
+      color: 'neutral',
+    },
+    {
+      label: 'Hitos Académicos Evaluados',
+      valor: `${milestones.data?.length ?? 0} hitos`,
+      subtexto: 'impacto por exámenes y recesos',
+      icono: Calendar,
+      color: 'success',
+    },
+  ], [intercampus.data, milestones.data])
+
+  const metricasSec5 = useMemo<ItemMetricaSeccion[]>(() => {
+    const distribucion = clusters.data?.distribucion ?? []
+    const totalVeh = distribucion.reduce((acc, c) => acc + (c.total_vehiculos || 0), 0)
+    const permPromedio = totalVeh > 0
+      ? Math.round(distribucion.reduce((acc, c) => acc + (c.permanencia_promedio_min || 0) * (c.total_vehiculos || 0), 0) / totalVeh)
+      : 0
+    const tasaExtrema = totalVeh > 0
+      ? Math.round((distribucion.reduce((acc, c) => acc + (c.tasa_jornada_extrema_pct || 0) * (c.total_vehiculos || 0), 0) / totalVeh) * 10) / 10
+      : 0
+
+    return [
+      {
+        label: 'Posible Uso Externo (K-Means)',
+        valor: `${clusters.data?.vehiculos_externos_count ?? 0} veh`,
+        subtexto: `${clusters.data?.vehiculos_externos_pct ?? 0}% • análisis global histórico`,
+        icono: ShieldAlert,
+        color: 'danger',
+      },
+      {
+        label: 'Permanencia Promedio',
+        valor: `${permPromedio} min`,
+        subtexto: 'promedio ponderado global histórico',
+        icono: Clock,
+        color: 'primary',
+      },
+      {
+        label: 'Patentes Analizadas',
+        valor: fmt(clusters.data?.total_vehiculos_analizados),
+        subtexto: 'clústeres globales históricos',
+        icono: Car,
+        color: 'neutral',
+      },
+      {
+        label: 'Tasa Jornada Extrema (>8h)',
+        valor: `${tasaExtrema}%`,
+        subtexto: 'promedio ponderado global histórico',
+        icono: Flame,
+        color: 'gold',
+      },
+    ]
+  }, [clusters.data])
+
   return (
-    <div className="p-6 space-y-6 max-w-screen-2xl mx-auto">
-      {vehAlert && (
-        <div className="flex items-center gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200">
-          <AlertTriangle className="text-amber-400 shrink-0" size={20} />
+    <div className={`p-6 space-y-7 w-full max-w-full transition-all duration-200 ${barraLateralExpandida ? 'xl:pl-[284px]' : 'pl-0'}`}>
+      <BarraLateralSecciones
+        tituloModulo="Estacionamiento ANPR"
+        secciones={SECCIONES_MODULO_ESTACIONAMIENTO}
+        seccionActiva={seccionActivaEstacionamiento}
+        alCambiarSeccion={cambiarSeccionEstacionamiento}
+        alAlternarApertura={setBarraLateralExpandida}
+      />
+
+      {puedeCompartirReportes && (
+        <CompartirReporteModal
+          abierto={modalCompartirAbierto}
+          onCerrar={() => setModalCompartirAbierto(false)}
+          espacioIdInicial={2}
+          fechaInicioInicial={dateRange?.inicio || '2026-10-01'}
+          fechaFinInicial={dateRange?.fin || '2026-10-30'}
+          etiquetaPeriodoInicial={dateRange?.label}
+          filtrosIniciales={filtrosQuery}
+          totalRegistrosInicial={kpis.data?.total_accesos}
+        />
+      )}
+
+      {/* Panel Gerencial de Métricas Clave (Desplazado con el contenido al abrir la barra lateral) */}
+      {((kpis.error as any)?.response?.status === 403 || (live.error as any)?.response?.status === 403) && (
+        <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 text-xs flex items-center gap-2.5 shadow-2xs">
+          <AlertTriangle size={16} className="shrink-0 text-amber-600" />
+          <span>
+            Acceso restringido a este módulo/recinto: su cuenta no tiene autorización vigente para consultar los indicadores de Estacionamiento.
+          </span>
+        </div>
+      )}
+      <KPIBanner
+        espacioId={2}
+        selectedRange={dateRange}
+        filters={filtrosQuery}
+      />
+
+      {/* Barra de Alcance Analítico y Filtros Multidimensionales (Desplazamiento natural sin sticky) */}
+      <div className="bg-white/95 backdrop-blur-md p-4 rounded-2xl border border-slate-200/90 shadow-xs transition-all">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <Filter size={14} className="text-uct-blue-primary" />
+              <span>Filtros Vehiculares:</span>
+            </span>
+
+            {/* Selector de Alcance de Calidad */}
+            <div className="inline-flex rounded-xl bg-slate-100 p-0.5 border border-slate-200 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setCalidadSeleccionada('conformes')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  calidadSeleccionada === 'conformes'
+                    ? 'bg-uct-blue-primary text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Conformes
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalidadSeleccionada('todos')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  calidadSeleccionada === 'todos'
+                    ? 'bg-uct-blue-primary text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalidadSeleccionada('anomalias')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  calidadSeleccionada === 'anomalias'
+                    ? 'bg-rose-600 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Anomalías
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {puedeCompartirReportes && (
+              <button
+                type="button"
+                onClick={() => setModalCompartirAbierto(true)}
+                title="Crear enlace de reporte ejecutivo confinado para solicitante"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border bg-uct-blue-primary hover:bg-uct-blue-secondary text-white border-uct-blue-primary transition-all cursor-pointer shadow-2xs"
+              >
+                <Share2 size={13} className="text-uct-gold" />
+                <span>Compartir Reporte Ejecutivo</span>
+              </button>
+            )}
+
+            {totalFiltrosActivos > 0 && (
+              <button
+                type="button"
+                onClick={handleLimpiarFiltros}
+                className="text-xs text-rose-600 hover:text-rose-700 bg-rose-50/70 hover:bg-rose-100/70 border border-rose-200 font-semibold flex items-center gap-1 px-2.5 py-1.5 rounded-xl transition cursor-pointer"
+              >
+                <RotateCw size={13} />
+                <span>Restablecer Filtros</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={alternarPanelFiltros}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-xl border flex items-center gap-1.5 transition cursor-pointer shadow-2xs ${
+                filtrosVisibles
+                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                  : 'bg-uct-blue-primary hover:bg-uct-blue-secondary text-white border-uct-blue-primary'
+              }`}
+              title={filtrosVisibles ? 'Ocultar todos los filtros para priorizar los gráficos' : 'Mostrar todos los filtros avanzados'}
+            >
+              <SlidersHorizontal size={13} />
+              <span>{filtrosVisibles ? 'Ocultar Filtros' : 'Mostrar Filtros'}</span>
+              {filtrosVisibles ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Vista Compacta de Resumen (cuando filtrosVisibles === false) */}
+        {!filtrosVisibles && (
+          <div className="pt-3 border-t border-slate-100 mt-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                {sectoresDinamicos.map((sec) => {
+                  const activo = sectorSeleccionado === sec.codigo
+                  const etiquetaPildora =
+                    sec.codigo === 'todos'
+                      ? `Todos (${sec.capacidad} plazas)`
+                      : `${sec.codigo} (${sec.capacidad})`
+                  return (
+                    <button
+                      key={sec.codigo}
+                      type="button"
+                      onClick={() => setSectorSeleccionado(sec.codigo)}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition cursor-pointer ${
+                        activo
+                          ? 'bg-uct-blue-primary text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {etiquetaPildora}
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {resumenFiltrosActivos.map((chip) => (
+                  <span
+                    key={chip.clave}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-600"
+                  >
+                    <span className="font-semibold text-slate-500">{chip.etiqueta}:</span>
+                    <span className="font-bold text-slate-800">{chip.valor}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={alternarPanelFiltros}
+              className="text-[11px] font-semibold text-uct-blue-primary hover:underline flex items-center gap-1 cursor-pointer shrink-0"
+            >
+              <span>Desplegar filtros</span>
+              <ChevronDown size={13} />
+            </button>
+          </div>
+        )}
+
+        {/* Panel Desplegable Completo de Filtros */}
+        {filtrosVisibles && (
+          <div className="pt-3 border-t border-slate-100 mt-2.5 space-y-3.5">
+            {/* Sectorización Física de Estacionamiento */}
+            <div className="p-3.5 bg-gradient-to-r from-slate-50 via-white to-blue-50/40 rounded-xl border border-slate-200/90 shadow-2xs space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <Building2 size={14} className="text-uct-blue-primary" />
+                  <span>Sectores Calibrados de Estacionamiento:</span>
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Capacidad Total: <strong className="text-uct-blue-primary">{capTotalDinamica} plazas</strong>
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {sectoresDinamicos.map((sec) => {
+                  const activo = sectorSeleccionado === sec.codigo
+                  return (
+                    <button
+                      key={sec.codigo}
+                      type="button"
+                      onClick={() => setSectorSeleccionado(sec.codigo)}
+                      className={`text-left p-2.5 rounded-xl border transition cursor-pointer flex flex-col justify-between ${
+                        activo
+                          ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-xs ring-2 ring-uct-gold/40'
+                          : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-bold text-xs truncate">{sec.codigo}</span>
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.2 rounded-md ${
+                            activo ? 'bg-uct-gold text-slate-900' : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {sec.capacidad} pl.
+                        </span>
+                      </div>
+                      <span className={`text-[10px] truncate mt-1 ${activo ? 'text-blue-100' : 'text-slate-500'}`}>
+                        {sec.nombre}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Filtros secundarios: Tipos de vehículo y Días */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-50/70 border border-slate-200 space-y-1.5">
+                <span className="font-semibold text-slate-700 block">Tipo de Vehículo:</span>
+                <div className="flex flex-wrap gap-1">
+                  {TIPOS_VEHICULOS.map((tipo) => {
+                    const sel = tiposSeleccionados.includes(tipo)
+                    return (
+                      <button
+                        key={tipo}
+                        type="button"
+                        onClick={() => toggleTipoVehiculo(tipo)}
+                        className={`px-2 py-0.5 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
+                          sel
+                            ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-2xs'
+                            : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {tipo}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50/70 border border-slate-200 space-y-1.5">
+                <span className="font-semibold text-slate-700 block">Días de la Semana:</span>
+                <div className="grid grid-cols-7 gap-1">
+                  {DIAS_SEMANA_MAP.map((d) => {
+                    const marcado = diasSeleccionados.includes(d.id)
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => toggleDiaSemana(d.id)}
+                        className={`py-1 rounded-lg text-[10.5px] font-semibold border transition cursor-pointer text-center ${
+                          marcado
+                            ? 'bg-uct-blue-primary text-white border-uct-blue-primary shadow-2xs'
+                            : 'bg-white hover:bg-slate-100 border-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {d.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Alertas Preventivas Institucionales por Sector / Global */}
+      {vehAlerts.map((alertaItem, idxAl) => (
+        <div key={`${alertaItem.subespacio || 'veh-global'}-${idxAl}`} className="flex items-center gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-900">
+          <AlertTriangle className="text-amber-600 shrink-0" size={20} />
           <div>
-            <p className="text-sm font-semibold text-amber-300">Alerta Preventiva de Saturación Vehicular (Prophet)</p>
-            <p className="text-xs text-amber-200/80">{vehAlert.mensaje}</p>
+            <p className="text-sm font-semibold text-amber-900">
+              Alerta Preventiva de Saturación Vehicular (Prophet){alertaItem.subespacio_label ? ` — ${alertaItem.subespacio_label}` : ''}
+            </p>
+            <p className="text-xs text-amber-800">{alertaItem.mensaje}</p>
+          </div>
+        </div>
+      ))}
+
+      {/* SECCIÓN 1: Aforo y Demanda Vehicular en Tiempo Real */}
+      {seccionMontada('seccion_1') && (
+        <div className={claseSeccion('seccion_1', 'space-y-3.5')}>
+          <SectionHeader
+            icon={Layers}
+            title="1. Aforo Vehicular Concurrente y Proyecciones de Demanda"
+            subtitle="Monitoreo concurrente de plazas minuto a minuto y proyección continua Prophet"
+            badge="Tiempo Real & Prophet"
+          />
+          <MetricasSeccion items={metricasSec1} cargando={live.isLoading} />
+
+          <div className="space-y-4">
+            <ChartCard
+              layout="full"
+              minHeight={450}
+              contextoGrafico="presencia_vehicular_intervalos"
+              title={`Curva de Presencia Física Vehicular por Intervalos de Sesión vs Capacidad (${capacidadActual} plazas) — ${sectorActivoObj.nombre}`}
+              action={
+                <div className="flex flex-wrap items-center gap-2">
+                  {live.data && (
+                    <>
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-full border ${
+                          live.data.nivel_alerta === 'saturacion'
+                            ? 'bg-red-50 text-red-700 border-red-200'
+                            : live.data.nivel_alerta === 'preventivo'
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : 'bg-slate-100 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        <span>Aforo actual:</span>
+                        <span className="font-bold">{fmt(live.data.vehiculos_presentes)} / {fmt(live.data.capacidad_maxima)}</span>
+                        <span className="text-[11px] opacity-80">({live.data.ocupacion_pct}%)</span>
+                      </span>
+                      {sectorSeleccionado === 'todos' && live.data.vehiculos_csf11 !== undefined && (
+                        <>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                              live.data.nivel_alerta_csf11 === 'saturacion'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : live.data.nivel_alerta_csf11 === 'preventivo'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-blue-50/70 text-uct-blue-primary border-blue-200/80'
+                            }`}
+                          >
+                            CSF11: <strong>{live.data.vehiculos_csf11}/{capCSF11}</strong> ({live.data.ocupacion_pct_csf11 ?? 0}%)
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                              live.data.nivel_alerta_csf21 === 'saturacion'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : live.data.nivel_alerta_csf21 === 'preventivo'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-teal-50/70 text-teal-800 border-teal-200/80'
+                            }`}
+                          >
+                            CSF21: <strong>{live.data.vehiculos_csf21}/{capCSF21}</strong> ({live.data.ocupacion_pct_csf21 ?? 0}%)
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-full border ${
+                              live.data.nivel_alerta_chs01 === 'saturacion'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : live.data.nivel_alerta_chs01 === 'preventivo'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-purple-50/70 text-purple-800 border-purple-200/80'
+                            }`}
+                          >
+                            CHS01: <strong>{live.data.vehiculos_chs01}/{capCHS01}</strong> ({live.data.ocupacion_pct_chs01 ?? 0}%)
+                          </span>
+                        </>
+                      )}
+                    </>
+                  )}
+                  <LiveBadge lastUpdated={lastTs} />
+                </div>
+              }
+              isFetching={live.isFetching || presenceCurve.isFetching}
+            >
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {presenceCurve.data && presenceCurve.data.length > 0 ? (
+                  <OccupancyAreaChart
+                    data={presenceCurve.data}
+                    capacidad={capacidadActual}
+                    unit="vehículos"
+                    capCSF11={capCSF11}
+                    capCSF21={capCSF21}
+                    capCHS01={capCHS01}
+                    salaLabel={sectorSeleccionado !== 'todos' ? sectorActivoObj.nombre : undefined}
+                  />
+                ) : (
+                  <EmptyState label="Sin datos de presencia vehicular para este período o filtros seleccionados" />
+                )}
+              </Suspense>
+            </ChartCard>
+
+            <ChartCard
+              layout="full"
+              minHeight={450}
+              title={`Pronóstico Continuo Prophet Vehicular — 14 Días (7 Días Históricos Reales + 7 Días Proyectados) — ${sectorPronosticoObj.nombre}`}
+              isFetching={forecast.isFetching}
+              action={
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center bg-gray-100 dark:bg-gray-800 p-0.5 rounded-lg border border-gray-200 dark:border-gray-700 text-xs">
+                    {sectoresPronosticoOrdenados.map((sec) => {
+                      const activo = sectorPronosticoVehicular === sec.codigo
+                      const etiqueta = sec.codigo === 'todos' ? `Todos (${sec.capacidad})` : `${sec.codigo} (${sec.capacidad})`
+                      return (
+                        <button
+                          key={sec.codigo}
+                          type="button"
+                          onClick={() => setSectorPronosticoVehicular(sec.codigo)}
+                          className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all cursor-pointer ${
+                            activo
+                              ? 'bg-white dark:bg-gray-700 text-uct-navy dark:text-white shadow-xs font-semibold'
+                              : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                          }`}
+                        >
+                          {etiqueta}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {forecast.data?.model_status.status === 'ok' ? (
+                    <div className="hidden sm:flex items-center gap-1.5 text-[11px]">
+                      <span className="text-slate-600 dark:text-slate-300 font-medium">
+                        Proyección: <strong className="text-uct-navy dark:text-sky-300 font-semibold">{forecast.data.anchor_timestamp ? new Date(forecast.data.anchor_timestamp).toLocaleDateString('es-CL', { day: '2-digit', month: 'short' }) : 'Hoy'} (+7d)</strong>
+                      </span>
+                      <span className="text-gray-300 dark:text-gray-600">|</span>
+                      <span className="text-uct-success font-medium">Calibrado: {forecast.data.model_status.model_date}</span>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-uct-warning hidden sm:inline">Modelo en calibración</span>
+                  )}
+                </div>
+              }
+            >
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {forecast.data?.forecast && forecast.data.forecast.length > 0 ? (
+                  <ForecastLineChart
+                    actual={flow.data ?? []}
+                    forecast={forecast.data.forecast}
+                    historico7d={forecast.data.historico_7d}
+                    pronostico7d={forecast.data.pronostico_7d}
+                    capacidad={capacidadPronostico}
+                    salaNombre={sectorPronosticoObj.nombre}
+                    recinto="vehicular"
+                  />
+                ) : (
+                  <EmptyState label={forecast.data?.model_status.message ?? 'Sin pronóstico vehicular disponible'} />
+                )}
+              </Suspense>
+            </ChartCard>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <KpiCard
-          title="Vehículos Dentro"
-          value={live.isLoading ? '…' : `${live.data?.vehiculos_presentes ?? 0} / ${CAPACIDAD}`}
-          subtitle={`${live.data?.ocupacion_pct ?? 0}% ocupación`}
-          icon={Car}
-          iconColor="#C59B27"
-          alert={live.data?.nivel_alerta}
-        />
-        <KpiCard
-          title="Plazas Disponibles"
-          value={live.data?.plazas_disponibles ?? '—'}
-          subtitle={`de ${CAPACIDAD} plazas totales`}
-          icon={ParkingCircle}
-          iconColor="#16A34A"
-        />
-        <KpiCard
-          title="Rotación Diaria"
-          value={`${fmt(kpis.data?.turnover_rate_diario, 2)}x`}
-          subtitle="vehículos / plaza / día"
-          icon={RotateCcw}
-          iconColor="#003865"
-        />
-        <KpiCard
-          title="Permanencia Mediana"
-          value={`${fmt(kpis.data?.permanencia_mediana_min, 0)} min`}
-          subtitle="por visita vehicular"
-          icon={RotateCcw}
-          iconColor="#D97706"
-        />
-      </div>
+      {/* SECCIÓN 2: Flujo Horario de Accesos */}
+      {seccionMontada('seccion_2') && (
+        <div className={claseSeccion('seccion_2', 'space-y-3.5')}>
+          <SectionHeader
+            icon={TrendingUp}
+            title="2. Dinámica de Accesos: Ingresos vs Salidas"
+            subtitle="Ingresos vs Salidas por hora en el período seleccionado"
+            badge="Flujo Vehicular"
+          />
+          <MetricasSeccion items={metricasSec2} cargando={flow.isLoading} />
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <ChartCard
-          title={`Curva de Ocupación vs Capacidad (180 plazas) — ${dateRange?.label ?? 'Período'}`}
-          action={<LiveBadge lastUpdated={lastTs} />}
-        >
-          {flow.data && flow.data.length > 0 ? (
-            <OccupancyAreaChart data={flow.data} capacidad={CAPACIDAD} unit="vehículos" />
-          ) : (
-            <EmptyState label="Sin datos de ocupación vehicular para este período" />
-          )}
-        </ChartCard>
+          <div className="flex flex-wrap gap-4 items-start">
+            <ChartCard layout="full" title={`Flujo Horario de Ingresos vs Salidas — ${dateRange?.label ?? 'Período'}`} isFetching={flow.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {flow.data && flow.data.length > 0 ? (
+                  <HourlyBarChart data={flow.data} />
+                ) : (
+                  <EmptyState label="Sin datos de flujo horario para este período" />
+                )}
+              </Suspense>
+            </ChartCard>
+          </div>
+        </div>
+      )}
 
-        <ChartCard
-          title="Pronóstico Prophet Vehicular — Próximos 3 días"
-          action={
-            forecast.data?.model_status.status === 'ok'
-              ? <span className="text-xs text-uct-success font-medium">Modelo: {forecast.data.model_status.model_date}</span>
-              : <span className="text-xs text-uct-warning">Modelo no entrenado</span>
-          }
-        >
-          {forecast.data?.forecast && forecast.data.forecast.length > 0 ? (
-            <ForecastLineChart
-              actual={flow.data ?? []}
-              forecast={forecast.data.forecast}
-            />
-          ) : (
-            <EmptyState label={forecast.data?.model_status.message ?? 'Sin pronóstico vehicular disponible'} />
-          )}
-        </ChartCard>
-      </div>
+      {/* SECCIÓN 3: Flota Vehicular y Cámaras ANPR */}
+      {seccionMontada('seccion_3') && (
+        <div className={claseSeccion('seccion_3', 'space-y-3.5')}>
+          <SectionHeader
+            icon={Car}
+            title="3. Tipología de Flota y Control de Cámaras ANPR"
+            subtitle="Tipos, marcas y capturas por cámara LPR institucional"
+            badge="Hardware ANPR"
+          />
+          <MetricasSeccion items={metricasSec3} cargando={fleet.isLoading} />
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <ChartCard title={`Flujo Horario de Accesos — ${dateRange?.label ?? 'Período'}`}>
-          {flow.data && flow.data.length > 0 ? (
-            <HourlyBarChart data={flow.data} />
-          ) : (
-            <EmptyState label="Sin datos de flujo horario" />
-          )}
-        </ChartCard>
+          <div className="flex flex-wrap gap-4 items-start">
+            <ChartCard layout="half" title={`Composición por Tipo de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {fleet.data?.por_tipo && fleet.data.por_tipo.length > 0 ? (
+                  <FleetDonutChart data={fleet.data.por_tipo} nameKey="tipo" />
+                ) : (
+                  <EmptyState label="Sin datos de composición de flota" />
+                )}
+              </Suspense>
+            </ChartCard>
 
-        <ChartCard title="Composición de la Flota">
-          {fleet.data?.por_tipo && fleet.data.por_tipo.length > 0 ? (
-            <FleetDonutChart data={fleet.data.por_tipo} nameKey="tipo" />
-          ) : (
-            <EmptyState label="Sin datos de composición de flota" />
-          )}
-        </ChartCard>
+            <ChartCard layout="half" title={`Distribución por Marca de Vehículo — ${sectorActivoObj.nombre}`} isFetching={fleet.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {fleet.data?.por_marca && fleet.data.por_marca.length > 0 ? (
+                  <FleetDonutChart data={fleet.data.por_marca} nameKey="marca" />
+                ) : (
+                  <EmptyState label="Sin datos de marcas registradas" />
+                )}
+              </Suspense>
+            </ChartCard>
 
-        <ChartCard title="Top Marcas de Vehículos">
-          {fleet.data?.por_marca && fleet.data.por_marca.length > 0 ? (
-            <FleetDonutChart data={fleet.data.por_marca} nameKey="marca" />
-          ) : (
-            <EmptyState label="Sin datos de marcas" />
-          )}
-        </ChartCard>
-      </div>
+            <ChartCard layout="full" title="Capturas por Cámara ANPR y Calidad" isFetching={camera.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {camera.data && camera.data.length > 0 ? (
+                  <CameraStatsPlotlyChart data={camera.data} />
+                ) : (
+                  <EmptyState label="Sin datos de capturas por cámara" />
+                )}
+              </Suspense>
+            </ChartCard>
+          </div>
+        </div>
+      )}
 
-      <div className="grid grid-cols-1 gap-4">
-        <ChartCard title="Evolución Diaria de Accesos Vehiculares (Plotly)">
-          {daily.data && daily.data.length > 0 ? (
-            <VehicleDailyPlotlyChart data={daily.data} />
-          ) : (
-            <EmptyState label="Sin datos de serie diaria vehicular" />
-          )}
-        </ChartCard>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <ChartCard title="Impacto del Calendario en Flujo Vehicular (Plotly)">
-          {milestones.data && milestones.data.length > 0 ? (
-            <VehicleMilestonesPlotlyChart data={milestones.data} />
-          ) : (
-            <EmptyState label="Sin datos de impacto de calendario" />
-          )}
-        </ChartCard>
-
-        <ChartCard title="Distribución de Capturas por Cámara ANPR (Plotly)">
-          {camera.data && camera.data.length > 0 ? (
-            <CameraStatsPlotlyChart data={camera.data} />
-          ) : (
-            <EmptyState label="Sin datos de cámaras" />
-          )}
-        </ChartCard>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-        <div className="xl:col-span-1 space-y-4">
-          <KpiCard
-            title="Traslados Inter-Campus"
-            value={fmt(intercampus.data?.total_viajes)}
-            subtitle="viajes detectados entre CSF y CHS"
+      {/* SECCIÓN 4: Movilidad Inter-Campus y Calendario */}
+      {seccionMontada('seccion_4') && (
+        <div className={claseSeccion('seccion_4', 'space-y-3.5')}>
+          <SectionHeader
             icon={ArrowRightLeft}
-            iconColor="#003865"
+            title="4. Movilidad Inter-Campus y Calendario Académico"
+            subtitle="Matriz de movilidad CSF ↔ CHS e impacto del calendario universitario"
+            badge="Movilidad UCT"
           />
-          <KpiCard
-            title="Tiempo Medio Traslado"
-            value={`${intercampus.data?.tiempo_promedio_min ?? 0} min`}
-            subtitle={`Mediana: ${intercampus.data?.tiempo_mediano_min ?? 0} min`}
-            icon={RotateCcw}
-          />
-          <KpiCard
-            title="Franja Mayor Migración"
-            value={intercampus.data?.franja_punta ?? '—'}
-            subtitle="cambio de turno y bloque docente"
-            icon={Flame}
-            iconColor="#C59B27"
-          />
-        </div>
-        <div className="xl:col-span-2">
-          <ChartCard title="Flujo de Movilidad Inter-Campus (CSF ↔ CHS)">
-            {intercampus.data ? (
-              <IntercampusMobilityPlotlyChart data={intercampus.data} />
-            ) : (
-              <EmptyState label="Cargando movilidad intercampus..." />
-            )}
-          </ChartCard>
-        </div>
-      </div>
+          <MetricasSeccion items={metricasSec4} cargando={intercampus.isLoading} />
 
-      <div className="space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-slate-900/60 border border-slate-700/60 rounded-xl">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400">
-              <ShieldAlert size={22} />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-slate-100">Detección de Uso Indebido y Perfiles de Comportamiento (K-Means)</h3>
-              <p className="text-xs text-slate-400">Segmentación no supervisada ante ausencia de ground truth (bajo enrolamiento voluntario)</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <div className="text-right">
-              <span className="text-xs text-slate-400 block">Posible Uso Externo</span>
-              <span className="text-base font-bold text-red-400">
-                {clusters.data?.vehiculos_externos_count ?? 0} vehículos ({clusters.data?.vehiculos_externos_pct ?? 0}%)
-              </span>
-            </div>
-            <div className="text-right">
-              <span className="text-xs text-slate-400 block">Universo Analizado</span>
-              <span className="text-base font-bold text-slate-200">
-                {fmt(clusters.data?.total_vehiculos_analizados)} patentes
-              </span>
-            </div>
-          </div>
-        </div>
+          <div className="space-y-4">
+            <ChartCard layout="full" title="Flujo de Movilidad Inter-Campus (CSF ↔ CHS)" isFetching={intercampus.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {intercampus.data ? (
+                  <IntercampusMobilityPlotlyChart data={intercampus.data} />
+                ) : (
+                  <EmptyState label="Cargando movilidad intercampus..." />
+                )}
+              </Suspense>
+            </ChartCard>
 
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          <div className="xl:col-span-2">
-            <ChartCard title="Dispersión de Perfiles: Hora Llegada vs Permanencia (Plotly)" contextoGrafico="permanencia_vehicular">
-              {clusters.data ? (
-                <VehicleBehavioralClustersPlotlyChart data={clusters.data} />
-              ) : (
-                <EmptyState label="Cargando segmentación K-Means..." />
-              )}
+            <ChartCard layout="full" title="Impacto del Calendario Académico en Flujo Vehicular" isFetching={milestones.isFetching}>
+              <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                {milestones.data && milestones.data.length > 0 ? (
+                  <VehicleMilestonesPlotlyChart data={milestones.data} />
+                ) : (
+                  <EmptyState label="Sin datos de impacto de calendario" />
+                )}
+              </Suspense>
             </ChartCard>
           </div>
-          <div className="xl:col-span-1">
-            <ChartCard title="Resumen de Clústeres Detectados">
-              <div className="space-y-3">
-                {clusters.data?.distribucion.map((c, i) => (
-                  <div key={i} className="p-3 rounded-lg bg-slate-800/40 border border-slate-700/40 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold" style={{ color: c.color }}>{c.perfil}</span>
-                      <span className="text-xs font-mono font-bold text-slate-300">{c.total_vehiculos} veh ({c.porcentaje}%)</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-                      <div>Llegada: <span className="text-slate-200">{c.hora_llegada_promedio}:00 hrs</span></div>
-                      <div>Permanencia: <span className="text-slate-200">{c.permanencia_promedio_min} min</span></div>
-                      <div>Días act.: <span className="text-slate-200">{c.dias_activos_promedio} días</span></div>
-                      <div>Jornada &gt;8h: <span className="text-slate-200">{c.tasa_jornada_extrema_pct}%</span></div>
-                    </div>
-                  </div>
-                ))}
+        </div>
+      )}
+
+      {/* SECCIÓN 5: Machine Learning (K-Means) */}
+      {seccionMontada('seccion_5') && (
+        <div className={claseSeccion('seccion_5', 'space-y-3.5')}>
+          <SectionHeader
+            icon={BrainCircuit}
+            title="5. Machine Learning (K-Means): Uso Indebido y Estadía"
+            subtitle="Segmentación no supervisada sobre permanencias y horarios de acceso vehicular"
+            badge="Machine Learning K-Means"
+          />
+          <MetricasSeccion items={metricasSec5} cargando={clusters.isLoading} />
+
+          <div className="space-y-4 pt-1">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-slate-900 rounded-2xl text-white shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-red-500/20 border border-red-500/30 rounded-xl text-red-400">
+                  <ShieldAlert size={22} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Detección de Uso Indebido y Perfiles de Comportamiento (K-Means)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Segmentación no supervisada sobre permanencias y horarios de acceso vehicular
+                  </p>
+                </div>
               </div>
-            </ChartCard>
+              <div className="flex items-center gap-6">
+                <div className="text-right">
+                  <span className="text-xs text-slate-400 block">Posible Uso Externo</span>
+                  <span className="text-base font-bold text-red-400">
+                    {clusters.data?.vehiculos_externos_count ?? 0} vehículos ({clusters.data?.vehiculos_externos_pct ?? 0}%)
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs text-slate-400 block">Universo Analizado</span>
+                  <span className="text-base font-bold text-slate-200">
+                    {fmt(clusters.data?.total_vehiculos_analizados)} patentes
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+              <div className="xl:col-span-2">
+                <ChartCard layout="full" title="Dispersión de Perfiles: Hora Llegada vs Permanencia" contextoGrafico="permanencia_vehicular" isFetching={clusters.isFetching}>
+                  <Suspense fallback={<EsqueletoGraficoVehicular />}>
+                    {clusters.data ? (
+                      <VehicleBehavioralClustersPlotlyChart data={clusters.data} />
+                    ) : (
+                      <EmptyState label="Cargando segmentación K-Means..." />
+                    )}
+                  </Suspense>
+                </ChartCard>
+              </div>
+              <div className="xl:col-span-1">
+                <ChartCard layout="full" title="Resumen de Clústeres Detectados" isFetching={clusters.isFetching}>
+                  <div className="space-y-2.5">
+                    {clusters.data?.distribucion.map((c, i) => (
+                      <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold" style={{ color: c.color }}>{c.perfil}</span>
+                          <span className="text-xs font-mono font-bold text-slate-700">
+                            {c.total_vehiculos} veh ({c.porcentaje}%)
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500">
+                          <div>Llegada: <span className="font-semibold text-slate-800">{c.hora_llegada_promedio}:00 hrs</span></div>
+                          <div>Permanencia: <span className="font-semibold text-slate-800">{c.permanencia_promedio_min} min</span></div>
+                          <div>Días act.: <span className="font-semibold text-slate-800">{c.dias_activos_promedio} días</span></div>
+                          <div>Jornada &gt;8h: <span className="font-semibold text-slate-800">{c.tasa_jornada_extrema_pct}%</span></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ChartCard>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <KpiCard
-          title="Vehículos Únicos"
-          value={fmt(kpis.data?.vehiculos_unicos)}
-          subtitle="patentes distintas registradas"
-          icon={Car}
-        />
-        <KpiCard
-          title="Lecturas Fallidas"
-          value={`${fmt(kpis.data?.tasa_lectura_fallida_pct, 1)}%`}
-          subtitle="calidad de lectura ANPR"
-          icon={Wifi}
-        />
-        <KpiCard
-          title="Hora Pico Vehicular"
-          value={kpis.data?.hora_punta ?? '—'}
-          subtitle="mayor ingreso vehicular"
-          icon={Flame}
-          iconColor="#DC2626"
-        />
-        <KpiCard
-          title="Pico de Entradas"
-          value={`${fmt(kpis.data?.max_aforo_historico)} veh`}
-          subtitle="máximo horario registrado"
-          icon={TrendingUp}
-          iconColor="#2563EB"
-        />
-      </div>
+      )}
     </div>
   )
 }
 
 function EmptyState({ label }: { label: string }) {
   return (
-    <div className="h-48 flex items-center justify-center text-uct-text-muted text-sm">
+    <div className="h-48 flex items-center justify-center text-slate-400 text-sm">
       <div className="text-center">
-        <BarChart2 size={32} className="mx-auto mb-2 opacity-30" />
-        <p>{label}</p>
-        <p className="text-xs mt-1 opacity-60">Selecciona otro período en la barra superior</p>
+        <BarChart2 size={32} className="mx-auto mb-2 opacity-30 text-slate-400" />
+        <p className="font-medium text-slate-600">{label}</p>
+        <p className="text-xs mt-1 text-slate-400">Prueba ajustando los filtros o seleccionando otro período</p>
       </div>
     </div>
   )
 }
+
+export default EstacionamientoView

@@ -12,13 +12,19 @@ class AttendanceEventDTO:
     person_id_hash: str
     door_entrada: Optional[str]
     door_salida: Optional[str]
-    primera_entrada: datetime
+    primera_entrada: Optional[datetime]
     ultima_salida: Optional[datetime]
     salida_imputada: bool
-    permanencia_min: Optional[float]
-    marcajes_totales: int
-    alerta_coherencia_fechas: bool
-    alerta_marcajes: bool
+    entrada_imputada: bool = False
+    permanencia_min: Optional[float] = None
+    marcajes_totales: int = 1
+    alerta_coherencia_fechas: bool = False
+    alerta_marcajes: bool = False
+    carrera: Optional[str] = None
+    facultad: Optional[str] = None
+    modalidad: Optional[str] = None
+    edad: Optional[int] = None
+    sexo: Optional[str] = None
 
 
 @dataclass
@@ -27,6 +33,7 @@ class VehicleEventDTO:
     time: datetime
     espacio_id: int
     patente_hash: str
+    patente_cifrada: str
     camara: str
     direccion: str
     tipo_vehiculo: Optional[str]

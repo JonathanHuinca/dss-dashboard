@@ -1,8 +1,15 @@
-import { BookOpen, Car, MapPin, Calendar, Sparkles, ShieldCheck, LogOut } from 'lucide-react'
-import { DateRange, DATE_PRESETS } from '../../types/dateRange'
+import { BookOpen, Car, MapPin, Sparkles, ShieldCheck, LogOut, FileSpreadsheet, User } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { type DateRange } from '../../types/dateRange'
+import { PeriodSelector } from './PeriodSelector'
 import { useAuth } from '../../context/AuthContext'
+import { useAssistant } from '../../context/AssistantContext'
+import { fetchKpiSummary, type DataFilters } from '../../api/clienteBase'
+import { fetchAttendanceKpis, fetchAttendancePresenceCurve, fetchRoomsComparison } from '../../api/asistencia'
+import { fetchVehicleKpis, fetchVehiclePresenceCurve } from '../../api/vehiculos'
+import { listarNotificacionesAdmin } from '../../api/administracion'
 
-export type Tab = 'biblioteca' | 'estacionamiento' | 'admin'
+export type Tab = 'biblioteca' | 'estacionamiento' | 'admin' | 'reportes'
 
 interface Props {
   active: Tab
@@ -10,112 +17,196 @@ interface Props {
   selectedRange: DateRange
   onRangeChange: (r: DateRange) => void
   onOpenAssistant?: () => void
+  filters?: DataFilters
 }
-export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant }: Props) {
-  const { logout, userRole, isSuperAdmin, hasDatasetAccess } = useAuth()
+export function Header({ active, onChange, selectedRange, onRangeChange, onOpenAssistant, filters }: Props) {
+  const queryClient = useQueryClient()
+  const { logout, userName, userEmail, userRole, roles, isSuperAdmin, canAccessAdmin, hasDatasetAccess } = useAuth()
+  const nombreVisible = userName || userEmail
+  const { canUseAssistant } = useAssistant()
+  const espacioId = active === 'biblioteca' ? 1 : active === 'estacionamiento' ? 2 : undefined
+  const tieneRolConsultor = userRole === 'Consultor_Reporte' || (roles || []).includes('Consultor_Reporte')
+
+  const { data: alertasAdmin } = useQuery({
+    queryKey: ['admin-notificaciones'],
+    queryFn: listarNotificacionesAdmin,
+    enabled: isSuperAdmin,
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  })
+  const noLeidas = isSuperAdmin ? (alertasAdmin?.no_leidas ?? 0) : 0
+
+  // Prefetching predictivo con las claves exactas de React Query al abrir el selector o pasar el cursor
+  const precargarKpisRango = (range: DateRange) => {
+    if (!range.inicio || !range.fin) return
+    const stale = 1000 * 60 * 5
+    if (active === 'biblioteca') {
+      queryClient.prefetchQuery({
+        queryKey: ['kpi-summary', 1, range.inicio, range.fin, filters],
+        queryFn: () => fetchKpiSummary(1, range.inicio, range.fin, filters),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['attendance-kpis', range.inicio, range.fin, filters],
+        queryFn: ({ signal }) => fetchAttendanceKpis(range.inicio, range.fin, filters, signal),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['attendance-presence-curve', range.inicio, range.fin, filters],
+        queryFn: ({ signal }) => fetchAttendancePresenceCurve(range.inicio, range.fin, filters, signal),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['rooms-comparison', range.inicio, range.fin, filters, 1],
+        queryFn: ({ signal }) => fetchRoomsComparison(range.inicio, range.fin, filters, 1, signal),
+        staleTime: stale,
+      })
+    } else if (active === 'estacionamiento') {
+      const fVeh = filters || { alcance: 'conformes' }
+      queryClient.prefetchQuery({
+        queryKey: ['kpi-summary', 2, range.inicio, range.fin, fVeh],
+        queryFn: () => fetchKpiSummary(2, range.inicio, range.fin, fVeh),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['vehicle-kpis', range.inicio, range.fin, fVeh, 'todos'],
+        queryFn: ({ signal }) => fetchVehicleKpis(range.inicio, range.fin, fVeh, 'todos', signal),
+        staleTime: stale,
+      })
+      queryClient.prefetchQuery({
+        queryKey: ['vehicle-presence-curve', range.inicio, range.fin, fVeh, 'todos'],
+        queryFn: ({ signal }) => fetchVehiclePresenceCurve(range.inicio, range.fin, fVeh, 'todos', signal),
+        staleTime: stale,
+      })
+    }
+  }
+
+  // Al desplegar el selector de fechas, precargar en segundo plano los KPIs del preset seleccionado
+  const handleOpenSelector = () => {
+    precargarKpisRango(selectedRange)
+  }
+
+  // Al pasar el cursor sobre un preset, precargarlo anticipadamente
+  const handleHoverPreset = (preset: DateRange) => {
+    precargarKpisRango(preset)
+  }
 
   return (
     <header className="bg-uct-blue-primary text-white shadow-xl sticky top-0 z-50">
-      <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
-        <div className="flex items-center gap-3">
-          <div className="h-9 px-2.5 py-1 rounded-lg bg-white flex items-center justify-center border border-uct-gold/40 shadow-xs">
-            <img src="/uct_logo.png" alt="UCT" className="h-7 w-auto object-contain" />
+      <div className="flex flex-wrap sm:flex-nowrap items-center justify-between px-3 sm:px-6 py-2.5 sm:py-3 border-b border-white/10 gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="h-8 sm:h-9 px-2 py-1 rounded-lg bg-white flex items-center justify-center border border-uct-gold/40 shadow-xs shrink-0">
+            <img src="/uct_logo.png" alt="UCT" className="h-6 sm:h-7 w-auto object-contain" />
           </div>
-          <div>
-            <p className="text-xs text-white/60 leading-none">Dashboard Analítico</p>
-            <h1 className="text-sm font-bold leading-tight">Universidad Católica de Temuco</h1>
+          <div className="min-w-0">
+            <p className="text-[10px] sm:text-xs text-white/60 leading-none truncate">Dashboard Analítico</p>
+            <h1 className="text-xs sm:text-sm font-bold leading-tight truncate">Universidad Católica de Temuco</h1>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10">
-            <Calendar size={14} className="text-uct-gold" />
-            <span className="text-xs text-white/70">Período:</span>
-            <select
-              value={selectedRange.label}
-              onChange={(e) => {
-                const found = DATE_PRESETS.find(p => p.label === e.target.value)
-                if (found) onRangeChange(found)
-              }}
-              className="bg-transparent text-xs text-white font-medium focus:outline-none cursor-pointer"
-            >
-              {DATE_PRESETS.map((p) => (
-                <option key={p.label} value={p.label} className="bg-uct-blue-primary text-white">
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <PeriodSelector
+            selectedRange={selectedRange}
+            onRangeChange={onRangeChange}
+            espacioId={espacioId}
+            onOpenSelector={handleOpenSelector}
+            onHoverPreset={handleHoverPreset}
+          />
 
-          <div className="flex items-center gap-1.5 text-xs text-white/70 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10">
+          <div className="hidden md:flex items-center gap-1.5 text-xs text-white/70 bg-white/10 px-3 py-1.5 rounded-lg border border-white/10 shrink-0">
             <MapPin size={12} />
-            <span>Campus San Francisco</span>
-            <span className="text-white/30">›</span>
+            <span className="hidden lg:inline">Campus San Francisco</span>
+            <span className="hidden lg:inline text-white/30">›</span>
             <span className="text-uct-gold font-semibold">
-              {active === 'biblioteca' ? 'Biblioteca' : active === 'estacionamiento' ? 'Estacionamiento' : 'Administración'}
+              {active === 'biblioteca' ? 'Biblioteca' : active === 'estacionamiento' ? 'Estacionamiento' : active === 'admin' ? 'Administración' : 'Reportes'}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="flex items-center justify-between px-6 py-2.5">
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between px-3 sm:px-6 py-2 border-t sm:border-t-0 border-white/5 overflow-x-auto scrollbar-none gap-3">
+        <nav className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {hasDatasetAccess('biblioteca') && (
             <button
               onClick={() => onChange('biblioteca')}
-              className={`tab-btn flex items-center gap-2 ${active === 'biblioteca' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
+              className={`tab-btn flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm py-1.5 sm:py-2 px-2.5 sm:px-3.5 whitespace-nowrap ${active === 'biblioteca' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
             >
-              <BookOpen size={14} />
-              Biblioteca CSF
+              <BookOpen size={14} className="shrink-0" />
+              <span>Biblioteca CSF</span>
             </button>
           )}
           {hasDatasetAccess('estacionamiento') && (
             <button
               onClick={() => onChange('estacionamiento')}
-              className={`tab-btn flex items-center gap-2 ${active === 'estacionamiento' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
+              className={`tab-btn flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm py-1.5 sm:py-2 px-2.5 sm:px-3.5 whitespace-nowrap ${active === 'estacionamiento' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
             >
-              <Car size={14} />
-              Estacionamiento CSF
+              <Car size={14} className="shrink-0" />
+              <span>Estacionamiento CSF</span>
             </button>
           )}
-          {isSuperAdmin && (
+          {canAccessAdmin && (
             <button
               onClick={() => onChange('admin')}
-              className={`tab-btn flex items-center gap-2 ${active === 'admin' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
+              className={`relative tab-btn flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm py-1.5 sm:py-2 px-2.5 sm:px-3.5 whitespace-nowrap ${active === 'admin' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
             >
-              <ShieldCheck size={14} />
-              Panel Admin
+              <ShieldCheck size={14} className="shrink-0" />
+              <span>Administración</span>
+              {noLeidas > 0 && (
+                <span
+                  title={`${noLeidas} alerta(s) de seguridad sin revisar`}
+                  className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none shadow-xs"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping mr-0.5" />
+                  {noLeidas > 9 ? '9+' : noLeidas}
+                </span>
+              )}
             </button>
           )}
-        </div>
+          {tieneRolConsultor && (
+            <button
+              onClick={() => onChange('reportes')}
+              className={`tab-btn flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm py-1.5 sm:py-2 px-2.5 sm:px-3.5 whitespace-nowrap ${active === 'reportes' ? 'tab-btn-active' : 'tab-btn-inactive'}`}
+            >
+              <FileSpreadsheet size={14} className="shrink-0" />
+              <span>Reportes</span>
+            </button>
+          )}
+        </nav>
 
-        <div className="flex items-center gap-3">
-          {onOpenAssistant && (
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-auto">
+          {onOpenAssistant && canUseAssistant && (
             <button
               onClick={onOpenAssistant}
-              className="flex items-center gap-2 bg-gradient-to-r from-amber-500/20 to-uct-gold/30 hover:from-amber-500/30 hover:to-uct-gold/40 text-amber-200 hover:text-white px-3.5 py-1.5 rounded-lg border border-uct-gold/40 transition-all shadow-xs text-xs font-semibold cursor-pointer"
+              title="Abrir Asistente de IA"
+              className="flex items-center gap-1.5 sm:gap-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-bold px-2.5 sm:px-3.5 py-1.5 rounded-lg border border-amber-200/90 shadow-md hover:shadow-amber-400/25 transition-all text-xs cursor-pointer whitespace-nowrap"
             >
-              <Sparkles size={14} className="text-uct-gold animate-pulse" />
-              <span>Asistente IA (Gemini)</span>
-              <span className="bg-uct-gold text-uct-blue-primary text-[10px] font-bold px-1.5 py-0.2 rounded-full">
-                DSS
-              </span>
+              <Sparkles size={14} className="text-slate-950 shrink-0" />
+              <span className="hidden sm:inline">Asistente de IA</span>
+              <span className="sm:hidden">IA</span>
             </button>
           )}
 
-          <div className="flex items-center gap-2 pl-3 border-l border-white/20">
+          <div className="flex items-center gap-1.5 sm:gap-2 pl-2 sm:pl-3 border-l border-white/20">
+            {nombreVisible && (
+              <div
+                title={userEmail && userName ? `${userName} (${userEmail})` : nombreVisible}
+                className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-white/95 bg-white/10 px-2.5 py-1 rounded-md border border-white/15 max-w-[160px] sm:max-w-[220px]"
+              >
+                <User size={13} className="text-uct-gold shrink-0" />
+                <span className="truncate">{nombreVisible}</span>
+              </div>
+            )}
             {userRole && (
-              <span className="text-[11px] font-bold bg-white/10 px-2 py-1 rounded-md text-amber-300 border border-white/10">
+              <span className="hidden sm:inline-block text-[10px] sm:text-[11px] font-bold bg-white/10 px-2 py-0.5 sm:py-1 rounded-md text-amber-300 border border-white/10 whitespace-nowrap">
                 {userRole}
               </span>
             )}
             <button
               onClick={logout}
-              title="Cerrar sesión institucional y volver al portal"
-              className="flex items-center gap-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 hover:text-white px-3 py-1.5 rounded-lg border border-rose-400/30 transition-all text-xs font-semibold cursor-pointer shadow-2xs"
+              title="Cerrar sesión"
+              className="flex items-center justify-center bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 hover:text-white p-1.5 sm:p-2 rounded-lg border border-rose-400/30 transition-all cursor-pointer shadow-2xs shrink-0"
             >
-              <LogOut size={13} />
-              <span>Cerrar Sesión</span>
+              <LogOut size={14} className="sm:w-[15px] sm:h-[15px]" />
             </button>
           </div>
         </div>

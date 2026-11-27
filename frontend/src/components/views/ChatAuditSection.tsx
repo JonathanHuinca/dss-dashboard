@@ -1,20 +1,11 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-} from 'recharts'
+import { InteractiveChart } from '../ui/InteractiveChart'
 import {
   Activity,
   CheckCircle2,
   XCircle,
   Clock,
-  Sparkles,
   Search,
   RefreshCw,
   ChevronLeft,
@@ -24,8 +15,13 @@ import {
   Car,
   Bot,
   User,
+  ChevronDown,
+  ChevronUp,
+  FileText,
 } from 'lucide-react'
 import { api } from '../../api/client'
+import { MarkdownRespuestaIA } from '../ui/MarkdownRespuestaIA'
+import { formatearFechaHoraChile } from '../../utils/fechaChile'
 
 interface AuditItem {
   id: number
@@ -33,11 +29,20 @@ interface AuditItem {
   usuario_email: string | null
   usuario_nombre: string | null
   prompt_text: string
+  respuesta_text?: string | null
+  origen?: string
+  reporte_codigo?: string | null
   dataset_tipo: string | null
   modelo_utilizado: string | null
   status: string
   response_time_ms: number | null
   timestamp: string
+}
+
+interface AuditUsuarioItem {
+  id: number
+  nombre_completo: string
+  email: string
 }
 
 interface HourlyStat {
@@ -61,28 +66,36 @@ interface AuditResponse {
   page_size: number
   total_pages: number
   stats: AuditStats
+  usuarios_disponibles?: AuditUsuarioItem[]
 }
 
 export const ChatAuditSection: React.FC = () => {
   const [page, setPage] = useState(1)
   const [datasetFilter, setDatasetFilter] = useState('')
+  const [usuarioFilter, setUsuarioFilter] = useState('')
+  const [origenFilter, setOrigenFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [filaExpandidaId, setFilaExpandidaId] = useState<number | null>(null)
 
   const { data, isLoading, isFetching, refetch } = useQuery<AuditResponse>({
-    queryKey: ['admin-chat-audit', page, datasetFilter, statusFilter, searchQuery],
+    queryKey: ['admin-chat-audit', page, datasetFilter, usuarioFilter, origenFilter, statusFilter, searchQuery],
     queryFn: async () => {
       const params = new URLSearchParams({
         page: String(page),
         page_size: '12',
       })
       if (datasetFilter) params.append('dataset_tipo', datasetFilter)
+      if (usuarioFilter) params.append('usuario_id', usuarioFilter)
+      if (origenFilter) params.append('origen', origenFilter)
       if (statusFilter) params.append('status_filter', statusFilter)
       if (searchQuery) params.append('search', searchQuery)
       const res = await api.get(`/admin/chat-audit?${params.toString()}`)
       return res.data
     },
   })
+
+  const usuariosDisponibles = data?.usuarios_disponibles || []
 
   const stats = data?.stats
   const items = data?.items || []
@@ -164,28 +177,35 @@ export const ChatAuditSection: React.FC = () => {
         </div>
 
         <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={stats?.consultas_por_hora_hoy || []}
-              margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-              <XAxis dataKey="hora" tick={{ fontSize: 11, fill: '#64748b' }} />
-              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} allowDecimals={false} />
-              <RechartsTooltip
-                contentStyle={{
-                  backgroundColor: '#ffffff',
-                  borderRadius: '10px',
-                  border: '1px solid #e2e8f0',
-                  boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
-                  fontSize: '11px',
-                }}
-                formatter={(val: any) => [`${val} consultas`, 'Volumen']}
-              />
-              <Bar dataKey="cantidad" fill="#002B49" radius={[4, 4, 0, 0]} maxBarSize={32} />
-            </BarChart>
-          </ResponsiveContainer>
+          <InteractiveChart
+            data={[
+              {
+                x: (stats?.consultas_por_hora_hoy || []).map(d => d.hora),
+                y: (stats?.consultas_por_hora_hoy || []).map(d => d.cantidad),
+                type: 'bar',
+                marker: { color: '#002B49' },
+                hovertemplate: '<b>%{x}</b><br>Consultas: %{y}<extra></extra>',
+              },
+            ]}
+            layout={{
+              height: 250,
+              margin: { t: 15, r: 15, b: 35, l: 35 },
+              xaxis: {
+                tickfont: { size: 11, color: '#64748b' },
+                showgrid: false,
+              },
+              yaxis: {
+                tickfont: { size: 11, color: '#64748b' },
+                showgrid: true,
+                gridcolor: '#f1f5f9',
+                dtick: 1,
+              },
+            }}
+            filename="consultas_ia_hoy"
+            height={250}
+          />
         </div>
+
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
@@ -221,13 +241,43 @@ export const ChatAuditSection: React.FC = () => {
               value={datasetFilter}
               onChange={(e) => {
                 setDatasetFilter(e.target.value)
+                setUsuarioFilter('')
                 setPage(1)
               }}
               className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/20 focus:border-uct-blue-primary text-slate-700"
             >
-              <option value="">Todos los Datasets</option>
+              <option value="">Todos los Módulos</option>
               <option value="biblioteca">Biblioteca</option>
               <option value="estacionamiento">Estacionamiento</option>
+            </select>
+
+            <select
+              value={origenFilter}
+              onChange={(e) => {
+                setOrigenFilter(e.target.value)
+                setPage(1)
+              }}
+              className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/20 focus:border-uct-blue-primary text-slate-700"
+            >
+              <option value="">Todos los Orígenes</option>
+              <option value="dashboard">Dashboard Principal</option>
+              <option value="reporte_compartido">Reportes Compartidos</option>
+            </select>
+
+            <select
+              value={usuarioFilter}
+              onChange={(e) => {
+                setUsuarioFilter(e.target.value)
+                setPage(1)
+              }}
+              className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-uct-blue-primary/20 focus:border-uct-blue-primary text-slate-700 max-w-[220px]"
+            >
+              <option value="">Todos los Usuarios</option>
+              {usuariosDisponibles.map((u) => (
+                <option key={u.id} value={String(u.id)}>
+                  {u.nombre_completo} ({u.email})
+                </option>
+              ))}
             </select>
 
             <select
@@ -261,98 +311,165 @@ export const ChatAuditSection: React.FC = () => {
                 <th className="py-3 px-5">ID</th>
                 <th className="py-3 px-5">Fecha & Hora</th>
                 <th className="py-3 px-5">Usuario</th>
+                <th className="py-3 px-5">Origen</th>
                 <th className="py-3 px-5">Consulta / Prompt</th>
-                <th className="py-3 px-5">Dataset</th>
+                <th className="py-3 px-5">Módulo</th>
                 <th className="py-3 px-5">Modelo IA</th>
                 <th className="py-3 px-5">Estado</th>
                 <th className="py-3 px-5">Latencia</th>
+                <th className="py-3 px-5 text-right">Detalle</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 text-xs">
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
                     Cargando auditoría de IA...
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
                     No se registraron consultas bajo los criterios seleccionados.
                   </td>
                 </tr>
               ) : (
-                items.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
-                    <td className="py-3.5 px-5 font-mono text-slate-400 text-[11px]">
-                      #{item.id}
-                    </td>
-                    <td className="py-3.5 px-5 text-slate-600 text-[11px] whitespace-nowrap">
-                      {new Date(item.timestamp).toLocaleString()}
-                    </td>
-                    <td className="py-3.5 px-5">
-                      {item.usuario_email ? (
-                        <div className="flex flex-col">
-                          <span className="font-semibold text-slate-900 leading-tight">
-                            {item.usuario_nombre || 'Usuario'}
+                items.map((item) => {
+                  const expandida = filaExpandidaId === item.id
+                  const esReporte = item.origen === 'reporte_compartido'
+                  return (
+                    <React.Fragment key={item.id}>
+                      <tr className="hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3.5 px-5 font-mono text-slate-400 text-[11px]">
+                          #{item.id}
+                        </td>
+                        <td className="py-3.5 px-5 text-slate-600 text-[11px] whitespace-nowrap">
+                          {formatearFechaHoraChile(item.timestamp, { second: '2-digit' })}
+                        </td>
+                        <td className="py-3.5 px-5">
+                          {item.usuario_email ? (
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-slate-900 leading-tight">
+                                {item.usuario_nombre || 'Usuario'}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-mono">
+                                {item.usuario_email}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 italic">
+                              <User size={12} />
+                              Anónimo / API
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-5 whitespace-nowrap">
+                          {esReporte ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                              <FileText size={10} />
+                              Reporte {item.reporte_codigo || ''}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                              Dashboard
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-5 max-w-xs">
+                          <p className="text-slate-800 line-clamp-2 text-xs" title={item.prompt_text}>
+                            {item.prompt_text}
+                          </p>
+                        </td>
+                        <td className="py-3.5 px-5">
+                          {item.dataset_tipo === 'biblioteca' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                              <BookOpen size={10} />
+                              Biblioteca
+                            </span>
+                          ) : item.dataset_tipo === 'estacionamiento' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <Car size={10} />
+                              Estacionamiento
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic text-[11px]">
+                              {item.dataset_tipo || 'General'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-5">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
+                            <Bot size={10} />
+                            {item.modelo_utilizado || 'Gemini'}
                           </span>
-                          <span className="text-[10px] text-slate-500 font-mono">
-                            {item.usuario_email}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 italic">
-                          <User size={12} />
-                          Anónimo / API
-                        </span>
+                        </td>
+                        <td className="py-3.5 px-5">
+                          {item.status === 'éxito' ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-medium text-[11px] border border-emerald-200">
+                              <CheckCircle2 size={12} />
+                              Éxito
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full font-medium text-[11px] border border-rose-200">
+                              <XCircle size={12} />
+                              Error
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-5 font-mono text-[11px] text-slate-600 whitespace-nowrap">
+                          {item.response_time_ms !== null ? `${item.response_time_ms} ms` : '—'}
+                        </td>
+                        <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => setFilaExpandidaId(expandida ? null : item.id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-uct-blue-primary cursor-pointer"
+                          >
+                            {expandida ? (
+                              <>
+                                <ChevronUp size={12} />
+                                Ocultar
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown size={12} />
+                                Ver detalle
+                              </>
+                            )}
+                          </button>
+                        </td>
+                      </tr>
+                      {expandida && (
+                        <tr className="bg-slate-50/90">
+                          <td colSpan={10} className="px-6 py-4 space-y-2.5 text-xs">
+                            <div>
+                              <span className="text-[11px] font-bold uppercase text-uct-blue-primary">
+                                Consulta Completa:
+                              </span>
+                              <p className="mt-1 p-2.5 rounded-lg bg-white border border-slate-200 text-slate-800 whitespace-pre-line">
+                                {item.prompt_text}
+                              </p>
+                            </div>
+                            <div>
+                              <span className="text-[11px] font-bold uppercase text-emerald-700">
+                                Respuesta IA Registrada:
+                              </span>
+                              <div className="mt-1 p-3 rounded-lg bg-white border border-slate-200 text-slate-700">
+                                {item.respuesta_text ? (
+                                  <MarkdownRespuestaIA contenido={item.respuesta_text} />
+                                ) : (
+                                  <span className="text-xs text-slate-500">
+                                    Sin texto de respuesta almacenado (consulta previa a la actualización o streaming).
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="py-3.5 px-5 max-w-xs">
-                      <p className="text-slate-800 line-clamp-2 text-xs" title={item.prompt_text}>
-                        {item.prompt_text}
-                      </p>
-                    </td>
-                    <td className="py-3.5 px-5">
-                      {item.dataset_tipo === 'biblioteca' ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-                          <BookOpen size={10} />
-                          Biblioteca
-                        </span>
-                      ) : item.dataset_tipo === 'estacionamiento' ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          <Car size={10} />
-                          Estacionamiento
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 italic text-[11px]">
-                          {item.dataset_tipo || 'General'}
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3.5 px-5">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
-                        <Bot size={10} />
-                        {item.modelo_utilizado || 'Gemini'}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-5">
-                      {item.status === 'éxito' ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full font-medium text-[11px] border border-emerald-200">
-                          <CheckCircle2 size={12} />
-                          Éxito
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full font-medium text-[11px] border border-rose-200">
-                          <XCircle size={12} />
-                          Error
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3.5 px-5 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                      {item.response_time_ms !== null ? `${item.response_time_ms} ms` : '—'}
-                    </td>
-                  </tr>
-                ))
+                    </React.Fragment>
+                  )
+                })
               )}
             </tbody>
           </table>
